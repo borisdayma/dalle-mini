@@ -1,0 +1,5 @@
+jax
+flax
+optax
+datasets
+git+https://github.com/huggingface/transformers

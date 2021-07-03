@@ -13,3 +13,9 @@
 * work on a demo (streamlit or colab or maybe just HF widget)
 * document (set up repo on model hub per instructions, start on README writeup…)
 * help with coordinating activities & progress
+
+
+## Dependencies Installation
+You should create a new python virtual environment and install the project dependencies inside the virtual env: `pip install -r requirements.txt`
+
+If you use `conda`, you can create the virtual env and install everything using: `conda env update -f environments.yaml`
