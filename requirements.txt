@@ -3,3 +3,4 @@ flax
 optax
 datasets
 git+https://github.com/huggingface/transformers
+pillow>=8.0
