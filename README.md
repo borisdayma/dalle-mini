@@ -1,5 +1,22 @@
 ## DALL-E Mini - Generate image from text
 
+## Tentative Strategy of training (proposed by Luke and Suraj)
+
+### Data: 
+* [Conceptual 12M](https://github.com/google-research-datasets/conceptual-12m) Dataset (already loaded and preprocessed in TPU VM by Luke).
+* [YFCC100M Subset](https://github.com/openai/CLIP/blob/main/data/yfcc100m.md)
+* [Coneptual Captions 3M](https://github.com/google-research-datasets/conceptual-captions)
+
+### Architecture: 
+  * Use the Taming Transformers VQ-GAN (with 16384 tokens)
+  * Use a seq2seq (language encoder --> image decoder) model with a pretrained non-autoregressive encoder (e.g. BERT) and an autoregressive decoder (like GPT). 
+
+### Remaining Architecture Questions: 
+  * Whether to freeze the text encoder?
+  * Whether to finetune the VQ-GAN?
+  * Which text encoder to use (e.g. BERT, RoBERTa, etc.)?
+  * Hyperparameter choices for the decoder (e.g. positional embedding, initialization, etc.)
+
 ## TODO
 
 * experiment with flax/jax and setup of the TPU instance that we should get shortly
