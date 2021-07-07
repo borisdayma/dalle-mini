@@ -16,6 +16,10 @@
 
 
 ## Dependencies Installation
-You should create a new python virtual environment and install the project dependencies inside the virtual env: `pip install -r requirements.txt`
+You should create a new python virtual environment and install the project dependencies inside the virtual env. You need to use the `-f` (`--find-links`) option for `pip` to be able to find the appropriate `libtpu` required for the TPU hardware:
+
+```
+$ pip install -r requirements.txt -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+```
 
 If you use `conda`, you can create the virtual env and install everything using: `conda env update -f environments.yaml`
