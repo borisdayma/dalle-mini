@@ -215,6 +215,13 @@ class DataTrainingArguments:
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
+    log_interval: Optional[int] = field(
+        default=500,
+        metadata={
+            "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
+            "value if set."
+        },
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -307,12 +314,12 @@ def write_metric(summary_writer, train_metrics, eval_metrics, train_time, step):
 
     train_metrics = get_metrics(train_metrics)
     for key, vals in train_metrics.items():
-        tag = f"train_{key}"
+        tag = f"train_epoch/{key}"
         for i, val in enumerate(vals):
             summary_writer.scalar(tag, val, step - len(vals) + i + 1)
 
     for metric_name, value in eval_metrics.items():
-        summary_writer.scalar(f"eval_{metric_name}", value, step)
+        summary_writer.scalar(f"eval/{metric_name}", value, step)
 
 
 def create_learning_rate_fn(
@@ -718,6 +725,7 @@ def main():
 
     train_time = 0
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
+    global_step = 0
     for epoch in epochs:
         # ======================== Training ================================
         train_start = time.time()
@@ -730,10 +738,15 @@ def main():
         train_loader = data_loader(input_rng, train_dataset, train_batch_size, shuffle=True)
         steps_per_epoch = len(train_dataset) // train_batch_size
         # train
-        for _ in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
+        for step in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
+            global_step +=1
             batch = next(train_loader)
             state, train_metric = p_train_step(state, batch)
             train_metrics.append(train_metric)
+
+            if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
+                for k, v in unreplicate(train_metric).items():
+                    wandb.log(f{'train/{k}': jax.device_get(v), step=global_step)
 
         train_time += time.time() - train_start
 
