@@ -361,13 +361,13 @@ def main():
     )
 
     # Make one log on every process with the configuration for debugging.
-    logging.basicConfig(
+    pylogging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
+        level=pylogging.INFO,
     )
     # Setup logging, we only want one process per machine to log things on the screen.
-    logger.setLevel(logging.INFO if jax.process_index() == 0 else logging.ERROR)
+    logger.setLevel(pylogging.INFO if jax.process_index() == 0 else pylogging.ERROR)
     if jax.process_index() == 0:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
