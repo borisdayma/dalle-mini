@@ -413,6 +413,8 @@ def main():
     #config.min_length = data_args.max_target_length        # Set only in decoder?
     #config.max_length = data_args.max_target_length        # Set only in decoder?
 
+    print(f"TPUs: {jax.device_count()}")
+    assert jax.device_count() == 8, "TPUs in use, please check running processes"
 
     # Create a custom model and initialize it randomly
     model = CustomFlaxBartForConditionalGeneration(config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype))
@@ -534,7 +536,7 @@ def main():
         )
 
     # Metric
-    metric = load_metric("rouge")
+    #metric = load_metric("rouge")
 
     def postprocess_text(preds, labels):
         preds = [pred.strip() for pred in preds]
@@ -740,40 +742,41 @@ def main():
 
         # ======================== Evaluating ==============================
         eval_metrics = []
-        eval_preds = []
-        eval_labels = []
+        if training_args.do_eval:
+            eval_preds = []
+            eval_labels = []
 
-        eval_loader = data_loader(input_rng, eval_dataset, eval_batch_size)
-        eval_steps = len(eval_dataset) // eval_batch_size
-        for _ in tqdm(range(eval_steps), desc="Evaluating...", position=2, leave=False):
-            # Model forward
-            batch = next(eval_loader)
-            labels = batch["labels"]
+            eval_loader = data_loader(input_rng, eval_dataset, eval_batch_size)
+            eval_steps = len(eval_dataset) // eval_batch_size
+            for _ in tqdm(range(eval_steps), desc="Evaluating...", position=2, leave=False):
+                # Model forward
+                batch = next(eval_loader)
+                labels = batch["labels"]
 
-            metrics = p_eval_step(state.params, batch)
-            eval_metrics.append(metrics)
+                metrics = p_eval_step(state.params, batch)
+                eval_metrics.append(metrics)
 
-            # generation
-            if data_args.predict_with_generate:
-                generated_ids = p_generate_step(state.params, batch)
-                eval_preds.extend(jax.device_get(generated_ids.reshape(-1, gen_kwargs["max_length"])))
-                eval_labels.extend(jax.device_get(labels.reshape(-1, labels.shape[-1])))
+                # generation
+                if data_args.predict_with_generate:
+                    generated_ids = p_generate_step(state.params, batch)
+                    eval_preds.extend(jax.device_get(generated_ids.reshape(-1, gen_kwargs["max_length"])))
+                    eval_labels.extend(jax.device_get(labels.reshape(-1, labels.shape[-1])))
 
-        # normalize eval metrics
-        eval_metrics = get_metrics(eval_metrics)
-        eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
+            # normalize eval metrics
+            eval_metrics = get_metrics(eval_metrics)
+            eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
-        # compute ROUGE metrics
-        rouge_desc = ""
-        if data_args.predict_with_generate:
-            rouge_metrics = compute_metrics(eval_preds, eval_labels)
-            eval_metrics.update(rouge_metrics)
-            rouge_desc = " ".join([f"Eval {key}: {value} |" for key, value in rouge_metrics.items()])
+            # compute ROUGE metrics
+            rouge_desc = ""
+    #        if data_args.predict_with_generate:
+    #            rouge_metrics = compute_metrics(eval_preds, eval_labels)
+    #            eval_metrics.update(rouge_metrics)
+    #            rouge_desc = " ".join([f"Eval {key}: {value} |" for key, value in rouge_metrics.items()])
 
-        # Print metrics and update progress bar
-        desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | {rouge_desc})"
-        epochs.write(desc)
-        epochs.desc = desc
+            # Print metrics and update progress bar
+            desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | {rouge_desc})"
+            epochs.write(desc)
+            epochs.desc = desc
 
         # Save metrics
         if has_tensorboard and jax.process_index() == 0:
