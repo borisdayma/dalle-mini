@@ -19,7 +19,7 @@ Script adapted from run_summarization_flax.py
 """
 # You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
 
-import logging
+import logging as pylogging    # To avoid collision with transformers.utils.logging
 import os
 import sys
 import time
@@ -60,7 +60,7 @@ from transformers.file_utils import is_offline_mode
 
 import wandb
 
-logger = logging.getLogger(__name__)
+logger = pylogging.getLogger(__name__)
 
 try:
     nltk.data.find("tokenizers/punkt")
@@ -389,7 +389,7 @@ def main():
         data_files["validation"] = data_args.validation_file
     if data_args.test_file is not None:
         data_files["test"] = data_args.test_file
-    dataset = load_dataset"csv", data_files=data_files, cache_dir=model_args.cache_dir, delimiter="\t")
+    dataset = load_dataset("csv", data_files=data_files, cache_dir=model_args.cache_dir, delimiter="\t")
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
@@ -411,7 +411,7 @@ def main():
 
 
     # Create a custom model and initialize it randomly
-    model = CustomFlaxBartForConditionalGeneration(config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
+    model = CustomFlaxBartForConditionalGeneration(config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype))
 
     # Use pre-trained weights for encoder
     model.params['model']['encoder'] = base_model.params['model']['encoder']

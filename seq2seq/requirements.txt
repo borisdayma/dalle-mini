@@ -4,3 +4,5 @@ jaxlib>=0.1.59
 flax>=0.3.4
 optax>=0.0.8
 tensorboard
+nltk
+wandb
