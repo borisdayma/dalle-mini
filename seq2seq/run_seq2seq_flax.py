@@ -258,6 +258,8 @@ class CustomFlaxBartModule(FlaxBartModule):
         # the decoder has a different config
         decoder_config = BartConfig(self.config.to_dict())
         decoder_config.max_position_embeddings = OUTPUT_LENGTH
+        decoder_config.min_length = OUTPUT_LENGTH
+        decoder_config.max_length = OUTPUT_LENGTH
         decoder_config.vocab_size = OUTPUT_VOCAB_SIZE
         self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
 
@@ -407,7 +409,9 @@ def main():
     config.decoder_start_token_id = BOS_TOKEN_ID
     config.bos_token_id = BOS_TOKEN_ID  # should not be used
     config.pos_token_id = BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
-    config.eos_token_id = None  # prevents generation from stopping until we reach max_length
+    config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
+    #config.min_length = data_args.max_target_length        # Set only in decoder?
+    #config.max_length = data_args.max_target_length        # Set only in decoder?
 
 
     # Create a custom model and initialize it randomly
