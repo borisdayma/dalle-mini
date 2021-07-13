@@ -222,10 +222,10 @@ class DataTrainingArguments:
         else:
             if self.train_file is not None:
                 extension = self.train_file.split(".")[-1]
-                assert extension in ["csv", "json"], "`train_file` should be a csv or a json file."
+                assert extension in ["tsv", "csv", "json"], "`train_file` should be a tsv, csv or json file."
             if self.validation_file is not None:
                 extension = self.validation_file.split(".")[-1]
-                assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
+                assert extension in ["tsv", "csv", "json"], "`validation_file` should be a tsv, csv or json file."
         if self.val_max_target_length is None:
             self.val_max_target_length = self.max_target_length
 
