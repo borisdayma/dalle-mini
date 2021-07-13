@@ -25,11 +25,11 @@ command:
   - "--num_train_epochs"
   - 1
   - "--max_train_samples"
-  - 200000
+  - 2000000
   - "--per_device_train_batch_size"
-  - 32
+  - 56
   - "--per_device_eval_batch_size"
-  - 32
+  - 56
   - "--preprocessing_num_workers"
   - 80
   - "--do_train"
