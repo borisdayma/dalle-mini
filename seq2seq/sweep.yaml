@@ -18,6 +18,10 @@ parameters:
 command:
   - python3
   - ${program}
+  - "--train_file"
+  - "/data/CC12M/encoded-small-train.tsv"
+  - "--validation_file"
+  - "/data/CC12M/encoded-small-valid.tsv"
   - "--output_dir"
   - "./output_sweep"
   - "--overwrite_output_dir"
