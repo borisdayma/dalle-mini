@@ -755,7 +755,8 @@ def main():
 
             if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
                 for k, v in unreplicate(train_metric).items():
-                    wandb.log({f"train/{k}": jax.device_get(v)}, step=global_step)
+                    wandb.log({"train/step": global_step})
+                    wandb.log({f"train/{k}": jax.device_get(v)})
 
         train_time += time.time() - train_start
 
