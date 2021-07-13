@@ -458,19 +458,30 @@ def main():
         )
 
         # set up targets
-        model_inputs["labels"] = [eval(indices) for indices in examples['encoding']]
+        # Note: we prepend the bos token instead of doing `shift_tokens_right` because the latter
+        # removes the last token, and we know we don't need padding. In our case, labels 
+        # has a length of exactly 1 + 256, while shifting would produce 256 tokens.
+        labels = [[config.decoder_start_token_id] + eval(indices) for indices in examples['encoding']]
+        labels = np.asarray(labels)
+
+        # We need the labels, in addition to the decoder_input_ids, for the compute_loss function
+        # In our case, they are the same as decoder_input_ids. Is that correct?
+        model_inputs["labels"] = labels
 
         # TODO: if data processing prevents correct compilation, we will:
         #       - have data saved in JSONL (to avoid `eval` which is needed here to convert string "[2]" to list[int])
         #       - use below `shift_tokens_right_fn`
-        decoder_input_ids = shift_tokens_right_fn(
-            jnp.array(labels["input_ids"]), config.pad_token_id, config.decoder_start_token_id
-        )
+        # In our case, this prepends the bos token and removes the last one
+#        decoder_input_ids = shift_tokens_right_fn(
+#            jnp.array(labels), config.pad_token_id, config.decoder_start_token_id
+#        )
 
-        model_inputs["decoder_input_ids"] = np.asarray(decoder_input_ids)
+        model_inputs["decoder_input_ids"] = labels
 
         # We need decoder_attention_mask so we can ignore pad tokens from loss
         # TODO: I don't believe we need "decoder_attention_mask" in this case because all labels have same length
+        # However, we need to provide a mask or modify the compute_loss function, which relies on having one
+        model_inputs["decoder_attention_mask"] = np.ones(labels.shape)
         #model_inputs["decoder_attention_mask"] = labels["attention_mask"]
 
         return model_inputs
