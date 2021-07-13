@@ -487,10 +487,6 @@ def main():
 
         model_inputs["decoder_input_ids"] = labels
 
-        # We need decoder_attention_mask so we can ignore pad tokens from loss
-        # TODO: I don't believe we need "decoder_attention_mask" in this case because all labels have same length
-        #model_inputs["decoder_attention_mask"] = labels["attention_mask"]
-
         return model_inputs
 
     if training_args.do_train:
@@ -643,7 +639,7 @@ def main():
     state = TrainState.create(apply_fn=model.__call__, params=model.params, tx=optimizer, dropout_rng=dropout_rng)
 
     # label smoothed cross entropy
-    def loss_fn(logits, labels, padding_mask, label_smoothing_factor=0.0):
+    def loss_fn(logits, labels, label_smoothing_factor=0.0):
         """
         The label smoothing implementation is adapted from Flax's official example:
         https://github.com/google/flax/blob/87a211135c6a377c8f29048a1cac3840e38b9da4/examples/wmt/train.py#L104
@@ -659,12 +655,7 @@ def main():
         loss = optax.softmax_cross_entropy(logits, soft_labels)
         loss = loss - normalizing_constant
 
-        if padding_mask is None:
-            padding_mask = np.ones(loss.shape)
-
-        # ignore padded tokens from loss
-        loss = loss * padding_mask
-        loss = loss.sum() / padding_mask.sum()
+        loss = loss.mean()
         return loss
 
     # Define gradient update step fn
@@ -674,8 +665,7 @@ def main():
         def compute_loss(params):
             labels = batch.pop("labels")
             logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
-            padding_mask = batch.get("decoder_attention_mask", None)
-            loss = loss_fn(logits, labels, padding_mask, label_smoothing_factor)
+            loss = loss_fn(logits, labels, label_smoothing_factor)
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
@@ -693,8 +683,7 @@ def main():
     def eval_step(params, batch, label_smoothing_factor=0.0):
         labels = batch.pop("labels")
         logits = model(**batch, params=params, train=False)[0]
-        padding_mask = batch.get("decoder_attention_mask", None)
-        loss = loss_fn(logits, labels, padding_mask, label_smoothing_factor)
+        loss = loss_fn(logits, labels, label_smoothing_factor)
 
         # summarize metrics
         metrics = {"loss": loss}
