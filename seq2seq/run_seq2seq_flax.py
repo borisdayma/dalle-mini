@@ -239,6 +239,8 @@ class DataTrainingArguments:
 
 class TrainState(train_state.TrainState):
     dropout_rng: jnp.ndarray
+    grad_accum: jnp.ndarray
+    optimizer_step: int
 
     def replicate(self):
         return jax_utils.replicate(self).replace(dropout_rng=shard_prng_key(self.dropout_rng))
@@ -590,14 +592,16 @@ def main():
     # Store some constant
     num_epochs = int(training_args.num_train_epochs)
     train_batch_size = int(training_args.per_device_train_batch_size) * jax.device_count()
+    total_batch_size = int(train_batch_size) * training_args.gradient_accumulation_steps
     eval_batch_size = int(training_args.per_device_eval_batch_size) * jax.device_count()
     steps_per_epoch = len(train_dataset) // train_batch_size
-    total_train_steps = steps_per_epoch * num_epochs
+    total_steps = steps_per_epoch * num_epochs
+    total_optimization_steps = (len(train_dataset) // total_batch_size) * num_epochs
 
     # Create learning rate schedule
     linear_decay_lr_schedule_fn = create_learning_rate_fn(
         len(train_dataset),
-        train_batch_size,
+        total_batch_size,
         training_args.num_train_epochs,
         training_args.warmup_steps,
         training_args.learning_rate,
@@ -636,7 +640,14 @@ def main():
         )
 
     # Setup train state
-    state = TrainState.create(apply_fn=model.__call__, params=model.params, tx=optimizer, dropout_rng=dropout_rng)
+    state = TrainState.create(
+        apply_fn=model.__call__,
+        params=model.params,
+        tx=optimizer,
+        dropout_rng=dropout_rng,
+        grad_accum=jax.tree_map(jnp.zeros_like, model.params),
+        optimizer_step=0,
+    )
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
@@ -655,15 +666,28 @@ def main():
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
-        loss, grad = grad_fn(state.params)
-        grad = jax.lax.pmean(grad, "batch")
+        loss, grads = grad_fn(state.params)
+        grad_accum = jax.tree_multimap(lambda x, y: x + y, grads, state.grad_accum)
 
-        new_state = state.apply_gradients(grads=grad, dropout_rng=new_dropout_rng)
+        def update_fn():
+            grads = jax.tree_map(lambda x: x / training_args.gradient_accumulation_steps, grad_accum)
+            grads = jax.lax.pmean(grads, "batch")
+            new_state = state.apply_gradients(
+                grads=grads, grad_accum=jax.tree_map(jnp.zeros_like, grads), optimizer_step=state.optimizer_step
+            )
+            return new_state
 
-        metrics = {"loss": loss, "learning_rate": linear_decay_lr_schedule_fn(state.step)}
+        new_state = jax.lax.cond(
+            state.step % training_args.gradient_accumulation_steps == 0,
+            lambda _: update_fn(),
+            lambda _: state.replace(grad_accum=grad_accum, step=state.step + 1),
+            None,
+        )
+
+        metrics = {"loss": loss, "learning_rate": linear_decay_lr_schedule_fn(state.optimizer_step)}
         metrics = jax.lax.pmean(metrics, axis_name="batch")
 
-        return new_state, metrics
+        return new_state.replace(dropout_rng=new_dropout_rng), metrics
 
     # Define eval fn
     def eval_step(params, batch):
@@ -702,8 +726,11 @@ def main():
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {num_epochs}")
     logger.info(f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}")
-    logger.info(f"  Total train batch size (w. parallel & distributed) = {train_batch_size}")
-    logger.info(f"  Total optimization steps = {total_train_steps}")
+    logger.info(
+        f"  Total train batch size (w. parallel & distributed) = {train_batch_size * training_args.gradient_accumulation_steps}"
+    )
+    logger.info(f"  Total global steps = {total_steps}")
+    logger.info(f"  Total optimization steps = {total_optimization_steps}")
 
     train_time = 0
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
@@ -728,7 +755,7 @@ def main():
 
             if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
                 for k, v in unreplicate(train_metric).items():
-                    wandb.log(f{'train/{k}': jax.device_get(v)}, step=global_step)
+                    wandb.log({f"train/{k}": jax.device_get(v)}, step=global_step)
 
         train_time += time.time() - train_start
 
