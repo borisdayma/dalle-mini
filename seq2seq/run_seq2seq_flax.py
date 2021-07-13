@@ -40,6 +40,7 @@ import optax
 import transformers
 from filelock import FileLock
 from flax import jax_utils, traverse_util
+import flax.linen as nn
 from flax.jax_utils import unreplicate
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_key
@@ -49,12 +50,15 @@ from transformers import (
     AutoConfig,
     AutoTokenizer,
     FlaxAutoModelForSeq2SeqLM,
+    FlaxBartForConditionalGeneration,
     HfArgumentParser,
     TrainingArguments,
     is_tensorboard_available,
 )
+from transformers.models.bart.modeling_flax_bart import *
 from transformers.file_utils import is_offline_mode
 
+import wandb
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +77,13 @@ MODEL_CONFIG_CLASSES = list(FLAX_MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
+# Model hyperparameters, for convenience
+OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
+OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
+BOS_TOKEN_ID = 16384
+BASE_MODEL = 'facebook/bart-large-cnn'
+
+
 @dataclass
 class ModelArguments:
     """
@@ -80,7 +91,7 @@ class ModelArguments:
     """
 
     model_name_or_path: Optional[str] = field(
-        default=None,
+        default=BASE_MODEL,
         metadata={
             "help": "The model checkpoint for weights initialization."
             "Don't set if you want to train a model from scratch."
@@ -124,12 +135,12 @@ class DataTrainingArguments:
         default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
     text_column: Optional[str] = field(
-        default=None,
+        default='caption',
         metadata={"help": "The name of the column in the datasets containing the full texts (for summarization)."},
     )
-    summary_column: Optional[str] = field(
-        default=None,
-        metadata={"help": "The name of the column in the datasets containing the summaries (for summarization)."},
+    encoding_column: Optional[str] = field(
+        default='encoding',
+        metadata={"help": "The name of the column in the datasets containing the image encodings."},
     )
     train_file: Optional[str] = field(default=None, metadata={"help": "The input training data file (a text file)."})
     validation_file: Optional[str] = field(
@@ -148,7 +159,7 @@ class DataTrainingArguments:
         },
     )
     max_target_length: Optional[int] = field(
-        default=128,
+        default=OUTPUT_LENGTH,
         metadata={
             "help": "The maximum total sequence length for target text after tokenization. Sequences longer "
             "than this will be truncated, sequences shorter will be padded."
@@ -219,27 +230,51 @@ class DataTrainingArguments:
             self.val_max_target_length = self.max_target_length
 
 
-summarization_name_mapping = {
-    "amazon_reviews_multi": ("review_body", "review_title"),
-    "big_patent": ("description", "abstract"),
-    "cnn_dailymail": ("article", "highlights"),
-    "orange_sum": ("text", "summary"),
-    "pn_summary": ("article", "summary"),
-    "psc": ("extract_text", "summary_text"),
-    "samsum": ("dialogue", "summary"),
-    "thaisum": ("body", "summary"),
-    "xglue": ("news_body", "news_title"),
-    "xsum": ("document", "summary"),
-    "wiki_summary": ("article", "highlights"),
-}
-
-
 class TrainState(train_state.TrainState):
     dropout_rng: jnp.ndarray
 
     def replicate(self):
         return jax_utils.replicate(self).replace(dropout_rng=shard_prng_key(self.dropout_rng))
 
+
+class CustomFlaxBartModule(FlaxBartModule):
+    def setup(self):
+        # we keep shared to easily load pre-trained weights
+        self.shared = nn.Embed(
+            self.config.vocab_size,
+            self.config.d_model,
+            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
+            dtype=self.dtype,
+        )
+        # a separate embedding is used for the decoder
+        self.decoder_embed = nn.Embed(
+            OUTPUT_VOCAB_SIZE,
+            self.config.d_model,
+            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
+            dtype=self.dtype,
+        )
+        self.encoder = FlaxBartEncoder(self.config, dtype=self.dtype, embed_tokens=self.shared)
+
+        # the decoder has a different config
+        decoder_config = BartConfig(self.config.to_dict())
+        decoder_config.max_position_embeddings = OUTPUT_LENGTH
+        decoder_config.vocab_size = OUTPUT_VOCAB_SIZE
+        self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
+
+class CustomFlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
+    def setup(self):
+        self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
+        self.lm_head = nn.Dense(
+            OUTPUT_VOCAB_SIZE,
+            use_bias=False,
+            dtype=self.dtype,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
+        )
+        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, OUTPUT_VOCAB_SIZE))
+
+class CustomFlaxBartForConditionalGeneration(FlaxBartForConditionalGeneration):
+    module_class = CustomFlaxBartForConditionalGenerationModule
+    
 
 def data_loader(rng: jax.random.PRNGKey, dataset: Dataset, batch_size: int, shuffle: bool = False):
     """
@@ -315,6 +350,15 @@ def main():
             f"Output directory ({training_args.output_dir}) already exists and is not empty."
             "Use --overwrite_output_dir to overcome."
         )
+    
+    # Set up wandb run
+    wandb.init(
+        sync_tensorboard=True,
+        entity='wandb',
+        project='hf-flax-dalle-mini',
+        job_type='Seq2SeqVQGAN',
+        config=parser.parse_args()
+    )
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -338,64 +382,41 @@ def main():
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
     # (the dataset will be downloaded automatically from the datasets Hub).
     #
-    # For CSV/JSON files this script will use the first column for the full texts and the second column for the
-    # summaries (unless you specify column names for this with the `text_column` and `summary_column` arguments).
-    #
-    if data_args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(
-            data_args.dataset_name, data_args.dataset_config_name, cache_dir=model_args.cache_dir, keep_in_memory=False
-        )
-    else:
-        data_files = {}
-        if data_args.train_file is not None:
-            data_files["train"] = data_args.train_file
-            extension = data_args.train_file.split(".")[-1]
-        if data_args.validation_file is not None:
-            data_files["validation"] = data_args.validation_file
-            extension = data_args.validation_file.split(".")[-1]
-        if data_args.test_file is not None:
-            data_files["test"] = data_args.test_file
-            extension = data_args.test_file.split(".")[-1]
-        dataset = load_dataset(extension, data_files=data_files, cache_dir=model_args.cache_dir)
+    data_files = {}
+    if data_args.train_file is not None:
+        data_files["train"] = data_args.train_file
+    if data_args.validation_file is not None:
+        data_files["validation"] = data_args.validation_file
+    if data_args.test_file is not None:
+        data_files["test"] = data_args.test_file
+    dataset = load_dataset"csv", data_files=data_files, cache_dir=model_args.cache_dir, delimiter="\t")
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
     # Load pretrained model and tokenizer
+    base_model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
+        model_args.model_name_or_path, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
+    )
 
-    if model_args.config_name:
-        config = AutoConfig.from_pretrained(model_args.config_name, cache_dir=model_args.cache_dir)
-    elif model_args.model_name_or_path:
-        config = AutoConfig.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache_dir)
-    else:
-        config = CONFIG_MAPPING[model_args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
+    # Set up our new model config
+    config = BartConfig.from_pretrained(model_args.model_name_or_path)
+    config.tie_word_embeddings = False
+    config.decoder_start_token_id = BOS_TOKEN_ID
+    config.bos_token_id = BOS_TOKEN_ID  # should not be used
+    config.pos_token_id = BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
+    config.eos_token_id = None  # prevents generation from stopping until we reach max_length
 
-    if model_args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_args.tokenizer_name, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
-        )
-    elif model_args.model_name_or_path:
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
-        )
-    else:
-        raise ValueError(
-            "You are instantiating a new tokenizer from scratch. This is not supported by this script."
-            "You can do it from another script, save it, and load it from here, using --tokenizer_name."
-        )
 
-    if model_args.model_name_or_path:
-        model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
-            model_args.model_name_or_path, config=config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
-        )
-    else:
-        model = FlaxAutoModelForSeq2SeqLM.from_config(
-            config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
-        )
+    # Create a custom model and initialize it randomly
+    model = CustomFlaxBartForConditionalGeneration(config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
 
-    if model.config.decoder_start_token_id is None:
-        raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
+    # Use pre-trained weights for encoder
+    model.params['model']['encoder'] = base_model.params['model']['encoder']
+    model.params['model']['shared'] = base_model.params['model']['shared']
+    del base_model
 
     prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
 
@@ -412,23 +433,8 @@ def main():
         return
 
     # Get the column names for input/target.
-    dataset_columns = summarization_name_mapping.get(data_args.dataset_name, None)
-    if data_args.text_column is None:
-        text_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-    else:
-        text_column = data_args.text_column
-        if text_column not in column_names:
-            raise ValueError(
-                f"--text_column' value '{data_args.text_column}' needs to be one of: {', '.join(column_names)}"
-            )
-    if data_args.summary_column is None:
-        summary_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-    else:
-        summary_column = data_args.summary_column
-        if summary_column not in column_names:
-            raise ValueError(
-                f"--summary_column' value '{data_args.summary_column}' needs to be one of: {', '.join(column_names)}"
-            )
+    text_column = data_args.text_column
+    encoding_column = data_args.encoding_column
 
     # Temporarily set max_target_length for training.
     max_target_length = data_args.max_target_length
@@ -442,26 +448,26 @@ def main():
     # Setting padding="max_length" as we need fixed length inputs for jitted functions
     def preprocess_function(examples):
         inputs = examples[text_column]
-        targets = examples[summary_column]
         inputs = [prefix + inp for inp in inputs]
         model_inputs = tokenizer(
             inputs, max_length=data_args.max_source_length, padding="max_length", truncation=True, return_tensors="np"
         )
 
-        # Setup the tokenizer for targets
-        with tokenizer.as_target_tokenizer():
-            labels = tokenizer(
-                targets, max_length=max_target_length, padding="max_length", truncation=True, return_tensors="np"
-            )
+        # set up targets
+        model_inputs["labels"] = [eval(indices) for indices in examples['encoding']]
 
-        model_inputs["labels"] = labels["input_ids"]
+        # TODO: if data processing prevents correct compilation, we will:
+        #       - have data saved in JSONL (to avoid `eval` which is needed here to convert string "[2]" to list[int])
+        #       - use below `shift_tokens_right_fn`
         decoder_input_ids = shift_tokens_right_fn(
             jnp.array(labels["input_ids"]), config.pad_token_id, config.decoder_start_token_id
         )
+
         model_inputs["decoder_input_ids"] = np.asarray(decoder_input_ids)
 
         # We need decoder_attention_mask so we can ignore pad tokens from loss
-        model_inputs["decoder_attention_mask"] = labels["attention_mask"]
+        # TODO: I don't believe we need "decoder_attention_mask" in this case because all labels have same length
+        #model_inputs["decoder_attention_mask"] = labels["attention_mask"]
 
         return model_inputs
 
