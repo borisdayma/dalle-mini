@@ -216,7 +216,7 @@ class DataTrainingArguments:
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
     log_interval: Optional[int] = field(
-        default=500,
+        default=5,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
             "value if set."
@@ -753,7 +753,7 @@ def main():
 
             if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
                 for k, v in unreplicate(train_metric).items():
-                    wandb.log(f{'train/{k}': jax.device_get(v), step=global_step)
+                    wandb.log(f{'train/{k}': jax.device_get(v)}, step=global_step)
 
         train_time += time.time() - train_start
 
