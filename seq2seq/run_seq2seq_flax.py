@@ -639,33 +639,19 @@ def main():
     state = TrainState.create(apply_fn=model.__call__, params=model.params, tx=optimizer, dropout_rng=dropout_rng)
 
     # label smoothed cross entropy
-    def loss_fn(logits, labels, label_smoothing_factor=0.0):
-        """
-        The label smoothing implementation is adapted from Flax's official example:
-        https://github.com/google/flax/blob/87a211135c6a377c8f29048a1cac3840e38b9da4/examples/wmt/train.py#L104
-        """
-        vocab_size = logits.shape[-1]
-        confidence = 1.0 - label_smoothing_factor
-        low_confidence = (1.0 - confidence) / (vocab_size - 1)
-        normalizing_constant = -(
-            confidence * jnp.log(confidence) + (vocab_size - 1) * low_confidence * jnp.log(low_confidence + 1e-20)
-        )
-        soft_labels = onehot(labels, vocab_size, on_value=confidence, off_value=low_confidence)
-
-        loss = optax.softmax_cross_entropy(logits, soft_labels)
-        loss = loss - normalizing_constant
-
+    def loss_fn(logits, labels):
+        loss = optax.softmax_cross_entropy(logits, onehot(labels, logits.shape[-1]))
         loss = loss.mean()
         return loss
 
     # Define gradient update step fn
-    def train_step(state, batch, label_smoothing_factor=0.0):
+    def train_step(state, batch):
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
         def compute_loss(params):
             labels = batch.pop("labels")
             logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
-            loss = loss_fn(logits, labels, label_smoothing_factor)
+            loss = loss_fn(logits, labels)
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
@@ -680,10 +666,10 @@ def main():
         return new_state, metrics
 
     # Define eval fn
-    def eval_step(params, batch, label_smoothing_factor=0.0):
+    def eval_step(params, batch):
         labels = batch.pop("labels")
         logits = model(**batch, params=params, train=False)[0]
-        loss = loss_fn(logits, labels, label_smoothing_factor)
+        loss = loss_fn(logits, labels)
 
         # summarize metrics
         metrics = {"loss": loss}
@@ -704,9 +690,9 @@ def main():
 
     # Create parallel version of the train and eval step
     p_train_step = jax.pmap(
-        partial(train_step, label_smoothing_factor=training_args.label_smoothing_factor), "batch", donate_argnums=(0,)
+        train_step, "batch", donate_argnums=(0,)
     )
-    p_eval_step = jax.pmap(partial(eval_step, label_smoothing_factor=training_args.label_smoothing_factor), "batch")
+    p_eval_step = jax.pmap(eval_step, "batch")
     p_generate_step = jax.pmap(generate_step, "batch")
 
     # Replicate the train state on each device
