@@ -643,7 +643,7 @@ def main():
     state = TrainState.create(
         apply_fn=model.__call__,
         params=model.params,
-        tx=adamw,
+        tx=optimizer,
         dropout_rng=dropout_rng,
         grad_accum=jax.tree_map(jnp.zeros_like, model.params),
         optimizer_step=0,
@@ -755,7 +755,7 @@ def main():
 
             if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
                 for k, v in unreplicate(train_metric).items():
-                    wandb.log(f{'train/{k}': jax.device_get(v)}, step=global_step)
+                    wandb.log({f"train/{k}": jax.device_get(v)}, step=global_step)
 
         train_time += time.time() - train_start
 
