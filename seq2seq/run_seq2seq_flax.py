@@ -338,7 +338,7 @@ def create_learning_rate_fn(
 
 def wandb_log(metrics, step=None, prefix=None):
     if jax.process_index() == 0:
-        log_metrics = {f'{prefix}/k' if prefix is not None else k: jax.device_get(v) for k,v in metrics.items()}
+        log_metrics = {f'{prefix}/{k}' if prefix is not None else k: jax.device_get(v) for k,v in metrics.items()}
         if step is not None:
             log_metrics = {**log_metrics, 'train/step': step}
         wandb.log(log_metrics)
