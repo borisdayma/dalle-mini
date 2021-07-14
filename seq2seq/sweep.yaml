@@ -8,7 +8,7 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform
-    # from exp(min) to exp(max), ie 1e-4 to 5e-3 on log scale
+    # from exp(min) to exp(max), ie 5e-5 to 5e-3 on log scale
     min: -9.9
     max: -5.3
   gradient_accumulation_steps:
