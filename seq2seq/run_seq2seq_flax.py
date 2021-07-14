@@ -82,7 +82,7 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 # Model hyperparameters, for convenience
 OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
-OUTPUT_LENGTH = 256 + 2  # number of encoded tokens + 1 for bos + 1 for eos
+OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
 BOS_TOKEN_ID = 16384
 BASE_MODEL = 'facebook/bart-large-cnn'
 
@@ -425,6 +425,8 @@ def main():
     config.bos_token_id = BOS_TOKEN_ID  # should not be used
     config.pos_token_id = BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
     config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
+    config.forced_bos_token_id = None  # we don't need this token
+    config.forced_eos_token_id = None  # we don't need this token
     #config.min_length = data_args.max_target_length        # Set only in decoder?
     #config.max_length = data_args.max_target_length        # Set only in decoder?
 
