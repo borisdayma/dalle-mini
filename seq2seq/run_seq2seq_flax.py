@@ -19,8 +19,11 @@ Script adapted from run_summarization_flax.py
 """
 # You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
 
-import logging as pylogging    # To avoid collision with transformers.utils.logging
 import os
+# set a common huggingface cache folder (used with datasets and transformers)
+os.environ['HF_HOME'] = '/data/huggingface/'   # required before importing transformers & datasets
+
+import logging as pylogging    # To avoid collision with transformers.utils.logging
 import sys
 import time
 from dataclasses import dataclass, field
