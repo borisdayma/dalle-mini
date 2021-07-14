@@ -790,7 +790,7 @@ def main():
                 # log metrics
                 wandb_log(unreplicate(train_metric), step=global_step, prefix='tran')
 
-            if global_step % data_args.eval_steps == 0:
+            if global_step % training_args.eval_steps == 0:
                 run_evaluation()
 
         train_time += time.time() - train_start
