@@ -791,7 +791,7 @@ def main():
 
             # save to W&B
             if data_args.log_model:
-                metadata = {'epoch': epoch+1, 'eval/loss': eval_metrics['loss']}
+                metadata = {'step': step, 'epoch': epoch}
                 if eval_metrics is not None:
                     metadata['eval/loss'] = eval_metrics['loss']
                 artifact = wandb.Artifact(
