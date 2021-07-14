@@ -9,12 +9,13 @@ parameters:
   learning_rate:
     distribution: log_uniform
     # from exp(min) to exp(max), ie 1e-4 to 5e-3 on log scale
-    min: -9.2
+    min: -9.9
     max: -5.3
   gradient_accumulation_steps:
     value: 8
   warmup_steps:
-    value: 1000
+    # in term of optimization steps so multiplied by gradient accumulation
+    value: 125
 command:
   - python3
   - ${program}
@@ -29,7 +30,7 @@ command:
   - "--num_train_epochs"
   - 1
   - "--max_train_samples"
-  - 2000000
+  - 1500000
   - "--per_device_train_batch_size"
   - 56
   - "--per_device_eval_batch_size"
