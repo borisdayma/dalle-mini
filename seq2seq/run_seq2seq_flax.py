@@ -357,6 +357,9 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
+    logger.warning(f"eval_steps has been manually hardcoded")  # TODO: remove it later, convenient for now
+    training_args.eval_steps = 400
+
     if (
         os.path.exists(training_args.output_dir)
         and os.listdir(training_args.output_dir)
