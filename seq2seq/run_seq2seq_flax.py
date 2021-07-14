@@ -779,6 +779,38 @@ def main():
 
             return eval_metrics
 
+    def run_save_model(step, epoch, eval_metrics=None):
+        if jax.process_index() == 0:
+            params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
+
+            # save model locally
+            model.save_pretrained(
+                training_args.output_dir,
+                params=params,
+            )
+
+            # save to W&B
+            if data_args.log_model:
+                metadata = {'epoch': epoch+1, 'eval/loss': eval_metrics['loss']}
+                if eval_metrics is not None:
+                    metadata['eval/loss'] = eval_metrics['loss']
+                artifact = wandb.Artifact(
+                    name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
+                )
+                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
+                wandb.run.log_artifact(artifact)
+
+            # save to the hub
+            if training_args.push_to_hub:
+                model.save_pretrained(
+                    training_args.output_dir,
+                    params=params,
+                    push_to_hub=training_args.push_to_hub,
+                    commit_message=f"Saving weights and logs of epoch {epoch+1}",
+                    temp_dir=True  # avoid issues with being in a repository
+                )
+                
     for epoch in epochs:
         # ======================== Training ================================
         train_start = time.time()
@@ -820,37 +852,6 @@ def main():
         # save checkpoint after each epoch and push checkpoint to the hub
         run_save_model(global_step, epoch, eval_metrics)
 
-    def run_save_model(step, epoch, eval_metrics=None):
-        if jax.process_index() == 0:
-            params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
-
-            # save model locally
-            model.save_pretrained(
-                training_args.output_dir,
-                params=params,
-            )
-
-            # save to W&B
-            if data_args.log_model:
-                metadata = {'epoch': epoch+1, 'eval/loss': eval_metrics['loss']}
-                if eval_metrics is not None:
-                    metadata['eval/loss'] = eval_metrics['loss']
-                artifact = wandb.Artifact(
-                    name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
-                )
-                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
-                wandb.run.log_artifact(artifact)
-
-            # save to the hub
-            if training_args.push_to_hub:
-                model.save_pretrained(
-                    training_args.output_dir,
-                    params=params,
-                    push_to_hub=training_args.push_to_hub,
-                    commit_message=f"Saving weights and logs of epoch {epoch+1}",
-                    temp_dir=True  # avoid issues with being in a repository
-                )
 
     # ======================== Prediction loop ==============================
     if training_args.do_predict:
