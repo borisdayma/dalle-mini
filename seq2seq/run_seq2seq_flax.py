@@ -57,7 +57,6 @@ from transformers import (
     FlaxBartForConditionalGeneration,
     HfArgumentParser,
     TrainingArguments,
-    is_tensorboard_available,
 )
 from transformers.models.bart.modeling_flax_bart import *
 from transformers.file_utils import is_offline_mode
@@ -226,10 +225,10 @@ class DataTrainingArguments:
             "value if set."
         },
     )
-    eval_interval: Optional[int] = field(
+    eval_steps: Optional[int] = field(
         default=400,
         metadata={
-            "help": "Evaluation will be performed every eval_interval steps"
+            "help": "Evaluation will be performed every eval_steps"
         },
     )
     log_model: bool = field(
@@ -324,19 +323,6 @@ def data_loader(rng: jax.random.PRNGKey, dataset: Dataset, batch_size: int, shuf
         yield batch
 
 
-def write_metric(summary_writer, train_metrics, eval_metrics, train_time, step):
-    summary_writer.scalar("train_time", train_time, step)
-
-    train_metrics = get_metrics(train_metrics)
-    for key, vals in train_metrics.items():
-        tag = f"train_epoch/{key}"
-        for i, val in enumerate(vals):
-            summary_writer.scalar(tag, val, step - len(vals) + i + 1)
-
-    for metric_name, value in eval_metrics.items():
-        summary_writer.scalar(f"eval/{metric_name}", value, step)
-
-
 def create_learning_rate_fn(
     train_ds_size: int, train_batch_size: int, num_train_epochs: int, num_warmup_steps: int, learning_rate: float
 ) -> Callable[[int], jnp.array]:
@@ -349,6 +335,14 @@ def create_learning_rate_fn(
     )
     schedule_fn = optax.join_schedules(schedules=[warmup_fn, decay_fn], boundaries=[num_warmup_steps])
     return schedule_fn
+
+
+def wandb_log(metrics, step=None, prefix=None):
+    if jax.process_index() == 0:
+        log_metrics = {f'{prefix}/k' if prefix is not None else k: jax.device_get(v) for k,v in metrics.items()}
+        if step is not None:
+            log_metrics = {**metrics, 'train/step': step}
+        wandb.log(log_metrics)
 
 
 def main():
@@ -377,7 +371,6 @@ def main():
     
     # Set up wandb run
     wandb.init(
-        sync_tensorboard=True,
         entity='wandb',
         project='hf-flax-dalle-mini',
         job_type='Seq2SeqVQGAN',
@@ -578,24 +571,6 @@ def main():
         result = {k: round(v, 4) for k, v in result.items()}
         return result
 
-    # Enable tensorboard only on the master node
-    has_tensorboard = is_tensorboard_available()
-    if has_tensorboard and jax.process_index() == 0:
-        try:
-            from flax.metrics.tensorboard import SummaryWriter
-
-            summary_writer = SummaryWriter(log_dir=Path(training_args.output_dir))
-        except ImportError as ie:
-            has_tensorboard = False
-            logger.warning(
-                f"Unable to display metrics through TensorBoard because some package are not installed: {ie}"
-            )
-    else:
-        logger.warning(
-            "Unable to display metrics through TensorBoard because the package is not installed: "
-            "Please run pip install tensorboard to enable."
-        )
-
     # Initialize our training
     rng = jax.random.PRNGKey(training_args.seed)
     rng, dropout_rng = jax.random.split(rng)
@@ -774,10 +749,8 @@ def main():
             eval_metrics = get_metrics(eval_metrics)
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
-            if jax.process_index() == 0:
-                for k, v in eval_metrics.items():
-                    wandb.log({"eval/step": global_step})
-                    wandb.log({f"eval/{k}": jax.device_get(v)})
+            # log metrics
+            wandb_log(eval_metrics, step=global_step, prefix='eval')
 
             # compute ROUGE metrics
             rouge_desc = ""
@@ -790,6 +763,7 @@ def main():
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | {rouge_desc})"
             epochs.write(desc)
             epochs.desc = desc
+
             return eval_metrics
 
     for epoch in epochs:
@@ -798,7 +772,6 @@ def main():
 
         # Create sampling rng
         rng, input_rng = jax.random.split(rng)
-        train_metrics = []
 
         # Generate an epoch by shuffling sampling indices from the train dataset
         train_loader = data_loader(input_rng, train_dataset, train_batch_size, shuffle=True)
@@ -808,31 +781,22 @@ def main():
             global_step +=1
             batch = next(train_loader)
             state, train_metric = p_train_step(state, batch)
-            train_metrics.append(train_metric)
 
             if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
-                print("logging train loss")
-                for k, v in unreplicate(train_metric).items():
-                    wandb.log({"train/step": global_step})
-                    wandb.log({f"train/{k}": jax.device_get(v)})
+                # log metrics
+                wandb_log(unreplicate(train_metric), step=global_step, prefix='tran')
 
-            if global_step % data_args.eval_interval == 0 and jax.process_index() == 0:
+            if global_step % data_args.eval_steps == 0:
                 run_evaluation()
 
         train_time += time.time() - train_start
-
         train_metric = unreplicate(train_metric)
-
         epochs.write(
             f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
         )
 
+        # Final evaluation
         eval_metrics = run_evaluation()
-
-        # Save metrics
-        if has_tensorboard and jax.process_index() == 0:
-            cur_step = epoch * (len(train_dataset) // train_batch_size)
-            write_metric(summary_writer, train_metrics, eval_metrics, train_time, cur_step)
 
         # save checkpoint after each epoch and push checkpoint to the hub
         if jax.process_index() == 0:
