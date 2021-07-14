@@ -400,10 +400,11 @@ def main():
     # (the dataset will be downloaded automatically from the datasets Hub).
     #
     data_files = {}
+    logger.warning(f"Datasets path have been manually hardcoded")  # TODO: remove it later, convenient for now
     if data_args.train_file is not None:
-        data_files["train"] = data_args.train_file
+        data_files["train"] = ["/data/CC3M/training-encoded.tsv", "/data/CC12M/encoded-train.tsv"]
     if data_args.validation_file is not None:
-        data_files["validation"] = data_args.validation_file
+        data_files["validation"] = ["/data/CC3M/validation-encoded.tsv"]
     if data_args.test_file is not None:
         data_files["test"] = data_args.test_file
     dataset = load_dataset("csv", data_files=data_files, cache_dir=model_args.cache_dir, delimiter="\t")
