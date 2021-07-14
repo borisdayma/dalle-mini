@@ -9,4 +9,4 @@ flax
 jupyter
 # for logging
 tensorboard
-tetnsorflow
+tensorflow
