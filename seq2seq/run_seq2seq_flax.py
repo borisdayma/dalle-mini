@@ -226,7 +226,7 @@ class DataTrainingArguments:
         },
     )
     log_model: bool = field(
-        default=True, metadata={"help": "Overwrite the cached training and evaluation sets"}
+        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
 
     def __post_init__(self):
