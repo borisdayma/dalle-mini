@@ -377,6 +377,10 @@ def main():
         config=parser.parse_args()
     )
 
+    # set default x-axis as 'train/step'
+    wandb.define_metric('train/step')
+    wandb.define_metric('*', step_metric='train/step')
+
     # Make one log on every process with the configuration for debugging.
     pylogging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
