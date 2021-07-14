@@ -227,7 +227,7 @@ class DataTrainingArguments:
         },
     )
     eval_interval: Optional[int] = field(
-        default=40,
+        default=400,
         metadata={
             "help": "Evaluation will be performed every eval_interval steps"
         },
