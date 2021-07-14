@@ -20,8 +20,9 @@ Script adapted from run_summarization_flax.py
 # You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
 
 import os
-# set a common huggingface cache folder (used with datasets and transformers)
-os.environ['HF_HOME'] = '/data/huggingface/'   # required before importing transformers & datasets
+# set a common huggingface cache folder (used with datasets and transformers) and wandb cache folder (used with artifacts)
+os.environ['HF_HOME'] = '/data/huggingface/'     # required before importing transformers & datasets
+os.environ['WANDB_CACHE_DIR'] = '/data/wandb/'   # required before importing wandb
 
 import logging as pylogging    # To avoid collision with transformers.utils.logging
 import sys
