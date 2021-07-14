@@ -162,6 +162,9 @@ class DataTrainingArguments:
             "than this will be truncated, sequences shorter will be padded."
         },
     )
+    no_decay: bool = field(
+        default=False, metadata={"help": "Whether to use decay in the learning rate scheduler."}
+    )
     max_target_length: Optional[int] = field(
         default=OUTPUT_LENGTH,
         metadata={
@@ -338,12 +341,14 @@ def write_metric(summary_writer, train_metrics, eval_metrics, train_time, step):
 
 
 def create_learning_rate_fn(
-    train_ds_size: int, train_batch_size: int, num_train_epochs: int, num_warmup_steps: int, learning_rate: float
+    train_ds_size: int, train_batch_size: int, num_train_epochs: int, num_warmup_steps: int, learning_rate: float, no_decay: bool
 ) -> Callable[[int], jnp.array]:
     """Returns a linear warmup, linear_decay learning rate function."""
     steps_per_epoch = train_ds_size // train_batch_size
     num_train_steps = steps_per_epoch * num_train_epochs
     warmup_fn = optax.linear_schedule(init_value=0.0, end_value=learning_rate, transition_steps=num_warmup_steps)
+    if no_decay:
+        return warmup_fn
     decay_fn = optax.linear_schedule(
         init_value=learning_rate, end_value=0, transition_steps=num_train_steps - num_warmup_steps
     )
@@ -616,6 +621,7 @@ def main():
         training_args.num_train_epochs,
         training_args.warmup_steps,
         training_args.learning_rate,
+        data_args.no_decay
     )
 
     # We use Optax's "masking" functionality to not apply weight decay
