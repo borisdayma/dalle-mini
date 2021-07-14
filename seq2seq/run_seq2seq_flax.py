@@ -802,7 +802,7 @@ def main():
             if global_step % training_args.eval_steps == 0:
                 run_evaluation()
             
-            if global_step % training_args.save_model_steps == 0:
+            if global_step % data_args.save_model_steps == 0:
                 run_save_model(global_step, epoch)
         
         # log final train metrics
