@@ -225,6 +225,12 @@ class DataTrainingArguments:
             "value if set."
         },
     )
+    eval_interval: Optional[int] = field(
+        default=40,
+        metadata={
+            "help": "Evaluation will be performed every eval_interval steps"
+        },
+    )
     log_model: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
@@ -738,37 +744,8 @@ def main():
     train_time = 0
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
     global_step = 0
-    for epoch in epochs:
-        # ======================== Training ================================
-        train_start = time.time()
 
-        # Create sampling rng
-        rng, input_rng = jax.random.split(rng)
-        train_metrics = []
-
-        # Generate an epoch by shuffling sampling indices from the train dataset
-        train_loader = data_loader(input_rng, train_dataset, train_batch_size, shuffle=True)
-        steps_per_epoch = len(train_dataset) // train_batch_size
-        # train
-        for step in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
-            global_step +=1
-            batch = next(train_loader)
-            state, train_metric = p_train_step(state, batch)
-            train_metrics.append(train_metric)
-
-            if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
-                for k, v in unreplicate(train_metric).items():
-                    wandb.log({"train/step": global_step})
-                    wandb.log({f"train/{k}": jax.device_get(v)})
-
-        train_time += time.time() - train_start
-
-        train_metric = unreplicate(train_metric)
-
-        epochs.write(
-            f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
-        )
-
+    def run_evaluation():
         # ======================== Evaluating ==============================
         eval_metrics = []
         if training_args.do_eval:
@@ -795,17 +772,60 @@ def main():
             eval_metrics = get_metrics(eval_metrics)
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
+            if jax.process_index() == 0:
+                for k, v in eval_metrics.items():
+                    wandb.log({"eval/step": global_step})
+                    wandb.log({f"eval/{k}": jax.device_get(v)})
+
             # compute ROUGE metrics
             rouge_desc = ""
-    #        if data_args.predict_with_generate:
-    #            rouge_metrics = compute_metrics(eval_preds, eval_labels)
-    #            eval_metrics.update(rouge_metrics)
-    #            rouge_desc = " ".join([f"Eval {key}: {value} |" for key, value in rouge_metrics.items()])
+        #    if data_args.predict_with_generate:
+        #        rouge_metrics = compute_metrics(eval_preds, eval_labels)
+        #        eval_metrics.update(rouge_metrics)
+        #        rouge_desc = " ".join([f"Eval {key}: {value} |" for key, value in rouge_metrics.items()])
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | {rouge_desc})"
             epochs.write(desc)
             epochs.desc = desc
+            return eval_metrics
+
+    for epoch in epochs:
+        # ======================== Training ================================
+        train_start = time.time()
+
+        # Create sampling rng
+        rng, input_rng = jax.random.split(rng)
+        train_metrics = []
+
+        # Generate an epoch by shuffling sampling indices from the train dataset
+        train_loader = data_loader(input_rng, train_dataset, train_batch_size, shuffle=True)
+        steps_per_epoch = len(train_dataset) // train_batch_size
+        # train
+        for step in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
+            global_step +=1
+            batch = next(train_loader)
+            state, train_metric = p_train_step(state, batch)
+            train_metrics.append(train_metric)
+
+            if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
+                print("logging train loss")
+                for k, v in unreplicate(train_metric).items():
+                    wandb.log({"train/step": global_step})
+                    wandb.log({f"train/{k}": jax.device_get(v)})
+
+            if global_step % data_args.eval_interval == 0 and jax.process_index() == 0:
+                run_evaluation()
+
+        train_time += time.time() - train_start
+
+        train_metric = unreplicate(train_metric)
+
+        epochs.write(
+            f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
+        )
+
+        eval_metrics = run_evaluation()
 
         # Save metrics
         if has_tensorboard and jax.process_index() == 0:
