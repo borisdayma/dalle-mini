@@ -479,7 +479,7 @@ def main():
         # set up targets
         # Note: labels correspond to our target indices
         # decoder input ids are the same but shifted to the right with bos at the beginning (and without last token)
-        labels = [[eval(indices) for indices in examples['encoding']]
+        labels = [[eval(indices) for indices in examples['encoding']]]
         labels = np.asarray(labels)
 
         # We need the labels, in addition to the decoder_input_ids, for the compute_loss function
