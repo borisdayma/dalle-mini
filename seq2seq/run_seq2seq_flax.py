@@ -228,12 +228,6 @@ class DataTrainingArguments:
             "value if set."
         },
     )
-    eval_steps: Optional[int] = field(
-        default=400,
-        metadata={
-            "help": "Evaluation will be performed every eval_steps"
-        },
-    )
     log_model: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
