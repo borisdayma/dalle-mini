@@ -836,7 +836,7 @@ def main():
                 wandb.run.log_artifact(artifact)
 
             # save to the hub
-            if training_args.push_to_hub
+            if training_args.push_to_hub:
                 model.save_pretrained(
                     training_args.output_dir,
                     params=params,
