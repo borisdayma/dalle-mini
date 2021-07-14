@@ -37,6 +37,7 @@ command:
   - 56
   - "--preprocessing_num_workers"
   - 80
+  - "--no_decay"
   - "--do_train"
   - "--do_eval"
   - ${args}
