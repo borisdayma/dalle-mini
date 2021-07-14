@@ -282,8 +282,6 @@ class CustomFlaxBartModule(FlaxBartModule):
         # the decoder has a different config
         decoder_config = BartConfig(self.config.to_dict())
         decoder_config.max_position_embeddings = OUTPUT_LENGTH
-        decoder_config.min_length = OUTPUT_LENGTH
-        decoder_config.max_length = OUTPUT_LENGTH
         decoder_config.vocab_size = OUTPUT_VOCAB_SIZE
         self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
 
@@ -440,8 +438,8 @@ def main():
     config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
     config.forced_bos_token_id = None  # we don't need this token
     config.forced_eos_token_id = None  # we don't need this token
-    #config.min_length = data_args.max_target_length        # Set only in decoder?
-    #config.max_length = data_args.max_target_length        # Set only in decoder?
+    config.min_length = data_args.max_target_length
+    config.max_length = data_args.max_target_length
 
     print(f"TPUs: {jax.device_count()}")
     assert jax.device_count() == 8, "TPUs in use, please check running processes"
