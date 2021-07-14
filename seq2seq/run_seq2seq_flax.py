@@ -340,7 +340,7 @@ def wandb_log(metrics, step=None, prefix=None):
     if jax.process_index() == 0:
         log_metrics = {f'{prefix}/k' if prefix is not None else k: jax.device_get(v) for k,v in metrics.items()}
         if step is not None:
-            log_metrics = {**metrics, 'train/step': step}
+            log_metrics = {**log_metrics, 'train/step': step}
         wandb.log(log_metrics)
 
 
@@ -791,10 +791,13 @@ def main():
 
             if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
                 # log metrics
-                wandb_log(unreplicate(train_metric), step=global_step, prefix='tran')
+                wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
 
             if global_step % training_args.eval_steps == 0:
                 run_evaluation()
+        
+        # log final train metrics
+        wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
 
         train_time += time.time() - train_start
         train_metric = unreplicate(train_metric)
