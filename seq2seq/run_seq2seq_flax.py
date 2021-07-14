@@ -84,7 +84,7 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
 OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
 BOS_TOKEN_ID = 16384
-BASE_MODEL = 'facebook/bart-large'
+BASE_MODEL = 'facebook/bart-large-cnn'  # we currently have issues with bart-large
 
 
 @dataclass
