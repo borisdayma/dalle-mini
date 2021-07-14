@@ -12,5 +12,5 @@ python run_seq2seq_flax.py \
 	--do_eval \
 	--adafactor \
 	--num_train_epochs 1 \
-	--max_train_samples 200000 \
+	--max_train_samples 2000 \
 	--learning_rate 0.003
