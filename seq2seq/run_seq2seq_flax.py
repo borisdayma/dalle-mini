@@ -231,6 +231,12 @@ class DataTrainingArguments:
     log_model: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
+    save_model_steps: Optional[int] = field(
+        default=3000,   # about once every hour in our experiments
+        metadata={
+            "help": "For logging the model more frequently. Used only when `log_model` is set."
+        },
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -340,7 +346,7 @@ def wandb_log(metrics, step=None, prefix=None):
     if jax.process_index() == 0:
         log_metrics = {f'{prefix}/{k}' if prefix is not None else k: jax.device_get(v) for k,v in metrics.items()}
         if step is not None:
-            log_metrics = {**log_metrics, 'train/step': step}
+            log_metrics['train/step'] = step
         wandb.log(log_metrics)
 
 
@@ -795,6 +801,9 @@ def main():
 
             if global_step % training_args.eval_steps == 0:
                 run_evaluation()
+            
+            if global_step % training_args.save_model_steps == 0:
+                run_save_model(global_step, epoch)
         
         # log final train metrics
         wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
@@ -809,6 +818,9 @@ def main():
         eval_metrics = run_evaluation()
 
         # save checkpoint after each epoch and push checkpoint to the hub
+        run_save_model(global_step, epoch, eval_metrics)
+
+    def run_save_model(step, epoch, eval_metrics=None):
         if jax.process_index() == 0:
             params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
 
@@ -821,6 +833,8 @@ def main():
             # save to W&B
             if data_args.log_model:
                 metadata = {'epoch': epoch+1, 'eval/loss': eval_metrics['loss']}
+                if eval_metrics is not None:
+                    metadata['eval/loss'] = eval_metrics['loss']
                 artifact = wandb.Artifact(
                     name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
                 )
