@@ -84,7 +84,7 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
 OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
 BOS_TOKEN_ID = 16384
-BASE_MODEL = 'facebook/bart-large'
+BASE_MODEL = 'facebook/bart-large-cnn'  # we currently have issues with bart-large
 
 
 @dataclass
@@ -231,6 +231,12 @@ class DataTrainingArguments:
     log_model: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
+    save_model_steps: Optional[int] = field(
+        default=3000,   # about once every hour in our experiments
+        metadata={
+            "help": "For logging the model more frequently. Used only when `log_model` is set."
+        },
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -340,7 +346,7 @@ def wandb_log(metrics, step=None, prefix=None):
     if jax.process_index() == 0:
         log_metrics = {f'{prefix}/{k}' if prefix is not None else k: jax.device_get(v) for k,v in metrics.items()}
         if step is not None:
-            log_metrics = {**log_metrics, 'train/step': step}
+            log_metrics['train/step'] = step
         wandb.log(log_metrics)
 
 
@@ -773,6 +779,38 @@ def main():
 
             return eval_metrics
 
+    def run_save_model(step, epoch, eval_metrics=None):
+        if jax.process_index() == 0:
+            params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
+
+            # save model locally
+            model.save_pretrained(
+                training_args.output_dir,
+                params=params,
+            )
+
+            # save to W&B
+            if data_args.log_model:
+                metadata = {'step': step, 'epoch': epoch}
+                if eval_metrics is not None:
+                    metadata['eval/loss'] = eval_metrics['loss']
+                artifact = wandb.Artifact(
+                    name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
+                )
+                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
+                wandb.run.log_artifact(artifact)
+
+            # save to the hub
+            if training_args.push_to_hub:
+                model.save_pretrained(
+                    training_args.output_dir,
+                    params=params,
+                    push_to_hub=training_args.push_to_hub,
+                    commit_message=f"Saving weights and logs of epoch {epoch+1}",
+                    temp_dir=True  # avoid issues with being in a repository
+                )
+                
     for epoch in epochs:
         # ======================== Training ================================
         train_start = time.time()
@@ -795,6 +833,9 @@ def main():
 
             if global_step % training_args.eval_steps == 0:
                 run_evaluation()
+            
+            if global_step % data_args.save_model_steps == 0:
+                run_save_model(global_step, epoch)
         
         # log final train metrics
         wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
@@ -809,34 +850,8 @@ def main():
         eval_metrics = run_evaluation()
 
         # save checkpoint after each epoch and push checkpoint to the hub
-        if jax.process_index() == 0:
-            params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
+        run_save_model(global_step, epoch, eval_metrics)
 
-            # save model locally
-            model.save_pretrained(
-                training_args.output_dir,
-                params=params,
-            )
-
-            # save to W&B
-            if data_args.log_model:
-                metadata = {'epoch': epoch+1, 'eval/loss': eval_metrics['loss']}
-                artifact = wandb.Artifact(
-                    name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
-                )
-                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
-                wandb.run.log_artifact(artifact)
-
-            # save to the hub
-            if training_args.push_to_hub:
-                model.save_pretrained(
-                    training_args.output_dir,
-                    params=params,
-                    push_to_hub=training_args.push_to_hub,
-                    commit_message=f"Saving weights and logs of epoch {epoch+1}",
-                    temp_dir=True  # avoid issues with being in a repository
-                )
 
     # ======================== Prediction loop ==============================
     if training_args.do_predict:
