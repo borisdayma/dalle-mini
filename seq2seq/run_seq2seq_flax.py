@@ -462,16 +462,19 @@ def main():
     # Temporarily set max_target_length for training.
     max_target_length = data_args.max_target_length
 
-    # In Flax, for seq2seq models we need to pass `decoder_input_ids`
-    # as the Flax models don't accept `labels`, we need to prepare the decoder_input_ids here
-    # for that dynamically import the `shift_tokens_right` function from the model file
-    model_module = __import__(model.__module__, fromlist=["shift_tokens_tight"])
-    shift_tokens_right_fn = getattr(model_module, "shift_tokens_right")
+    def shift_tokens_right(input_ids: np.array, decoder_start_token_id: int):
+        """
+        Shift input ids one token to the right.
+        """
+        shifted_input_ids = np.zeros(input_ids.shape)
+        shifted_input_ids[:, 1:] = input_ids[:, :-1]
+        shifted_input_ids[:, 0] = decoder_start_token_id
+        return shifted_input_ids
 
-    # Setting padding="max_length" as we need fixed length inputs for jitted functions
     def preprocess_function(examples):
         inputs = examples[text_column]
         inputs = [prefix + inp for inp in inputs]
+	# Setting padding="max_length" as we need fixed length inputs for jitted functions
         model_inputs = tokenizer(
             inputs, max_length=data_args.max_source_length, padding="max_length", truncation=True, return_tensors="np"
         )
@@ -486,11 +489,8 @@ def main():
         model_inputs["labels"] = labels
 
         # In our case, this prepends the bos token and removes the last one
-        decoder_input_ids = shift_tokens_right_fn(
-            jnp.array(labels), config.pad_token_id, config.decoder_start_token_id
-        )
-
-        model_inputs["decoder_input_ids"] = np.asarray(decoder_input_ids)
+        decoder_input_ids = shift_tokens_right(labels, config.decoder_start_token_id)
+        model_inputs["decoder_input_ids"] = decoder_input_ids
 
         return model_inputs
 
