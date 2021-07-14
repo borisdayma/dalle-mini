@@ -6,11 +6,11 @@ python run_seq2seq_flax.py \
 	--per_device_train_batch_size 56 \
 	--per_device_eval_batch_size 56 \
 	--preprocessing_num_workers 80 \
-	--warmup_steps 1000 \
+	--warmup_steps 125 \
 	--gradient_accumulation_steps 8 \
 	--do_train \
 	--do_eval \
 	--adafactor \
 	--num_train_epochs 1 \
-	--max_train_samples 2000 \
+	--max_train_samples 20000 \
 	--learning_rate 0.003
