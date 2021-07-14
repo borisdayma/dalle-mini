@@ -673,12 +673,12 @@ def main():
             grads = jax.tree_map(lambda x: x / training_args.gradient_accumulation_steps, grad_accum)
             grads = jax.lax.pmean(grads, "batch")
             new_state = state.apply_gradients(
-                grads=grads, grad_accum=jax.tree_map(jnp.zeros_like, grads), optimizer_step=state.optimizer_step
+                grads=grads, grad_accum=jax.tree_map(jnp.zeros_like, grads), optimizer_step=state.optimizer_step + 1
             )
             return new_state
 
         new_state = jax.lax.cond(
-            state.step % training_args.gradient_accumulation_steps == 0,
+            (state.step + 1) % training_args.gradient_accumulation_steps == 0,
             lambda _: update_fn(),
             lambda _: state.replace(grad_accum=grad_accum, step=state.step + 1),
             None,
