@@ -199,7 +199,7 @@ class DataTrainingArguments:
         },
     )
     preprocessing_num_workers: Optional[int] = field(
-        default=None,
+        default=80,     # ensure we have the same datasets cached data and avoid using too much space
         metadata={"help": "The number of processes to use for the preprocessing."},
     )
     source_prefix: Optional[str] = field(
@@ -224,6 +224,9 @@ class DataTrainingArguments:
             "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
             "value if set."
         },
+    )
+    log_model: bool = field(
+        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
 
     def __post_init__(self):
@@ -812,6 +815,36 @@ def main():
             cur_step = epoch * (len(train_dataset) // train_batch_size)
             write_metric(summary_writer, train_metrics, eval_metrics, train_time, cur_step)
 
+        # save checkpoint after each epoch and push checkpoint to the hub
+        if jax.process_index() == 0:
+            params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
+
+            # save model locally
+            model.save_pretrained(
+                training_args.output_dir,
+                params=params,
+            )
+
+            # save to W&B
+            if data_args.log_model:
+                metadata = {'epoch': epoch+1, 'eval/loss': eval_metrics['loss']}
+                artifact = wandb.Artifact(
+                    name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
+                )
+                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
+                wandb.run.log_artifact(artifact)
+
+            # save to the hub
+            if training_args.push_to_hub:
+                model.save_pretrained(
+                    training_args.output_dir,
+                    params=params,
+                    push_to_hub=training_args.push_to_hub,
+                    commit_message=f"Saving weights and logs of epoch {epoch+1}",
+                    temp_dir=True  # avoid issues with being in a repository
+                )
+
     # ======================== Prediction loop ==============================
     if training_args.do_predict:
         logger.info("*** Predict ***")
@@ -850,16 +883,6 @@ def main():
         # Print metrics
         desc = f"Predict Loss: {pred_metrics['loss']} | {rouge_desc})"
         logger.info(desc)
-
-        # save checkpoint after each epoch and push checkpoint to the hub
-        if jax.process_index() == 0:
-            params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
-            model.save_pretrained(
-                training_args.output_dir,
-                params=params,
-                push_to_hub=training_args.push_to_hub,
-                commit_message=f"Saving weights and logs of epoch {epoch+1}",
-            )
 
 
 if __name__ == "__main__":
