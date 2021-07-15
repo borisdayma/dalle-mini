@@ -44,6 +44,7 @@ import optax
 import transformers
 from filelock import FileLock
 from flax import jax_utils, traverse_util
+from flax.serialization import from_bytes, to_bytes
 import flax.linen as nn
 from flax.jax_utils import unreplicate
 from flax.training import train_state
@@ -432,12 +433,13 @@ def main():
     # Set up our new model config
     config = BartConfig.from_pretrained(model_args.model_name_or_path)
     config.tie_word_embeddings = False
-    config.decoder_start_token_id = BOS_TOKEN_ID
-    config.bos_token_id = BOS_TOKEN_ID  # should not be used
+    config.decoder_start_token_id = BOS_TOKEN_ID  # for first token
+    config.bos_token_id = BOS_TOKEN_ID  # should not be used (due to forced_bos_token_id)
     config.pos_token_id = BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
     config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
     config.forced_bos_token_id = None  # we don't need this token
     config.forced_eos_token_id = None  # we don't need this token
+    config.force_bos_token_to_be_generated = False  # otherwise it sets bos_token_id at loading
     config.min_length = data_args.max_target_length
     config.max_length = data_args.max_target_length
 
@@ -777,10 +779,17 @@ def main():
 
             return eval_metrics
 
-    def run_save_model(step, epoch, eval_metrics=None):
+    def run_save_model(state, step, epoch, eval_metrics=None):
         if jax.process_index() == 0:
             params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
 
+            # save state
+            state = unreplicate(state)
+            with (Path(training_args.output_dir) /  'opt_state.msgpack').open('wb') as f:
+                f.write(to_bytes(state.opt_state))
+            with (Path(training_args.output_dir) /  'training_state.json').open('wb') as f:
+                json.dump({'step': state.step.item()}, f)
+            
             # save model locally
             model.save_pretrained(
                 training_args.output_dir,
@@ -797,6 +806,8 @@ def main():
                 )
                 artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'opt_state.msgpack'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'training_state.json'))
                 wandb.run.log_artifact(artifact)
 
             # save to the hub
@@ -833,7 +844,7 @@ def main():
                 run_evaluation()
             
             if global_step % data_args.save_model_steps == 0:
-                run_save_model(global_step, epoch)
+                run_save_model(state, global_step, epoch)
         
         # log final train metrics
         wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
@@ -848,7 +859,7 @@ def main():
         eval_metrics = run_evaluation()
 
         # save checkpoint after each epoch and push checkpoint to the hub
-        run_save_model(global_step, epoch, eval_metrics)
+        run_save_model(state, global_step, epoch, eval_metrics)
 
 
     # ======================== Prediction loop ==============================
