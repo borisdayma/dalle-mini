@@ -783,6 +783,12 @@ def main():
         if jax.process_index() == 0:
             params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
 
+            # save model locally
+            model.save_pretrained(
+                training_args.output_dir,
+                params=params,
+            )
+
             # save state
             state = unreplicate(state)
             with (Path(training_args.output_dir) /  'opt_state.msgpack').open('wb') as f:
@@ -790,12 +796,6 @@ def main():
             with (Path(training_args.output_dir) /  'training_state.json').open('wb') as f:
                 json.dump({'step': state.step.item()}, f)
             
-            # save model locally
-            model.save_pretrained(
-                training_args.output_dir,
-                params=params,
-            )
-
             # save to W&B
             if data_args.log_model:
                 metadata = {'step': step, 'epoch': epoch}
