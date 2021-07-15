@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Callable, Optional
+import json
 
 import datasets
 import nltk  # Here to have a nice missing dependency error message early on
