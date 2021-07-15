@@ -435,7 +435,7 @@ def main():
     )
 
     if model_args.from_checkpoint is not None:
-        artifact = wandb.run.use_artifact('wandb/hf-flax-dalle-mini/model-3h3x3565:latest')
+        artifact = wandb.run.use_artifact(model_args.from_checkpoint)
         artifact_dir = artifact.download()
         model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
 
