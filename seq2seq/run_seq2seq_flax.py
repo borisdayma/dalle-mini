@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Callable, Optional
+import json
 
 import datasets
 import nltk  # Here to have a nice missing dependency error message early on
@@ -44,6 +45,7 @@ import optax
 import transformers
 from filelock import FileLock
 from flax import jax_utils, traverse_util
+from flax.serialization import from_bytes, to_bytes
 import flax.linen as nn
 from flax.jax_utils import unreplicate
 from flax.training import train_state
@@ -282,8 +284,6 @@ class CustomFlaxBartModule(FlaxBartModule):
         # the decoder has a different config
         decoder_config = BartConfig(self.config.to_dict())
         decoder_config.max_position_embeddings = OUTPUT_LENGTH
-        decoder_config.min_length = OUTPUT_LENGTH
-        decoder_config.max_length = OUTPUT_LENGTH
         decoder_config.vocab_size = OUTPUT_VOCAB_SIZE
         self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
 
@@ -363,7 +363,7 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    logger.warning(f"eval_steps has been manually hardcoded")  # TODO: remove it later, convenient for now
+    logger.warning(f"WARNING: eval_steps has been manually hardcoded")  # TODO: remove it later, convenient for now
     training_args.eval_steps = 400
 
     if (
@@ -412,7 +412,7 @@ def main():
     # (the dataset will be downloaded automatically from the datasets Hub).
     #
     data_files = {}
-    logger.warning(f"Datasets path have been manually hardcoded")  # TODO: remove it later, convenient for now
+    logger.warning(f"WARNING: Datasets path have been manually hardcoded")  # TODO: remove it later, convenient for now
     if data_args.train_file is not None:
         data_files["train"] = ["/data/CC3M/training-encoded.tsv", "/data/CC12M/encoded-train.tsv"]
     if data_args.validation_file is not None:
@@ -434,14 +434,15 @@ def main():
     # Set up our new model config
     config = BartConfig.from_pretrained(model_args.model_name_or_path)
     config.tie_word_embeddings = False
-    config.decoder_start_token_id = BOS_TOKEN_ID
-    config.bos_token_id = BOS_TOKEN_ID  # should not be used
+    config.decoder_start_token_id = BOS_TOKEN_ID  # for first token
+    config.bos_token_id = BOS_TOKEN_ID  # should not be used (due to forced_bos_token_id)
     config.pos_token_id = BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
     config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
     config.forced_bos_token_id = None  # we don't need this token
     config.forced_eos_token_id = None  # we don't need this token
-    #config.min_length = data_args.max_target_length        # Set only in decoder?
-    #config.max_length = data_args.max_target_length        # Set only in decoder?
+    config.force_bos_token_to_be_generated = False  # otherwise it sets bos_token_id at loading
+    config.min_length = data_args.max_target_length
+    config.max_length = data_args.max_target_length
 
     print(f"TPUs: {jax.device_count()}")
     assert jax.device_count() == 8, "TPUs in use, please check running processes"
@@ -779,7 +780,7 @@ def main():
 
             return eval_metrics
 
-    def run_save_model(step, epoch, eval_metrics=None):
+    def run_save_model(state, step, epoch, eval_metrics=None):
         if jax.process_index() == 0:
             params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
 
@@ -789,6 +790,13 @@ def main():
                 params=params,
             )
 
+            # save state
+            state = unreplicate(state)
+            with (Path(training_args.output_dir) /  'opt_state.msgpack').open('wb') as f:
+                f.write(to_bytes(state.opt_state))
+            with (Path(training_args.output_dir) /  'training_state.json').open('w') as f:
+                json.dump({'step': state.step.item()}, f)
+            
             # save to W&B
             if data_args.log_model:
                 metadata = {'step': step, 'epoch': epoch}
@@ -799,6 +807,8 @@ def main():
                 )
                 artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'opt_state.msgpack'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'training_state.json'))
                 wandb.run.log_artifact(artifact)
 
             # save to the hub
@@ -835,7 +845,7 @@ def main():
                 run_evaluation()
             
             if global_step % data_args.save_model_steps == 0:
-                run_save_model(global_step, epoch)
+                run_save_model(state, global_step, epoch)
         
         # log final train metrics
         wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
@@ -850,7 +860,7 @@ def main():
         eval_metrics = run_evaluation()
 
         # save checkpoint after each epoch and push checkpoint to the hub
-        run_save_model(global_step, epoch, eval_metrics)
+        run_save_model(state, global_step, epoch, eval_metrics)
 
 
     # ======================== Prediction loop ==============================
