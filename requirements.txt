@@ -7,3 +7,6 @@ jax[tpu]>=0.2.16
 -e git+https://github.com/huggingface/datasets.git@master#egg=datasets
 flax
 jupyter
+
+# Inference
+ftfy
