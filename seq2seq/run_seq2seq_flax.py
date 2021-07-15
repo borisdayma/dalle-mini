@@ -363,7 +363,7 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    logger.warning(f"eval_steps has been manually hardcoded")  # TODO: remove it later, convenient for now
+    logger.warning(f"WARNING: eval_steps has been manually hardcoded")  # TODO: remove it later, convenient for now
     training_args.eval_steps = 400
 
     if (
@@ -412,7 +412,7 @@ def main():
     # (the dataset will be downloaded automatically from the datasets Hub).
     #
     data_files = {}
-    logger.warning(f"Datasets path have been manually hardcoded")  # TODO: remove it later, convenient for now
+    logger.warning(f"WARNING: Datasets path have been manually hardcoded")  # TODO: remove it later, convenient for now
     if data_args.train_file is not None:
         data_files["train"] = ["/data/CC3M/training-encoded.tsv", "/data/CC12M/encoded-train.tsv"]
     if data_args.validation_file is not None:
