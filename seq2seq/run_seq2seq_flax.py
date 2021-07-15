@@ -811,13 +811,16 @@ def main():
                 params=params,
             )
 
+            # save tokenizer
+            tokenizer.save_pretrained(training_args.output_dir)
+
             # save state
             state = unreplicate(state)
             with (Path(training_args.output_dir) /  'opt_state.msgpack').open('wb') as f:
                 f.write(to_bytes(state.opt_state))
             with (Path(training_args.output_dir) /  'training_state.json').open('w') as f:
                 json.dump({'step': state.step.item()}, f)
-            
+
             # save to W&B
             if data_args.log_model:
                 metadata = {'step': step, 'epoch': epoch}
@@ -827,6 +830,11 @@ def main():
                     name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
                 )
                 artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'tokenizer_config.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'special_tokens_map.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'vocab.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'added_tokens.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'merges.txt'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'opt_state.msgpack'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'training_state.json'))
