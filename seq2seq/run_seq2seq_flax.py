@@ -125,6 +125,12 @@ class ModelArguments:
             "help": "Floating-point format in which the model weights should be initialized and trained. Choose one of `[float32, float16, bfloat16]`."
         },
     )
+    from_checkpoint: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Loads a pretrained wandb checkpoint. Use artifact reference."
+        },
+    )
 
 
 @dataclass
@@ -424,36 +430,51 @@ def main():
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
     # Load pretrained model and tokenizer
-    base_model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
-        model_args.model_name_or_path, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
-    )
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
     )
 
-    # Set up our new model config
-    config = BartConfig.from_pretrained(model_args.model_name_or_path)
-    config.tie_word_embeddings = False
-    config.decoder_start_token_id = BOS_TOKEN_ID  # for first token
-    config.bos_token_id = BOS_TOKEN_ID  # should not be used (due to forced_bos_token_id)
-    config.pos_token_id = BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
-    config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
-    config.forced_bos_token_id = None  # we don't need this token
-    config.forced_eos_token_id = None  # we don't need this token
-    config.force_bos_token_to_be_generated = False  # otherwise it sets bos_token_id at loading
-    config.min_length = data_args.max_target_length
-    config.max_length = data_args.max_target_length
+    if model_args.from_checkpoint is not None:
+        artifact = wandb.run.use_artifact(model_args.from_checkpoint)
+        artifact_dir = artifact.download()
+        model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
+
+        # some models will try to change bos (because of force_bos_token_to_be_generated)
+        # we ensure bos and eos are not forced
+        model.config.force_bos_token_to_be_generated = False
+        model.config.forced_bos_token_id = None
+        model.config.forced_eos_token_id = None
+
+        # used in the preprocessing function
+        config = model.config
+
+    else:
+        base_model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
+            model_args.model_name_or_path, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
+        )
+        # Set up our new model config
+        config = BartConfig.from_pretrained(model_args.model_name_or_path)
+        config.tie_word_embeddings = False
+        config.decoder_start_token_id = BOS_TOKEN_ID  # for first token
+        config.bos_token_id = BOS_TOKEN_ID  # should not be used (due to forced_bos_token_id)
+        config.pos_token_id = BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
+        config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
+        config.forced_bos_token_id = None  # we don't need this token
+        config.forced_eos_token_id = None  # we don't need this token
+        config.force_bos_token_to_be_generated = False  # otherwise it sets bos_token_id at loading
+        config.min_length = data_args.max_target_length
+        config.max_length = data_args.max_target_length
+
+        # Create a custom model and initialize it randomly
+        model = CustomFlaxBartForConditionalGeneration(config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype))
+
+        # Use pre-trained weights for encoder
+        model.params['model']['encoder'] = base_model.params['model']['encoder']
+        model.params['model']['shared'] = base_model.params['model']['shared']
+        del base_model
 
     print(f"TPUs: {jax.device_count()}")
     assert jax.device_count() == 8, "TPUs in use, please check running processes"
-
-    # Create a custom model and initialize it randomly
-    model = CustomFlaxBartForConditionalGeneration(config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype))
-
-    # Use pre-trained weights for encoder
-    model.params['model']['encoder'] = base_model.params['model']['encoder']
-    model.params['model']['shared'] = base_model.params['model']['shared']
-    del base_model
 
     prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
 
