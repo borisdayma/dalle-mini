@@ -794,7 +794,7 @@ def main():
             state = unreplicate(state)
             with (Path(training_args.output_dir) /  'opt_state.msgpack').open('wb') as f:
                 f.write(to_bytes(state.opt_state))
-            with (Path(training_args.output_dir) /  'training_state.json').open('wb') as f:
+            with (Path(training_args.output_dir) /  'training_state.json').open('w') as f:
                 json.dump({'step': state.step.item()}, f)
             
             # save to W&B
