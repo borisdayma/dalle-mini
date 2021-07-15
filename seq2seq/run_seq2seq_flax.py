@@ -445,6 +445,9 @@ def main():
         model.config.forced_bos_token_id = None
         model.config.forced_eos_token_id = None
 
+        # used in the preprocessing function
+        config = model.config
+
     else:
         base_model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
             model_args.model_name_or_path, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
