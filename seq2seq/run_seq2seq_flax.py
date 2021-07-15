@@ -414,7 +414,7 @@ def main():
     data_files = {}
     logger.warning(f"WARNING: Datasets path have been manually hardcoded")  # TODO: remove it later, convenient for now
     if data_args.train_file is not None:
-        data_files["train"] = ["/data/CC3M/training-encoded.tsv", "/data/CC12M/encoded-train.tsv"]
+        data_files["train"] = ["/data/CC3M/training-encoded.tsv", "/data/CC12M/encoded-train.tsv", "/data/YFCC/metadata_encoded.tsv"]
     if data_args.validation_file is not None:
         data_files["validation"] = ["/data/CC3M/validation-encoded.tsv"]
     if data_args.test_file is not None:
