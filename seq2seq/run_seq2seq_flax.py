@@ -703,7 +703,7 @@ def main():
     )
     if model_args.from_checkpoint is not None:
         # restore optimizer state, step and optimizer_step
-        restore_state(state)
+        restore_state(state, artifact_dir)
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
