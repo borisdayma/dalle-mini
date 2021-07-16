@@ -271,6 +271,10 @@ class TrainState(train_state.TrainState):
 
 class CustomFlaxBartModule(FlaxBartModule):
     def setup(self):
+        # check config is valid, otherwise set default values
+        self.config.vocab_size_output = getattr(self.config, 'vocab_size_output', OUTPUT_VOCAB_SIZE)
+        self.config.max_position_embeddings_decoder = getattr(self.config, 'vocab_size_output', OUTPUT_LENGTH)
+
         # we keep shared to easily load pre-trained weights
         self.shared = nn.Embed(
             self.config.vocab_size,
@@ -280,7 +284,7 @@ class CustomFlaxBartModule(FlaxBartModule):
         )
         # a separate embedding is used for the decoder
         self.decoder_embed = nn.Embed(
-            OUTPUT_VOCAB_SIZE,
+            self.config.vocab_size_output,
             self.config.d_model,
             embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
             dtype=self.dtype,
@@ -289,20 +293,23 @@ class CustomFlaxBartModule(FlaxBartModule):
 
         # the decoder has a different config
         decoder_config = BartConfig(self.config.to_dict())
-        decoder_config.max_position_embeddings = OUTPUT_LENGTH
-        decoder_config.vocab_size = OUTPUT_VOCAB_SIZE
+        decoder_config.max_position_embeddings = self.config.max_position_embeddings_decoder
+        decoder_config.vocab_size = self.config.vocab_size_output
         self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
 
 class CustomFlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
     def setup(self):
+        # check config is valid, otherwise set default values
+        self.config.vocab_size_output = getattr(self.config, 'vocab_size_output', OUTPUT_VOCAB_SIZE)
+
         self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
         self.lm_head = nn.Dense(
-            OUTPUT_VOCAB_SIZE,
+            self.config.vocab_size_output,
             use_bias=False,
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
         )
-        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, OUTPUT_VOCAB_SIZE))
+        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, self.config.vocab_size_output))
 
 class CustomFlaxBartForConditionalGeneration(FlaxBartForConditionalGeneration):
     module_class = CustomFlaxBartForConditionalGenerationModule
