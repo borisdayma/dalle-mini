@@ -436,11 +436,24 @@ def main():
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
-    # Load pretrained model and tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
-    )
+    # Set up items to load or create
+    tokenizer = None
+    artifact_dir = None
 
+    def restore_state(state, artifact_dir):
+        # restore optimizer state
+        if (Path(artifact_dir) / 'opt_state.msgpack').exists():
+            with (Path(artifact_dir) /  'opt_state.msgpack').open('rb') as f:
+                opt_state = from_bytes(state.opt_state, f.read())
+        
+        # restore steps
+        if (Path(artifact_dir) / 'training_state.json').exists():
+            with (Path(artifact_dir) /  'opt_state.msgpack').open('r') as f:
+                training_state = json.load(f)
+            step = training_state['step']
+            optimizer_step = step // training_args.gradient_accumulation_steps
+            state.replace(step=step, optimizer_step=optimizer_step)
+    
     if model_args.from_checkpoint is not None:
         artifact = wandb.run.use_artifact(model_args.from_checkpoint)
         artifact_dir = artifact.download()
@@ -454,6 +467,12 @@ def main():
 
         # used in the preprocessing function
         config = model.config
+
+        # load tokenizer if present
+        if (Path(artifact_dir) / 'tokenizer_config.json').exists():
+            tokenizer = AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
+        )
 
     else:
         base_model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
@@ -479,6 +498,12 @@ def main():
         model.params['model']['encoder'] = base_model.params['model']['encoder']
         model.params['model']['shared'] = base_model.params['model']['shared']
         del base_model
+
+    # Load tokenizer if it has not been set
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
+        )
 
     print(f"TPUs: {jax.device_count()}")
     assert jax.device_count() == 8, "TPUs in use, please check running processes"
@@ -676,6 +701,9 @@ def main():
         grad_accum=jax.tree_map(jnp.zeros_like, model.params),
         optimizer_step=0,
     )
+    if model_args.from_checkpoint is not None:
+        # restore optimizer state, step and optimizer_step
+        restore_state(state)
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
