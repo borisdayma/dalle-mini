@@ -273,7 +273,7 @@ class CustomFlaxBartModule(FlaxBartModule):
     def setup(self):
         # check config is valid, otherwise set default values
         self.config.vocab_size_output = getattr(self.config, 'vocab_size_output', OUTPUT_VOCAB_SIZE)
-        self.config.max_position_embeddings_decoder = getattr(self.config, 'vocab_size_output', OUTPUT_LENGTH)
+        self.config.max_position_embeddings_decoder = getattr(self.config, 'max_position_embeddings_decoder', OUTPUT_LENGTH)
 
         # we keep shared to easily load pre-trained weights
         self.shared = nn.Embed(
