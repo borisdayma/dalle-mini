@@ -448,7 +448,7 @@ def main():
         
         # restore steps
         if (Path(artifact_dir) / 'training_state.json').exists():
-            with (Path(artifact_dir) /  'opt_state.msgpack').open('r') as f:
+            with (Path(artifact_dir) /  'training_state.json').open('r') as f:
                 training_state = json.load(f)
             step = training_state['step']
             optimizer_step = step // training_args.gradient_accumulation_steps
@@ -864,13 +864,13 @@ def main():
                 artifact = wandb.Artifact(
                     name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
                 )
-                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack')) 
+                artifact.add_file(str(Path(training_args.output_dir) / 'config.json')) 
+                artifact.add_file(str(Path(training_args.output_dir) / 'tokenizer.json'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'tokenizer_config.json'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'special_tokens_map.json'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'vocab.json'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'added_tokens.json'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'merges.txt'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'special_tokens_map.json'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'opt_state.msgpack'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'training_state.json'))
                 wandb.run.log_artifact(artifact)
