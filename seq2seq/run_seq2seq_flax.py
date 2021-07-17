@@ -271,6 +271,10 @@ class TrainState(train_state.TrainState):
 
 class CustomFlaxBartModule(FlaxBartModule):
     def setup(self):
+        # check config is valid, otherwise set default values
+        self.config.vocab_size_output = getattr(self.config, 'vocab_size_output', OUTPUT_VOCAB_SIZE)
+        self.config.max_position_embeddings_decoder = getattr(self.config, 'max_position_embeddings_decoder', OUTPUT_LENGTH)
+
         # we keep shared to easily load pre-trained weights
         self.shared = nn.Embed(
             self.config.vocab_size,
@@ -280,7 +284,7 @@ class CustomFlaxBartModule(FlaxBartModule):
         )
         # a separate embedding is used for the decoder
         self.decoder_embed = nn.Embed(
-            OUTPUT_VOCAB_SIZE,
+            self.config.vocab_size_output,
             self.config.d_model,
             embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
             dtype=self.dtype,
@@ -289,20 +293,23 @@ class CustomFlaxBartModule(FlaxBartModule):
 
         # the decoder has a different config
         decoder_config = BartConfig(self.config.to_dict())
-        decoder_config.max_position_embeddings = OUTPUT_LENGTH
-        decoder_config.vocab_size = OUTPUT_VOCAB_SIZE
+        decoder_config.max_position_embeddings = self.config.max_position_embeddings_decoder
+        decoder_config.vocab_size = self.config.vocab_size_output
         self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
 
 class CustomFlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
     def setup(self):
+        # check config is valid, otherwise set default values
+        self.config.vocab_size_output = getattr(self.config, 'vocab_size_output', OUTPUT_VOCAB_SIZE)
+
         self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
         self.lm_head = nn.Dense(
-            OUTPUT_VOCAB_SIZE,
+            self.config.vocab_size_output,
             use_bias=False,
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
         )
-        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, OUTPUT_VOCAB_SIZE))
+        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, self.config.vocab_size_output))
 
 class CustomFlaxBartForConditionalGeneration(FlaxBartForConditionalGeneration):
     module_class = CustomFlaxBartForConditionalGenerationModule
@@ -429,11 +436,24 @@ def main():
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
-    # Load pretrained model and tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
-    )
+    # Set up items to load or create
+    tokenizer = None
+    artifact_dir = None
 
+    def restore_state(state, artifact_dir):
+        # restore optimizer state
+        if (Path(artifact_dir) / 'opt_state.msgpack').exists():
+            with (Path(artifact_dir) /  'opt_state.msgpack').open('rb') as f:
+                opt_state = from_bytes(state.opt_state, f.read())
+        
+        # restore steps
+        if (Path(artifact_dir) / 'training_state.json').exists():
+            with (Path(artifact_dir) /  'training_state.json').open('r') as f:
+                training_state = json.load(f)
+            step = training_state['step']
+            optimizer_step = step // training_args.gradient_accumulation_steps
+            state.replace(step=step, optimizer_step=optimizer_step)
+    
     if model_args.from_checkpoint is not None:
         artifact = wandb.run.use_artifact(model_args.from_checkpoint)
         artifact_dir = artifact.download()
@@ -447,6 +467,12 @@ def main():
 
         # used in the preprocessing function
         config = model.config
+
+        # load tokenizer if present
+        if (Path(artifact_dir) / 'tokenizer_config.json').exists():
+            tokenizer = AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
+        )
 
     else:
         base_model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
@@ -472,6 +498,12 @@ def main():
         model.params['model']['encoder'] = base_model.params['model']['encoder']
         model.params['model']['shared'] = base_model.params['model']['shared']
         del base_model
+
+    # Load tokenizer if it has not been set
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
+        )
 
     print(f"TPUs: {jax.device_count()}")
     assert jax.device_count() == 8, "TPUs in use, please check running processes"
@@ -669,6 +701,9 @@ def main():
         grad_accum=jax.tree_map(jnp.zeros_like, model.params),
         optimizer_step=0,
     )
+    if model_args.from_checkpoint is not None:
+        # restore optimizer state, step and optimizer_step
+        restore_state(state, artifact_dir)
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
@@ -811,13 +846,16 @@ def main():
                 params=params,
             )
 
+            # save tokenizer
+            tokenizer.save_pretrained(training_args.output_dir)
+
             # save state
             state = unreplicate(state)
             with (Path(training_args.output_dir) /  'opt_state.msgpack').open('wb') as f:
                 f.write(to_bytes(state.opt_state))
             with (Path(training_args.output_dir) /  'training_state.json').open('w') as f:
                 json.dump({'step': state.step.item()}, f)
-            
+
             # save to W&B
             if data_args.log_model:
                 metadata = {'step': step, 'epoch': epoch}
@@ -826,8 +864,13 @@ def main():
                 artifact = wandb.Artifact(
                     name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
                 )
-                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'config.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack')) 
+                artifact.add_file(str(Path(training_args.output_dir) / 'config.json')) 
+                artifact.add_file(str(Path(training_args.output_dir) / 'tokenizer.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'tokenizer_config.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'vocab.json'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'merges.txt'))
+                artifact.add_file(str(Path(training_args.output_dir) / 'special_tokens_map.json'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'opt_state.msgpack'))
                 artifact.add_file(str(Path(training_args.output_dir) / 'training_state.json'))
                 wandb.run.log_artifact(artifact)
