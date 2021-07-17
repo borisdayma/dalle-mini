@@ -26,7 +26,6 @@ from dalle_mini.vqgan_jax.modeling_flax_vqgan import VQModel
 
 import streamlit as st
 
-st.write("List GPU Device", jax.devices("gpu"))
 st.write("Loading model...")
 
 # TODO: set those args in a config file
@@ -82,8 +81,6 @@ model.config.forced_bos_token_id = None
 model.config.forced_eos_token_id = None
 
 vqgan = VQModel.from_pretrained("flax-community/vqgan_f16_16384")
-st.write("VQModel")
-print("Initialize VqModel")
 
 def custom_to_pil(x):
     x = np.clip(x, 0., 1.)
@@ -137,11 +134,11 @@ vqgan_params = replicate(vqgan.params)
 from transformers import CLIPProcessor, FlaxCLIPModel
 
 clip = FlaxCLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-st.write("FlaxCLIPModel")
-print("Initialize FlaxCLIPModel")
+# st.write("FlaxCLIPModel")
+# print("Initialize FlaxCLIPModel")
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-st.write("CLIPProcessor")
-print("Initialize CLIPProcessor")
+# st.write("CLIPProcessor")
+# print("Initialize CLIPProcessor")
 
 def hallucinate(prompt, num_images=64):
     prompt = [prompt] * jax.device_count()
@@ -169,8 +166,31 @@ def clip_top_k(prompt, images, k=8):
     scores = np.array(logits[0]).argsort()[-k:][::-1]
     return [images[score] for score in scores]
 
-prompt = st.text_input("Input prompt", "rice fields by the mediterranean coast")
-st.write(f"Generating candidates for: {prompt}")
+def captioned_strip(images, caption):
+    increased_h = 0 if caption is None else 48
+    w, h = images[0].size[0], images[0].size[1]
+    img = Image.new("RGB", (len(images)*w, h + increased_h))
+    for i, img_ in enumerate(images):
+        img.paste(img_, (i*w, increased_h))
 
-images = hallucinate(prompt, num_images=1)
-st.image(images[0])
+    if caption is not None:
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf", 40)
+        draw.text((20, 3), caption, (255,255,255), font=font)
+    return img
+
+# Controls
+
+num_images = st.sidebar.slider("Candidates to generate", 1, 64, 8, 1)
+num_preds = st.sidebar.slider("Best predictions to show", 1, 8, 1, 1)
+
+
+prompt = st.text_input("What do you want to see?")
+
+if prompt != "":
+    st.write(f"Generating candidates for: {prompt}")
+    images = hallucinate(prompt, num_images=num_images)
+    images = clip_top_k(prompt, images, k=num_preds)
+    predictions_strip = captioned_strip(images, None)
+
+    st.image(predictions_strip)
