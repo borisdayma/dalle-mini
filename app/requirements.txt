@@ -1,0 +1,11 @@
+# Requirements for huggingface spaces
+-f https://storage.googleapis.com/jax-releases/jax_releases.html
+jaxlib
+-f https://storage.googleapis.com/jax-releases/jax_releases.html
+jax[cuda111]
+
+flax
+transformers
+
+# To download the model. We could use the model hub.
+wandb
