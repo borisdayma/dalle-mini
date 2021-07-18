@@ -9,3 +9,5 @@ flax
 jupyter
 wandb
 ftfy
+streamlit
+gradio
