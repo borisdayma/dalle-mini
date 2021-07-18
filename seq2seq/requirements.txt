@@ -1,8 +1,15 @@
-datasets >= 1.1.3
-jax>=0.2.8
-jaxlib>=0.1.59
-flax>=0.3.4
-optax>=0.0.8
-tensorboard
-nltk
+# Note: install with the following command:
+# pip install -r requirements.txt -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+# Otherwise it won't find the appropriate libtpu_nightly
+requests
+jax[tpu]>=0.2.16
+-e git+https://github.com/huggingface/transformers.git@master#egg=transformers
+-e git+https://github.com/huggingface/datasets.git@master#egg=datasets
+flax
+jupyter
 wandb
+nltk
+optax
+
+# Inference
+ftfy
