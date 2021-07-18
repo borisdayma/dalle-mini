@@ -1,12 +1,13 @@
-# Note: install with the following command:
-# pip install -r requirements.txt -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-# Otherwise it won't find the appropriate libtpu_nightly
+# Requirements for huggingface spaces
+-f https://storage.googleapis.com/jax-releases/jax_releases.html
+jax[cuda111]
+flax
 requests
-jax[tpu]>=0.2.16
 -e git+https://github.com/huggingface/transformers.git@master#egg=transformers
 -e git+https://github.com/huggingface/datasets.git@master#egg=datasets
 flax
 jupyter
-
-# Inference
+wandb
 ftfy
+streamlit
+gradio
