@@ -75,8 +75,8 @@ import os
 os.environ["WANDB_SILENT"] = "true"
 os.environ["WANDB_CONSOLE"] = "off"
 
-id = '1i5e8rlj'     #'1coradc5'
-#run = wandb.init(id=id, project="dalle-mini-demo", resume="allow")
+# set id to None so our latest images don't get overwritten
+id = None
 run = wandb.init(id=id,
         entity='wandb',
         project="hf-flax-dalle-mini",
