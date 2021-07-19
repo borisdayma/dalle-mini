@@ -178,18 +178,8 @@ def clip_top_k(prompt, images, k=8):
 
 # ## Log to wandb
 
-from PIL import ImageDraw, ImageFont
+from dalle_mini.helpers import captioned_strip
 
-def captioned_strip(images, caption):
-    w, h = images[0].size[0], images[0].size[1]
-    img = Image.new("RGB", (len(images)*w, h + 48))
-    for i, img_ in enumerate(images):
-        img.paste(img_, (i*w, 48))
-    draw = ImageDraw.Draw(img)
-    font = ImageFont.truetype("/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf", 40)
-    draw.text((20, 3), caption, (255,255,255), font=font)
-    return img
-    
 def log_to_wandb(prompts):
     strips = []
     for prompt in prompts:
