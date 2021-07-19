@@ -12,74 +12,28 @@ import flax.linen as nn
 from flax.training.common_utils import shard
 from flax.jax_utils import replicate, unreplicate
 
-from transformers.models.bart.modeling_flax_bart import *
 from transformers import BartTokenizer, FlaxBartForConditionalGeneration
 
-
-import requests
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 
 
 from dalle_mini.vqgan_jax.modeling_flax_vqgan import VQModel
+from dalle_mini.model import CustomFlaxBartForConditionalGeneration
 
 import gradio as gr
 
 
-# TODO: set those args in a config file
-OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
-OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
-BOS_TOKEN_ID = 16384
-BASE_MODEL = 'flax-community/dalle-mini'
+DALLE_REPO = 'flax-community/dalle-mini'
+DALLE_COMMIT_ID = '4d34126d0df8bc4a692ae933e3b902a1fa8b6114'
 
-class CustomFlaxBartModule(FlaxBartModule):
-    def setup(self):
-        # we keep shared to easily load pre-trained weights
-        self.shared = nn.Embed(
-            self.config.vocab_size,
-            self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-            dtype=self.dtype,
-        )
-        # a separate embedding is used for the decoder
-        self.decoder_embed = nn.Embed(
-            OUTPUT_VOCAB_SIZE,
-            self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-            dtype=self.dtype,
-        )
-        self.encoder = FlaxBartEncoder(self.config, dtype=self.dtype, embed_tokens=self.shared)
+VQGAN_REPO = 'flax-community/vqgan_f16_16384'
+VQGAN_COMMIT_ID = '90cc46addd2dd8f5be21586a9a23e1b95aa506a9'
 
-        # the decoder has a different config
-        decoder_config = BartConfig(self.config.to_dict())
-        decoder_config.max_position_embeddings = OUTPUT_LENGTH
-        decoder_config.vocab_size = OUTPUT_VOCAB_SIZE
-        self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
-
-class CustomFlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
-    def setup(self):
-        self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
-        self.lm_head = nn.Dense(
-            OUTPUT_VOCAB_SIZE,
-            use_bias=False,
-            dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-        )
-        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, OUTPUT_VOCAB_SIZE))
-
-class CustomFlaxBartForConditionalGeneration(FlaxBartForConditionalGeneration):
-    module_class = CustomFlaxBartForConditionalGenerationModule
-
-# create our model
-# FIXME: Save tokenizer to hub so we can load from there
-tokenizer = BartTokenizer.from_pretrained("facebook/bart-large-cnn")
-model = CustomFlaxBartForConditionalGeneration.from_pretrained(BASE_MODEL)
-model.config.force_bos_token_to_be_generated = False
-model.config.forced_bos_token_id = None
-model.config.forced_eos_token_id = None
-
-vqgan = VQModel.from_pretrained("flax-community/vqgan_f16_16384")
+tokenizer = BartTokenizer.from_pretrained(DALLE_REPO, revision=DALLE_COMMIT_ID)
+model = CustomFlaxBartForConditionalGeneration.from_pretrained(DALLE_REPO, revision=DALLE_COMMIT_ID)
+vqgan = VQModel.from_pretrained(VQGAN_REPO, revision=VQGAN_COMMIT_ID)
 
 def custom_to_pil(x):
     x = np.clip(x, 0., 1.)
