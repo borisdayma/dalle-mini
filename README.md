@@ -4,7 +4,7 @@ emoji: 🎨
 colorFrom: red
 colorTo: blue
 sdk: gradio
-app_file: app/app_gradio.py
+app_file: app/app_gradio_ngrok.py
 pinned: false
 ---
 
