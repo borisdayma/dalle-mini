@@ -83,7 +83,7 @@ run = wandb.init(id=id,
         job_type="predictions",
         resume="allow"
 )
-artifact = run.use_artifact('wandb/hf-flax-dalle-mini/model-3iwhu4w6:latest', type='bart_model')
+artifact = run.use_artifact('wandb/hf-flax-dalle-mini/model-4oh3u7ca:latest', type='bart_model')
 artifact_dir = artifact.download()
 
 # create our model
