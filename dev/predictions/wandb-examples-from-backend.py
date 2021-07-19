@@ -6,6 +6,7 @@ import wandb
 import os
 
 from dalle_mini.backend import ServiceError, get_images_from_backend
+from dalle_mini.helpers import captioned_strip
 
 os.environ["WANDB_SILENT"] = "true"
 os.environ["WANDB_CONSOLE"] = "off"
@@ -18,16 +19,6 @@ run = wandb.init(id=id,
         job_type="predictions",
         resume="allow"
 )
-
-def captioned_strip(images, caption):
-    w, h = images[0].size[0], images[0].size[1]
-    img = Image.new("RGB", (len(images)*w, h + 48))
-    for i, img_ in enumerate(images):
-        img.paste(img_, (i*w, 48))
-    draw = ImageDraw.Draw(img)
-    font = ImageFont.truetype("/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf", 40)
-    draw.text((20, 3), caption, (255,255,255), font=font)
-    return img
 
 def log_to_wandb(prompts):
     try:
