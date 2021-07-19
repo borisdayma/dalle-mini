@@ -14,7 +14,7 @@ _Generate images from a text prompt_
 
 TODO: add some cool example
 
-## [Create my own images with the demo →](TODO)
+## Create my own images with the demo → Coming soon
 
 ## How does it work?
 
@@ -53,6 +53,8 @@ Use [patil-suraj/vqgan-jax](https://github.com/patil-suraj/vqgan-jax).
 ### Training of Seq2Seq
 
 Refer to `seq2seq` folder (some parameters may have been hardcoded for convenience when training on our TPU VM).
+
+You can also adjust the [sweep configuration file](https://docs.wandb.ai/guides/sweeps) if you need to perform a hyperparameter search.
 
 ### Inference
 
