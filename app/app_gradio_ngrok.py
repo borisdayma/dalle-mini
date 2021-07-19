@@ -97,4 +97,4 @@ gr.Interface(run_inference,
     live=False,
     server_name="0.0.0.0",      # Bind to all interfaces (I think)
     # server_port=8999
-).launch(share=True)
+).launch()
