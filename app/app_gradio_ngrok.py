@@ -24,11 +24,6 @@ def compose_predictions(images, caption=None):
         draw.text((20, 3), caption, (255,255,255), font=font)
     return img
 
-def top_k_predictions(prompt, num_candidates=32, k=8):
-    images = hallucinate(prompt, num_images=num_candidates)
-    images = clip_top_k(prompt, images, k=k)
-    return images
-
 class ServiceError(Exception):
     def __init__(self, status_code):
         self.status_code = status_code
@@ -51,7 +46,7 @@ def run_inference(prompt):
         predictions = compose_predictions(images)
         output_title = f"""
         <p style="font-size:22px; font-style:bold">Best predictions</p>
-        <p>We asked our model to generate 32 candidates for your prompt:</p>
+        <p>We asked our model to generate 128 candidates for your prompt:</p>
 
         <pre>
 
