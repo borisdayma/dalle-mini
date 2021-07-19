@@ -10,6 +10,9 @@ import base64
 
 import gradio as gr
 
+# If we use streamlit, this would be exported as a streamlit secret
+import os
+backend_url = os.environ["BACKEND_SERVER"]
 
 def compose_predictions(images, caption=None):
     increased_h = 0 if caption is None else 48
@@ -30,7 +33,7 @@ class ServiceError(Exception):
 
 def get_images_from_ngrok(prompt):
     r = requests.post(
-        "https://dd7123a7e01c.ngrok.io/generate", 
+        backend_url, 
         json={"prompt": prompt}
     )
     if r.status_code == 200:
