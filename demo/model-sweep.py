@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# Uncomment to run on cpu
-#import os
-#os.environ["JAX_PLATFORM_NAME"] = "cpu"
-
 import random
 
 import jax
@@ -15,23 +11,26 @@ from flax.jax_utils import replicate, unreplicate
 from transformers.models.bart.modeling_flax_bart import *
 from transformers import BartTokenizer, FlaxBartForConditionalGeneration
 
+import io
 
 import requests
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 
+import torch
+import torchvision.transforms as T
+import torchvision.transforms.functional as TF
+from torchvision.transforms import InterpolationMode
 
 from dalle_mini.vqgan_jax.modeling_flax_vqgan import VQModel
-
-import gradio as gr
-
 
 # TODO: set those args in a config file
 OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
 OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
 BOS_TOKEN_ID = 16384
-BASE_MODEL = 'flax-community/dalle-mini'
+BASE_MODEL = 'facebook/bart-large-cnn'
+WANDB_MODEL = '3iwhu4w6'
 
 class CustomFlaxBartModule(FlaxBartModule):
     def setup(self):
@@ -71,14 +70,7 @@ class CustomFlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerat
 class CustomFlaxBartForConditionalGeneration(FlaxBartForConditionalGeneration):
     module_class = CustomFlaxBartForConditionalGenerationModule
 
-# create our model
-# FIXME: Save tokenizer to hub so we can load from there
-tokenizer = BartTokenizer.from_pretrained("facebook/bart-large-cnn")
-model = CustomFlaxBartForConditionalGeneration.from_pretrained(BASE_MODEL)
-model.config.force_bos_token_to_be_generated = False
-model.config.forced_bos_token_id = None
-model.config.forced_eos_token_id = None
-
+tokenizer = BartTokenizer.from_pretrained(BASE_MODEL)
 vqgan = VQModel.from_pretrained("flax-community/vqgan_f16_16384")
 
 def custom_to_pil(x):
@@ -126,16 +118,11 @@ def stack_reconstructions(images):
 p_generate = jax.pmap(generate, "batch")
 p_get_images = jax.pmap(get_images, "batch")
 
-bart_params = replicate(model.params)
-vqgan_params = replicate(vqgan.params)
-
 # ## CLIP Scoring
 from transformers import CLIPProcessor, FlaxCLIPModel
 
 clip = FlaxCLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-print("Initialize FlaxCLIPModel")
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-print("Initialize CLIPProcessor")
 
 def hallucinate(prompt, num_images=64):
     prompt = [prompt] * jax.device_count()
@@ -163,68 +150,71 @@ def clip_top_k(prompt, images, k=8):
     scores = np.array(logits[0]).argsort()[-k:][::-1]
     return [images[score] for score in scores]
 
-def compose_predictions(images, caption=None):
-    increased_h = 0 if caption is None else 48
+from PIL import ImageDraw, ImageFont
+
+def captioned_strip(images, caption):
     w, h = images[0].size[0], images[0].size[1]
-    img = Image.new("RGB", (len(images)*w, h + increased_h))
+    img = Image.new("RGB", (len(images)*w, h + 48))
     for i, img_ in enumerate(images):
-        img.paste(img_, (i*w, increased_h))
-
-    if caption is not None:
-        draw = ImageDraw.Draw(img)
-        font = ImageFont.truetype("/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf", 40)
-        draw.text((20, 3), caption, (255,255,255), font=font)
+        img.paste(img_, (i*w, 48))
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype("/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf", 40)
+    draw.text((20, 3), caption, (255,255,255), font=font)
     return img
+    
+def log_to_wandb(prompts):
+    strips = []
+    for prompt in prompts:
+        print(f"Generating candidates for: {prompt}")
+        images = hallucinate(prompt, num_images=32)
+        selected = clip_top_k(prompt, images, k=8)
+        strip = captioned_strip(selected, prompt)
+        strips.append(wandb.Image(strip))
+    wandb.log({"images": strips})
 
-def top_k_predictions(prompt, num_candidates=32, k=8):
-    images = hallucinate(prompt, num_images=num_candidates)
-    images = clip_top_k(prompt, images, k=k)
-    return images
+## Artifact loop
 
-def run_inference(prompt, num_images=32, num_preds=8):
-    images = top_k_predictions(prompt, num_candidates=num_images, k=num_preds)
-    predictions = compose_predictions(images)
-    output_title = f"""
-    <p style="font-size:22px; font-style:bold">Best predictions</p>
-    <p>We asked our model to generate 32 candidates for your prompt:</p>
+import wandb
+import os
+os.environ["WANDB_SILENT"] = "true"
+os.environ["WANDB_CONSOLE"] = "off"
 
-    <pre>
+id = wandb.util.generate_id()
+print(f"Logging images to wandb run id: {id}")
 
-    <b>{prompt}</b>
-    </pre>
-    <p>We then used a pre-trained <a href="https://huggingface.co/openai/clip-vit-base-patch32">CLIP model</a> to score them according to the
-    similarity of the text and the image representations.</p>
+run = wandb.init(id=id,
+        entity='wandb',
+        project="hf-flax-dalle-mini",
+        job_type="predictions",
+        resume="allow"
+)
 
-    <p>This is the result:</p>
-    """
-    output_description = """
-    <p>Read more about the process <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">in our report</a>.<p>
-    <p style='text-align: center'>Created with <a href="https://github.com/borisdayma/dalle-mini">DALLE·mini</a></p>
-    """
-    return (output_title, predictions, output_description)
+artifact = run.use_artifact('wandb/hf-flax-dalle-mini/model-3iwhu4w6:v0', type='bart_model')
+producer_run = artifact.logged_by()
+logged_artifacts = producer_run.logged_artifacts()
 
-outputs = [
-    gr.outputs.HTML(label=""),      # To be used as title
-    gr.outputs.Image(label=''),
-    gr.outputs.HTML(label=""),      # Additional text that appears in the screenshot
-]
+for artifact in logged_artifacts:
+    print(f"Generating predictions with version {artifact.version}")
+    artifact_dir = artifact.download()
 
-description = """
-Welcome to our demo of DALL·E-mini. This project was created on TPU v3-8s during the 🤗 Flax / JAX Community Week.
-It reproduces the essential characteristics of OpenAI's DALL·E, at a fraction of the size.
+    # create our model
+    model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
+    model.config.force_bos_token_to_be_generated = False
+    model.config.forced_bos_token_id = None
+    model.config.forced_eos_token_id = None
 
-Please, write what you would like the model to generate, or select one of the examples below.
-"""
-gr.Interface(run_inference, 
-    inputs=[gr.inputs.Textbox(label='Prompt')], #, gr.inputs.Slider(1,64,1,8, label='Candidates to generate'), gr.inputs.Slider(1,8,1,1, label='Best predictions to show')], 
-    outputs=outputs, 
-    title='DALL·E mini',
-    description=description,
-    article="<p style='text-align: center'> DALLE·mini by Boris Dayma et al. | <a href='https://github.com/borisdayma/dalle-mini'>GitHub</a></p>",
-    layout='vertical',
-    theme='huggingface',
-    examples=[['an armchair in the shape of an avocado'], ['snowy mountains by the sea']],
-    allow_flagging=False,
-    live=False,
-    # server_port=8999
-).launch()
+    bart_params = replicate(model.params)
+    vqgan_params = replicate(vqgan.params)
+
+    prompts = prompts = [
+        "white snow covered mountain under blue sky during daytime",
+        "aerial view of beach during daytime",
+        "aerial view of beach at night",
+        "an armchair in the shape of an avocado",
+        "young woman riding her bike trough a forest",
+        "rice fields by the mediterranean coast",
+        "white houses on the hill of a greek coastline",
+        "illustration of a shark with a baby shark",
+    ]
+
+    log_to_wandb(prompts)

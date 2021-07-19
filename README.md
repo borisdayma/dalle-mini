@@ -3,8 +3,8 @@ title: Dalle Mini
 emoji: 🎨
 colorFrom: red
 colorTo: blue
-sdk: streamlit
-app_file: app/app.py
+sdk: gradio
+app_file: app/app_gradio.py
 pinned: false
 ---
 
@@ -18,7 +18,7 @@ TODO: add some cool example
 
 ## How does it work?
 
-Refer to [our report](TODO).
+Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
 
 ## Development
 
