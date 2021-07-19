@@ -95,6 +95,5 @@ gr.Interface(run_inference,
     examples=[['an armchair in the shape of an avocado'], ['snowy mountains by the sea']],
     allow_flagging=False,
     live=False,
-    server_name="0.0.0.0",      # Bind to all interfaces (I think)
-    # server_port=8999
+    # server_name="0.0.0.0",      # Bind to all interfaces
 ).launch()
