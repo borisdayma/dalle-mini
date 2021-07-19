@@ -62,8 +62,8 @@ def run_inference(prompt):
         """
         
         output_description = """
-        <p>Read more about the process <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">in our report</a>.<p>
-        <p style='text-align: center'>Created with <a href="https://github.com/borisdayma/dalle-mini">DALLE·mini</a></p>
+        <p>Read our <a style="color:blue;" href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">full report</a> for more details on how this works.<p>
+        <p style='text-align: center'>Created with <a style="color:blue;" href="https://github.com/borisdayma/dalle-mini">DALL·E mini</a></p>
         """
 
     except ServiceError:
@@ -82,13 +82,10 @@ outputs = [
 ]
 
 description = """
-Welcome to our demo of DALL·E-mini. This project was created on TPU v3-8s during the 🤗 Flax / JAX Community Week.
-It reproduces the essential characteristics of OpenAI's DALL·E, at a fraction of the size.
-
-Please, write what you would like the model to generate, or select one of the examples below.
+Welcome to DALL·E-mini, a text-to-image generation model.
 """
 gr.Interface(run_inference, 
-    inputs=[gr.inputs.Textbox(label='Prompt')], #, gr.inputs.Slider(1,64,1,8, label='Candidates to generate'), gr.inputs.Slider(1,8,1,1, label='Best predictions to show')], 
+    inputs=[gr.inputs.Textbox(label='Prompt')],
     outputs=outputs, 
     title='DALL·E mini',
     description=description,
