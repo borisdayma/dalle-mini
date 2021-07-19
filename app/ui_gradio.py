@@ -51,8 +51,8 @@ def run_inference(prompt, num_images=32, num_preds=8):
 
     <b>{prompt}</b>
     </pre>
-    <p>We then used a pre-trained CLIP model to score them according to the
-    similarity of their text and image representations.</p>
+    <p>We then used a pre-trained <a href="https://huggingface.co/openai/clip-vit-base-patch32">CLIP model</a> to score them according to the
+    similarity of the text and the image representations.</p>
 
     <p>This is the result:</p>
     """
