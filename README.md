@@ -18,7 +18,7 @@ TODO: add some cool example
 
 ## How does it work?
 
-Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
+Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA?accessToken=2ua7j8ebc810fuxyv49wbipmq3fb2e78yq3rvs5dy4wew07wwm2csdo8zcuyr14e).
 
 ## Development
 
