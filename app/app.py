@@ -29,7 +29,7 @@ DALL·E mini is an AI model that generates images from any prompt you give!
 
 <p style='text-align: center'>
 Created by Boris Dayma et al. 2021
-<a href="https://github.com/borisdayma/dalle-mini">GitHub</a> | <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">Report</a>
+<a href="https://github.com/borisdayma/dalle-mini">GitHub</a> | <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">Project Report</a>
 </p>
         """, unsafe_allow_html=True)
 
@@ -41,7 +41,7 @@ prompt = st.text_input("What do you want to see?")
 #TODO: I think there's an issue where we can't run twice the same inference (not due to caching) - may need to use st.form
 
 DEBUG = False
-if prompt != "" or st.session_state.get("again", False):
+if prompt != "" or (st.session_state.get("again", False) and prompt != ""):
     container = st.empty()
     container.markdown(f"Generating predictions for: **{prompt}**")
 
