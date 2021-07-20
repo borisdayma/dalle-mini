@@ -41,7 +41,7 @@ prompt = st.text_input("What do you want to see?")
 #TODO: I think there's an issue where we can't run twice the same inference (not due to caching) - may need to use st.form
 
 DEBUG = False
-if prompt != "":
+if prompt != "" or st.session_state.get("again", False):
     container = st.empty()
     container.markdown(f"Generating predictions for: **{prompt}**")
 
@@ -56,6 +56,8 @@ if prompt != "":
 
         container.markdown(f"**{prompt}**")
         
+        st.session_state["again"] = st.button('Again!', key='again_button')
+    
     except ServiceError as error:
         container.text(f"Service unavailable, status: {error.status_code}")
     except KeyError:
