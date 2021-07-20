@@ -1,6 +1,6 @@
 ---
 title: Dalle Mini
-emoji: 🎨
+emoji: 🥑
 colorFrom: red
 colorTo: blue
 sdk: gradio
@@ -12,13 +12,17 @@ pinned: false
 
 _Generate images from a text prompt_
 
-TODO: add some cool example
+<img src="img/logo.png" width="200">
+
+Our logo was generated with DALL-E mini by typing "logo of an armchair in the shape of an avocado".
+
+You can also create your own pictures with the demo (TODO: add link).
 
 ## Create my own images with the demo → Coming soon
 
 ## How does it work?
 
-Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA?accessToken=2ua7j8ebc810fuxyv49wbipmq3fb2e78yq3rvs5dy4wew07wwm2csdo8zcuyr14e).
+Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
 
 ## Development
 
