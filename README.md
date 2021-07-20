@@ -18,8 +18,6 @@ Our logo was generated with DALL-E mini using the prompt "logo of an armchair in
 
 You can also create your own pictures with the demo (TODO: add link).
 
-## Create my own images with the demo → Coming soon
-
 ## How does it work?
 
 Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
