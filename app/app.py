@@ -6,12 +6,26 @@ from dalle_mini.backend import ServiceError, get_images_from_backend
 
 import streamlit as st
 
-# st.sidebar.title("DALL·E mini")
+# streamlit.session_state is not available in Huggingface spaces.
+# Session state hack https://huggingface.slack.com/archives/C025LJDP962/p1626527367443200?thread_ts=1626525999.440500&cid=C025LJDP962
 
-# sc = st.sidebar.beta_columns(2)
-# st.sidebar.image('../img/logo.png', width=150)
-# sc[1].write("  ")
-# st.sidebar.markdown("Generate images from text")
+from streamlit.report_thread import get_report_ctx
+def query_cache(q_emb=None):
+    ctx = get_report_ctx()
+    session_id = ctx.session_id
+    session = st.server.server.Server.get_current()._get_session_info(session_id).session
+    if not hasattr(session, "_query_state"):
+        setattr(session, "_query_state", q_emb)
+    if q_emb:
+        session._query_state = q_emb
+    return session._query_state
+
+def set_run_again(state):
+    query_cache(state)
+
+def should_run_again():
+    state = query_cache()
+    return state if state is not None else False
 
 st.sidebar.markdown("""
 <style>
@@ -41,7 +55,7 @@ prompt = st.text_input("What do you want to see?")
 #TODO: I think there's an issue where we can't run twice the same inference (not due to caching) - may need to use st.form
 
 DEBUG = False
-if prompt != "" or (st.session_state.get("again", False) and prompt != ""):
+if prompt != "" or (should_run_again and prompt != ""):
     container = st.empty()
     container.markdown(f"Generating predictions for: **{prompt}**")
 
@@ -56,7 +70,7 @@ if prompt != "" or (st.session_state.get("again", False) and prompt != ""):
 
         container.markdown(f"**{prompt}**")
         
-        st.session_state["again"] = st.button('Again!', key='again_button')
+        set_run_again(st.button('Again!', key='again_button'))
     
     except ServiceError as error:
         container.text(f"Service unavailable, status: {error.status_code}")
