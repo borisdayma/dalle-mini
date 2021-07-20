@@ -218,7 +218,7 @@ class DataTrainingArguments:
         default=None, metadata={"help": "A prefix to add before every source text (useful for T5 models)."}
     )
     predict_with_generate: bool = field(
-        default=False, metadata={"help": "Whether to use generate to calculate generative metrics (ROUGE, BLEU)."}
+        default=False, metadata={"help": "Whether to use generate to calculate generative metrics."}
     )
     num_beams: Optional[int] = field(
         default=None,
@@ -605,35 +605,6 @@ def main():
             desc="Running tokenizer on prediction dataset",
         )
 
-    # Metric
-    #metric = load_metric("rouge")
-
-    def postprocess_text(preds, labels):
-        preds = [pred.strip() for pred in preds]
-        labels = [label.strip() for label in labels]
-
-        # rougeLSum expects newline after each sentence
-        preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
-        labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
-
-        return preds, labels
-
-    def compute_metrics(preds, labels):
-        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
-        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-
-        # Some simple post-processing
-        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
-
-        result = metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
-        # Extract a few results from ROUGE
-        result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
-
-        prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
-        result["gen_len"] = np.mean(prediction_lens)
-        result = {k: round(v, 4) for k, v in result.items()}
-        return result
-
     # Initialize our training
     rng = jax.random.PRNGKey(training_args.seed)
     rng, dropout_rng = jax.random.split(rng)
@@ -819,15 +790,8 @@ def main():
             # log metrics
             wandb_log(eval_metrics, step=global_step, prefix='eval')
 
-            # compute ROUGE metrics
-            rouge_desc = ""
-        #    if data_args.predict_with_generate:
-        #        rouge_metrics = compute_metrics(eval_preds, eval_labels)
-        #        eval_metrics.update(rouge_metrics)
-        #        rouge_desc = " ".join([f"Eval {key}: {value} |" for key, value in rouge_metrics.items()])
-
             # Print metrics and update progress bar
-            desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | {rouge_desc})"
+            desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
             epochs.write(desc)
             epochs.desc = desc
 
@@ -952,15 +916,8 @@ def main():
         pred_metrics = get_metrics(pred_metrics)
         pred_metrics = jax.tree_map(jnp.mean, pred_metrics)
 
-        # compute ROUGE metrics
-        rouge_desc = ""
-        if data_args.predict_with_generate:
-            rouge_metrics = compute_metrics(pred_generations, pred_labels)
-            pred_metrics.update(rouge_metrics)
-            rouge_desc = " ".join([f"Predict {key}: {value} |" for key, value in rouge_metrics.items()])
-
         # Print metrics
-        desc = f"Predict Loss: {pred_metrics['loss']} | {rouge_desc})"
+        desc = f"Predict Loss: {pred_metrics['loss']})"
         logger.info(desc)
 
 
