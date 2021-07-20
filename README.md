@@ -14,7 +14,7 @@ _Generate images from a text prompt_
 
 <img src="img/logo.png" width="200">
 
-Our logo was generated with DALL-E mini by typing "logo of an armchair in the shape of an avocado".
+Our logo was generated with DALL-E mini using the prompt "logo of an armchair in the shape of an avocado".
 
 You can also create your own pictures with the demo (TODO: add link).
 
