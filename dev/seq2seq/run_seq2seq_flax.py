@@ -83,6 +83,7 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
 # Model hyperparameters, for convenience
+# TODO: the model has now it's own definition file and should be imported
 OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
 OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
 BOS_TOKEN_ID = 16384
