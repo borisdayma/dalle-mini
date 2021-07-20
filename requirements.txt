@@ -1,6 +1,2 @@
 # Requirements for huggingface spaces
--f https://storage.googleapis.com/jax-releases/jax_releases.html
-jax[cuda111]
-flax
-transformes
 streamlit>=0.84.2
