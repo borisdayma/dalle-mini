@@ -1,4 +1,3 @@
-<!-- ![DALL-E mini logo-transparent]() -->
 ---
 title: Dalle Mini
 emoji: 🥑
