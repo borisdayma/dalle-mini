@@ -7,14 +7,15 @@ from dalle_mini.helpers import captioned_strip
 
 import streamlit as st
 
-# Controls
-
-# num_images = st.sidebar.slider("Candidates to generate", 1, 64, 8, 1)
-# num_preds = st.sidebar.slider("Best predictions to show", 1, 8, 1, 1)
 
 st.sidebar.markdown('Visit [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA)')
 
+st.header('DALL-E mini')
+st.subheader('Generate images from a text prompt')
+
 prompt = st.text_input("What do you want to see?")
+
+#TODO: I think there's an issue where we can't run twice the same inference (not due to caching) - may need to use st.form
 
 if prompt != "":
     st.write(f"Generating candidates for: {prompt}")
@@ -23,8 +24,11 @@ if prompt != "":
         backend_url = st.secrets["BACKEND_SERVER"]
         print(f"Getting selections: {prompt}")
         selected = get_images_from_backend(prompt, backend_url)
-        preds = captioned_strip(selected, prompt)
-        st.image(preds)
+
+        cols = st.beta_columns(4)
+        for i, img in enumerate(selected):
+            cols[i%4].image(img)
+        
     except ServiceError as error:
         st.write(f"Service unavailable, status: {error.status_code}")
     except KeyError:
