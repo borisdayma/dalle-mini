@@ -6,14 +6,24 @@ from dalle_mini.backend import ServiceError, get_images_from_backend
 
 import streamlit as st
 
-st.sidebar.title("DALL-E Mini")
+# st.sidebar.title("DALL-E Mini")
 
-sc = st.sidebar.beta_columns(2)
-sc[0].image('../img/logo.png', width=150)
-sc[1].write("  ")
-sc[1].markdown("Generate images from text")
+# sc = st.sidebar.beta_columns(2)
+# st.sidebar.image('../img/logo.png', width=150)
+# sc[1].write("  ")
+# st.sidebar.markdown("Generate images from text")
+
 st.sidebar.markdown("""
-##### Dall-E Mini
+<style>
+.aligncenter {
+    text-align: center;
+}
+</style>
+<p class="aligncenter">
+    <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/img/logo.png"/>
+</p>
+""", unsafe_allow_html=True)
+st.sidebar.markdown("""
 ___
 Dall-E Mini is an AI model that generates images from any prompt you give it!
 
