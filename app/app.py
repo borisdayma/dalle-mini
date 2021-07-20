@@ -41,7 +41,7 @@ prompt = st.text_input("What do you want to see?")
 #TODO: I think there's an issue where we can't run twice the same inference (not due to caching) - may need to use st.form
 
 DEBUG = False
-if prompt != "" or st.session_state.get("again", False):
+if prompt != "" or (st.session_state.get("again", False) and prompt != ""):
     container = st.empty()
     container.markdown(f"Generating predictions for: **{prompt}**")
 
