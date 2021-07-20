@@ -7,10 +7,21 @@ from dalle_mini.helpers import captioned_strip
 
 import streamlit as st
 
+st.sidebar.title("DALL-E Mini")
 
-st.sidebar.markdown('Visit [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA)')
+sc = st.sidebar.beta_columns(2)
+sc[0].image('../img/logo.png', width=150)
+sc[1].write("  ")
+sc[1].markdown("Generate images from a text prompt")
+st.sidebar.markdown("""
+##### Dall-E Mini
+___
+Dall-E Mini is an AI model that generates images of your prompt!
 
-st.header('DALL-E mini')
+Created by Boris Dayma et al. 2021 | [GitHub](https://github.com/borisdayma/dalle-mini) | See [Report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA)
+        """)
+
+st.header('DALL-E mini Demo')
 st.subheader('Generate images from a text prompt')
 
 prompt = st.text_input("What do you want to see?")
