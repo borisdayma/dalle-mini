@@ -14,7 +14,7 @@ pinned: false
 _Generate images from a text prompt_
 
 
-<img src="img/DALL-E mini logo (transparent).png" width="200">
+<img src="img/logo.png" width="200">
 
 Our logo was generated with DALL-E mini using the prompt "logo of an armchair in the shape of an avocado".
 
