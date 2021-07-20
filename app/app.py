@@ -17,8 +17,11 @@ st.sidebar.markdown("""
 ___
 Dall-E Mini is an AI model that generates images from any prompt you give it!
 
-Created by Boris Dayma et al. 2021 | [GitHub](https://github.com/borisdayma/dalle-mini) | See [Report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA)
-        """)
+<p style='text-align: center'>
+Created by Boris Dayma et al. 2021
+<a href="https://github.com/borisdayma/dalle-mini">GitHub</a> | See <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">Report</a>
+</p>
+        """, unsafe_allow_html=True)
 
 st.header('DALL-E mini Demo')
 st.subheader('Generate images from text')
