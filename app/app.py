@@ -39,7 +39,9 @@ st.sidebar.markdown("""
 """, unsafe_allow_html=True)
 st.sidebar.markdown("""
 ___
+<p style='text-align: center'>
 DALL·E mini is an AI model that generates images from any prompt you give!
+</p>
 
 <p style='text-align: center'>
 Created by Boris Dayma et al. 2021
