@@ -19,4 +19,6 @@ jobs:
         with:
           filesizelimit: 900000 # so we can sync to HF spaces
       - name: Push to hub
-        run: git push https://huggingface.co/spaces/flax-community/dalle-mini main
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: git push https://boris:$HF_TOKEN@huggingface.co/spaces/flax-community/dalle-mini main
