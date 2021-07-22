@@ -3,8 +3,6 @@ name: Sync to Hugging Face hub
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
 
   # to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -13,13 +11,13 @@ jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-        with:
-          fetch-depth: 0
       - name: Check large files
         uses: ActionsDesk/lfs-warning@v2.0
         with:
           filesizelimit: 900000 # so we can sync to HF spaces
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

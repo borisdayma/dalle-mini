@@ -1,0 +1,17 @@
+name: Sync to Hugging Face hub
+
+on:
+  pull_request:
+    branches: [main]
+
+  # to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check large files
+        uses: ActionsDesk/lfs-warning@v2.0
+        with:
+          filesizelimit: 900000 # so we can sync to HF spaces
