@@ -1,2 +1,5 @@
 # Requirements for huggingface spaces
 streamlit>=0.84.2
+gradio>=2.23
+flax
+transformers
