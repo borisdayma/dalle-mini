@@ -139,42 +139,24 @@ def run_inference(prompt, num_images=32, num_preds=8):
     images = top_k_predictions(prompt, num_candidates=num_images, k=num_preds)
     predictions = compose_predictions(images)
     output_title = f"""
-    <p style="font-size:22px; font-style:bold">Best predictions</p>
-    <p>We asked our model to generate 32 candidates for your prompt:</p>
-
-    <pre>
-
     <b>{prompt}</b>
-    </pre>
-    <p>We then used a pre-trained <a href="https://huggingface.co/openai/clip-vit-base-patch32">CLIP model</a> to score them according to the
-    similarity of the text and the image representations.</p>
-
-    <p>This is the result:</p>
     """
-    output_description = """
-    <p>Read more about the process <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">in our report</a>.<p>
-    <p style='text-align: center'>Created with <a href="https://github.com/borisdayma/dalle-mini">DALLE·mini</a></p>
-    """
-    return (output_title, predictions, output_description)
+    return (output_title, predictions)
 
 outputs = [
     gr.outputs.HTML(label=""),      # To be used as title
     gr.outputs.Image(label=''),
-    gr.outputs.HTML(label=""),      # Additional text that appears in the screenshot
 ]
 
 description = """
-Welcome to our demo of DALL·E-mini. This project was created on TPU v3-8s during the 🤗 Flax / JAX Community Week.
-It reproduces the essential characteristics of OpenAI's DALL·E, at a fraction of the size.
-
-Please, write what you would like the model to generate, or select one of the examples below.
+DALL·E-mini is an AI model that generates images from any prompt you give! Generate images from text:
 """
 gr.Interface(run_inference, 
-    inputs=[gr.inputs.Textbox(label='Prompt')], #, gr.inputs.Slider(1,64,1,8, label='Candidates to generate'), gr.inputs.Slider(1,8,1,1, label='Best predictions to show')], 
+    inputs=[gr.inputs.Textbox(label='What do you want to see?')], #, gr.inputs.Slider(1,64,1,8, label='Candidates to generate'), gr.inputs.Slider(1,8,1,1, label='Best predictions to show')], 
     outputs=outputs, 
     title='DALL·E mini',
     description=description,
-    article="<p style='text-align: center'> DALLE·mini by Boris Dayma et al. | <a href='https://github.com/borisdayma/dalle-mini'>GitHub</a></p>",
+    article="<p style='text-align: center'> Created by Boris Dayma et al. 2021 | <a href='https://github.com/borisdayma/dalle-mini'>GitHub</a> | <a href='https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA'>Report</a></p>",
     layout='vertical',
     theme='huggingface',
     examples=[['an armchair in the shape of an avocado'], ['snowy mountains by the sea']],
