@@ -181,4 +181,4 @@ gr.Interface(run_inference,
     allow_flagging=False,
     live=False,
     # server_port=8999
-).launch()
+).launch(share=True)
