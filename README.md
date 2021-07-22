@@ -22,6 +22,10 @@ You can create your own pictures with [the demo](https://huggingface.co/spaces/f
 
 Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
 
+## Where does the logo come from?
+
+The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone to us.
+
 ## Development
 
 This section is for the adventurous people wanting to look into the code.
