@@ -1,4 +1,4 @@
-name: Sync to Hugging Face hub
+name: Check file size
 
 on:
   pull_request:
