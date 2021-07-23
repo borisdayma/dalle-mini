@@ -19,7 +19,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-from dalle_mini.vqgan_jax.modeling_flax_vqgan import VQModel
+from vqgan_jax.modeling_flax_vqgan import VQModel
 from dalle_mini.model import CustomFlaxBartForConditionalGeneration
 
 import gradio as gr
