@@ -23,7 +23,7 @@ import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 from torchvision.transforms import InterpolationMode
 
-from dalle_mini.vqgan_jax.modeling_flax_vqgan import VQModel
+from vqgan_jax.modeling_flax_vqgan import VQModel
 
 # TODO: set those args in a config file
 OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
