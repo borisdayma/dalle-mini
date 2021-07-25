@@ -28,7 +28,7 @@ Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini
 
 The root folder and associated `requirements.txt` is only for the app.
 
-For development, use ['dev/requirements.txt`](dev/requirements.txt) or ['dev/environment.yaml`](dev/environment.yaml).
+For development, use [`dev/requirements.txt`](dev/requirements.txt) or [`dev/environment.yaml`](dev/environment.yaml).
 
 ### Training of VQGAN
 
