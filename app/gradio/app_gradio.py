@@ -18,11 +18,15 @@ from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 
-
 from vqgan_jax.modeling_flax_vqgan import VQModel
 from dalle_mini.model import CustomFlaxBartForConditionalGeneration
 
+# ## CLIP Scoring
+from transformers import CLIPProcessor, FlaxCLIPModel
+
 import gradio as gr
+
+from dalle_mini.helpers import captioned_strip
 
 
 DALLE_REPO = 'flax-community/dalle-mini'
@@ -58,33 +62,11 @@ def generate(input, rng, params):
 def get_images(indices, params):
     return vqgan.decode_code(indices, params=params)
 
-def plot_images(images):
-    fig = plt.figure(figsize=(40, 20))
-    columns = 4
-    rows = 2
-    plt.subplots_adjust(hspace=0, wspace=0)
-
-    for i in range(1, columns*rows +1):
-        fig.add_subplot(rows, columns, i)
-        plt.imshow(images[i-1])
-    plt.gca().axes.get_yaxis().set_visible(False)
-    plt.show()
-    
-def stack_reconstructions(images):
-    w, h = images[0].size[0], images[0].size[1]
-    img = Image.new("RGB", (len(images)*w, h))
-    for i, img_ in enumerate(images):
-        img.paste(img_, (i*w,0))
-    return img
-
 p_generate = jax.pmap(generate, "batch")
 p_get_images = jax.pmap(get_images, "batch")
 
 bart_params = replicate(model.params)
 vqgan_params = replicate(vqgan.params)
-
-# ## CLIP Scoring
-from transformers import CLIPProcessor, FlaxCLIPModel
 
 clip = FlaxCLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 print("Initialize FlaxCLIPModel")
@@ -137,7 +119,7 @@ def top_k_predictions(prompt, num_candidates=32, k=8):
 
 def run_inference(prompt, num_images=32, num_preds=8):
     images = top_k_predictions(prompt, num_candidates=num_images, k=num_preds)
-    predictions = compose_predictions(images)
+    predictions = captioned_strip(images)
     output_title = f"""
     <b>{prompt}</b>
     """
@@ -152,7 +134,7 @@ description = """
 DALL·E-mini is an AI model that generates images from any prompt you give! Generate images from text:
 """
 gr.Interface(run_inference, 
-    inputs=[gr.inputs.Textbox(label='What do you want to see?')], #, gr.inputs.Slider(1,64,1,8, label='Candidates to generate'), gr.inputs.Slider(1,8,1,1, label='Best predictions to show')], 
+    inputs=[gr.inputs.Textbox(label='What do you want to see?')],
     outputs=outputs, 
     title='DALL·E mini',
     description=description,

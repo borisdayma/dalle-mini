@@ -7,25 +7,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO
 import base64
+import os
 
 import gradio as gr
 
-# If we use streamlit, this would be exported as a streamlit secret
-import os
+from dalle_mini.helpers import captioned_strip
+
+
 backend_url = os.environ["BACKEND_SERVER"]
 
-def compose_predictions(images, caption=None):
-    increased_h = 0 if caption is None else 48
-    w, h = images[0].size[0], images[0].size[1]
-    img = Image.new("RGB", (len(images)*w, h + increased_h))
-    for i, img_ in enumerate(images):
-        img.paste(img_, (i*w, increased_h))
-
-    if caption is not None:
-        draw = ImageDraw.Draw(img)
-        font = ImageFont.truetype("/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf", 40)
-        draw.text((20, 3), caption, (255,255,255), font=font)
-    return img
 
 class ServiceError(Exception):
     def __init__(self, status_code):
@@ -46,7 +36,7 @@ def get_images_from_ngrok(prompt):
 def run_inference(prompt):
     try:
         images = get_images_from_ngrok(prompt)
-        predictions = compose_predictions(images)
+        predictions = captioned_strip(images)
         output_title = f"""
         <p style="font-size:22px; font-style:bold">Best predictions</p>
         <p>We asked our model to generate 128 candidates for your prompt:</p>
