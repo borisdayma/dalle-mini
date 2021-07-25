@@ -22,29 +22,13 @@ You can create your own pictures with [the demo](https://huggingface.co/spaces/f
 
 Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
 
-## Where does the logo come from?
-
-The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone to us.
-
 ## Development
-
-This section is for the adventurous people wanting to look into the code.
 
 ### Dependencies Installation
 
 The root folder and associated `requirements.txt` is only for the app.
 
-You will find necessary requirements in each sub-section.
-
-You should create a new python virtual environment and install the project dependencies inside the virtual env. You need to use the `-f` (`--find-links`) option for `pip` to be able to find the appropriate `libtpu` required for the TPU hardware.
-
-Adapt the installation to your own hardware and follow library installation instructions.
-
-```
-$ pip install -r requirements.txt -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-```
-
-If you use `conda`, you can create the virtual env and install everything using: `conda env update -f environments.yaml`
+For development, use [`dev/requirements.txt`](dev/requirements.txt) or [`dev/environment.yaml`](dev/environment.yaml).
 
 ### Training of VQGAN
 
@@ -58,13 +42,19 @@ Use [patil-suraj/vqgan-jax](https://github.com/patil-suraj/vqgan-jax).
 
 ### Training of Seq2Seq
 
-Refer to `dev/seq2seq` folder.
+Refer to [`dev/seq2seq`](dev/seq2seq) folder.
 
 You can also adjust the [sweep configuration file](https://docs.wandb.ai/guides/sweeps) if you need to perform a hyperparameter search.
 
-### Inference
+### Inference Pipeline
 
-Refer to `dev/notebooks/demo`.
+To generate sample predictions and understand the inference pipeline step by step, refer to [`dev/inference/inference_pipeline.ipynb`](dev/inference/inference_pipeline.ipynb).
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/dev/inference/inference_pipeline.ipynb)
+
+## Where does the logo come from?
+
+The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone to us.
 
 ## Authors
 

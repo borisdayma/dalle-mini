@@ -4,16 +4,14 @@
 import random
 
 import jax
-import flax.linen as nn
 from flax.training.common_utils import shard
 from flax.jax_utils import replicate, unreplicate
 
 from transformers.models.bart.modeling_flax_bart import *
 from transformers import BartTokenizer, FlaxBartForConditionalGeneration
 
-import io
+import os
 
-import requests
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
@@ -23,57 +21,23 @@ import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 from torchvision.transforms import InterpolationMode
 
-from dalle_mini.vqgan_jax.modeling_flax_vqgan import VQModel
+from dalle_mini.model import CustomFlaxBartForConditionalGeneration
+from vqgan_jax.modeling_flax_vqgan import VQModel
 
-# TODO: set those args in a config file
-OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
-OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
-BOS_TOKEN_ID = 16384
-BASE_MODEL = 'facebook/bart-large-cnn'
-
-class CustomFlaxBartModule(FlaxBartModule):
-    def setup(self):
-        # we keep shared to easily load pre-trained weights
-        self.shared = nn.Embed(
-            self.config.vocab_size,
-            self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-            dtype=self.dtype,
-        )
-        # a separate embedding is used for the decoder
-        self.decoder_embed = nn.Embed(
-            OUTPUT_VOCAB_SIZE,
-            self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-            dtype=self.dtype,
-        )
-        self.encoder = FlaxBartEncoder(self.config, dtype=self.dtype, embed_tokens=self.shared)
-
-        # the decoder has a different config
-        decoder_config = BartConfig(self.config.to_dict())
-        decoder_config.max_position_embeddings = OUTPUT_LENGTH
-        decoder_config.vocab_size = OUTPUT_VOCAB_SIZE
-        self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
-
-class CustomFlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
-    def setup(self):
-        self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
-        self.lm_head = nn.Dense(
-            OUTPUT_VOCAB_SIZE,
-            use_bias=False,
-            dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-        )
-        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, OUTPUT_VOCAB_SIZE))
-
-class CustomFlaxBartForConditionalGeneration(FlaxBartForConditionalGeneration):
-    module_class = CustomFlaxBartForConditionalGenerationModule
-
+# ## CLIP Scoring
+from transformers import CLIPProcessor, FlaxCLIPModel
 
 import wandb
 import os
+
+from dalle_mini.helpers import captioned_strip
+
+
 os.environ["WANDB_SILENT"] = "true"
 os.environ["WANDB_CONSOLE"] = "off"
+
+# TODO: used for legacy support
+BASE_MODEL = 'facebook/bart-large-cnn'
 
 # set id to None so our latest images don't get overwritten
 id = None
@@ -87,8 +51,10 @@ artifact = run.use_artifact('wandb/hf-flax-dalle-mini/model-4oh3u7ca:latest', ty
 artifact_dir = artifact.download()
 
 # create our model
-tokenizer = BartTokenizer.from_pretrained(BASE_MODEL)
 model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
+
+# TODO: legacy support (earlier models)
+tokenizer = BartTokenizer.from_pretrained(BASE_MODEL)
 model.config.force_bos_token_to_be_generated = False
 model.config.forced_bos_token_id = None
 model.config.forced_eos_token_id = None
@@ -143,9 +109,6 @@ p_get_images = jax.pmap(get_images, "batch")
 bart_params = replicate(model.params)
 vqgan_params = replicate(vqgan.params)
 
-# ## CLIP Scoring
-from transformers import CLIPProcessor, FlaxCLIPModel
-
 clip = FlaxCLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
@@ -170,15 +133,11 @@ def hallucinate(prompt, num_images=64):
 
 def clip_top_k(prompt, images, k=8):
     inputs = processor(text=prompt, images=images, return_tensors="np", padding=True)
+    # FIXME: image should be resized and normalized prior to being processed by CLIP
     outputs = clip(**inputs)
     logits = outputs.logits_per_text
     scores = np.array(logits[0]).argsort()[-k:][::-1]
     return [images[score] for score in scores]
-
-
-# ## Log to wandb
-
-from dalle_mini.helpers import captioned_strip
 
 def log_to_wandb(prompts):
     strips = []

@@ -46,7 +46,7 @@ DALL·E mini is an AI model that generates images from any prompt you give!
 <p style='text-align: center'>
 Created by Boris Dayma et al. 2021
 <br/>
-<a href="https://github.com/borisdayma/dalle-mini">GitHub</a> | <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">Project Report</a>
+<a href="https://github.com/borisdayma/dalle-mini" target="_blank">GitHub</a> | <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA" target="_blank">Project Report</a>
 </p>
         """, unsafe_allow_html=True)
 

@@ -10,6 +10,7 @@ jupyter
 wandb
 nltk
 optax
+git+https://github.com/patil-suraj/vqgan-jax.git@610d842dd33c739325a944102ed33acc07692dd5
 
 # Inference
 ftfy
