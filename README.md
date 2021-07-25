@@ -26,7 +26,7 @@ Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini
 
 ### Dependencies Installation
 
-The root folder and associated `requirements.txt` is only for the app.
+The root folder and associated [`requirements.txt`](./requirements.txt) is only for the app.
 
 For development, use [`dev/requirements.txt`](dev/requirements.txt) or [`dev/environment.yaml`](dev/environment.yaml).
 
