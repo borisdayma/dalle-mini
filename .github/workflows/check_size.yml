@@ -14,4 +14,4 @@ jobs:
       - name: Check large files
         uses: ActionsDesk/lfs-warning@v2.0
         with:
-          filesizelimit: 900000 # so we can sync to HF spaces
+          filesizelimit: 9000000 # so we can sync to HF spaces
