@@ -18,11 +18,15 @@ from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 
-
 from vqgan_jax.modeling_flax_vqgan import VQModel
 from dalle_mini.model import CustomFlaxBartForConditionalGeneration
 
+# ## CLIP Scoring
+from transformers import CLIPProcessor, FlaxCLIPModel
+
 import gradio as gr
+
+from dalle_mini.helpers import captioned_strip
 
 
 DALLE_REPO = 'flax-community/dalle-mini'
@@ -58,33 +62,11 @@ def generate(input, rng, params):
 def get_images(indices, params):
     return vqgan.decode_code(indices, params=params)
 
-def plot_images(images):
-    fig = plt.figure(figsize=(40, 20))
-    columns = 4
-    rows = 2
-    plt.subplots_adjust(hspace=0, wspace=0)
-
-    for i in range(1, columns*rows +1):
-        fig.add_subplot(rows, columns, i)
-        plt.imshow(images[i-1])
-    plt.gca().axes.get_yaxis().set_visible(False)
-    plt.show()
-    
-def stack_reconstructions(images):
-    w, h = images[0].size[0], images[0].size[1]
-    img = Image.new("RGB", (len(images)*w, h))
-    for i, img_ in enumerate(images):
-        img.paste(img_, (i*w,0))
-    return img
-
 p_generate = jax.pmap(generate, "batch")
 p_get_images = jax.pmap(get_images, "batch")
 
 bart_params = replicate(model.params)
 vqgan_params = replicate(vqgan.params)
-
-# ## CLIP Scoring
-from transformers import CLIPProcessor, FlaxCLIPModel
 
 clip = FlaxCLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 print("Initialize FlaxCLIPModel")
@@ -137,48 +119,30 @@ def top_k_predictions(prompt, num_candidates=32, k=8):
 
 def run_inference(prompt, num_images=32, num_preds=8):
     images = top_k_predictions(prompt, num_candidates=num_images, k=num_preds)
-    predictions = compose_predictions(images)
+    predictions = captioned_strip(images)
     output_title = f"""
-    <p style="font-size:22px; font-style:bold">Best predictions</p>
-    <p>We asked our model to generate 32 candidates for your prompt:</p>
-
-    <pre>
-
     <b>{prompt}</b>
-    </pre>
-    <p>We then used a pre-trained <a href="https://huggingface.co/openai/clip-vit-base-patch32">CLIP model</a> to score them according to the
-    similarity of the text and the image representations.</p>
-
-    <p>This is the result:</p>
     """
-    output_description = """
-    <p>Read more about the process <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA">in our report</a>.<p>
-    <p style='text-align: center'>Created with <a href="https://github.com/borisdayma/dalle-mini">DALLE·mini</a></p>
-    """
-    return (output_title, predictions, output_description)
+    return (output_title, predictions)
 
 outputs = [
     gr.outputs.HTML(label=""),      # To be used as title
     gr.outputs.Image(label=''),
-    gr.outputs.HTML(label=""),      # Additional text that appears in the screenshot
 ]
 
 description = """
-Welcome to our demo of DALL·E-mini. This project was created on TPU v3-8s during the 🤗 Flax / JAX Community Week.
-It reproduces the essential characteristics of OpenAI's DALL·E, at a fraction of the size.
-
-Please, write what you would like the model to generate, or select one of the examples below.
+DALL·E-mini is an AI model that generates images from any prompt you give! Generate images from text:
 """
 gr.Interface(run_inference, 
-    inputs=[gr.inputs.Textbox(label='Prompt')], #, gr.inputs.Slider(1,64,1,8, label='Candidates to generate'), gr.inputs.Slider(1,8,1,1, label='Best predictions to show')], 
+    inputs=[gr.inputs.Textbox(label='What do you want to see?')],
     outputs=outputs, 
     title='DALL·E mini',
     description=description,
-    article="<p style='text-align: center'> DALLE·mini by Boris Dayma et al. | <a href='https://github.com/borisdayma/dalle-mini'>GitHub</a></p>",
+    article="<p style='text-align: center'> Created by Boris Dayma et al. 2021 | <a href='https://github.com/borisdayma/dalle-mini'>GitHub</a> | <a href='https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA'>Report</a></p>",
     layout='vertical',
     theme='huggingface',
     examples=[['an armchair in the shape of an avocado'], ['snowy mountains by the sea']],
     allow_flagging=False,
     live=False,
     # server_port=8999
-).launch()
+).launch(share=True)
