@@ -20,10 +20,6 @@ Script adapted from run_summarization_flax.py
 # You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
 
 import os
-# set a common huggingface cache folder (used with datasets and transformers) and wandb cache folder (used with artifacts)
-os.environ['HF_HOME'] = '/data/huggingface/'     # required before importing transformers & datasets
-os.environ['WANDB_CACHE_DIR'] = '/data/wandb/'   # required before importing wandb
-
 import logging as pylogging    # To avoid collision with transformers.utils.logging
 import sys
 import time
@@ -442,6 +438,7 @@ def main():
         if (Path(artifact_dir) / 'opt_state.msgpack').exists():
             with (Path(artifact_dir) /  'opt_state.msgpack').open('rb') as f:
                 opt_state = from_bytes(state.opt_state, f.read())
+            state.replace(opt_state=opt_state)
         
         # restore steps
         if (Path(artifact_dir) / 'training_state.json').exists():
@@ -836,6 +833,10 @@ def main():
                 artifact.add_file(str(Path(training_args.output_dir) / 'training_state.json'))
                 wandb.run.log_artifact(artifact)
 
+                # save some space
+                c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
+                c.cleanup(wandb.util.from_human_size("15GB"))
+
             # save to the hub
             if training_args.push_to_hub:
                 model.save_pretrained(
@@ -866,7 +867,7 @@ def main():
                 # log metrics
                 wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
 
-            if global_step % training_args.eval_steps == 0:
+            if training_args.eval_steps and global_step % training_args.eval_steps == 0:
                 run_evaluation()
             
             if global_step % data_args.save_model_steps == 0:
