@@ -52,7 +52,16 @@ To generate sample predictions and understand the inference pipeline step by ste
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/dev/inference/inference_pipeline.ipynb)
 
-## Where does the logo come from?
+## FAQ
+
+### Where to find the latest models?
+
+Trained models are on 🤗 Model Hub:
+
+- [VQGAN-f16-16384](https://huggingface.co/flax-community/vqgan_f16_16384) for encoding/decoding images
+- [DALL·E mini](https://huggingface.co/flax-community/dalle-mini) for generating images from a text prompt
+
+### Where does the logo come from?
 
 The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone to us.
 
