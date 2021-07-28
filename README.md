@@ -1,8 +1,8 @@
 ---
 title: DALL·E mini
 emoji: 🥑
-colorFrom: red
-colorTo: purple
+colorFrom: yellow
+colorTo: green
 sdk: streamlit
 app_file: app/app.py
 pinned: false
