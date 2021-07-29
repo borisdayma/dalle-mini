@@ -435,18 +435,16 @@ def main():
 
     def restore_state(state, artifact_dir):
         # restore optimizer state
-        if (Path(artifact_dir) / 'opt_state.msgpack').exists():
-            with (Path(artifact_dir) /  'opt_state.msgpack').open('rb') as f:
-                opt_state = from_bytes(state.opt_state, f.read())
-            state.replace(opt_state=opt_state)
+        with (Path(artifact_dir) /  'opt_state.msgpack').open('rb') as f:
+            opt_state = from_bytes(state.opt_state, f.read())
         
         # restore steps
-        if (Path(artifact_dir) / 'training_state.json').exists():
-            with (Path(artifact_dir) /  'training_state.json').open('r') as f:
-                training_state = json.load(f)
-            step = training_state['step']
-            optimizer_step = step // training_args.gradient_accumulation_steps
-            state.replace(step=step, optimizer_step=optimizer_step)
+        with (Path(artifact_dir) /  'training_state.json').open('r') as f:
+            training_state = json.load(f)
+        step = training_state['step']
+        optimizer_step = step // training_args.gradient_accumulation_steps
+
+        return step, optimizer_step, opt_state
     
     if model_args.from_checkpoint is not None:
         artifact = wandb.run.use_artifact(model_args.from_checkpoint)
@@ -668,7 +666,8 @@ def main():
     )
     if model_args.from_checkpoint is not None:
         # restore optimizer state, step and optimizer_step
-        restore_state(state, artifact_dir)
+        step, optimizer_step, opt_state = restore_state(state, artifact_dir)
+        state = state.replace(step=step, optimizer_step=optimizer_step, opt_state=opt_state)
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
