@@ -86,14 +86,13 @@ The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL
 If you find DALL·E mini useful in your research or wish to refer, please use the following BibTeX entry.
 
 ```
-@misc{dalle_mini2021,
-  author = {Boris Dayma, Suraj Patil, Pedro Cuenca, Khalid Saifullah, Tanishq Abraham, Phúc Lê Khắc, Luke Melas, Ritobrata Ghosh},
-  title = {DALL·E mini},
-  year = {2021},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  doi = {10.5281/zenodo.4414861},
-  howpublished = {\url{https://github.com/borisdayma/dalle-mini}}
+@misc{Dayma_DALL·E_Mini_2021,
+author = {Dayma, Boris and Patil, Suraj and Cuenca, Pedro and Saifullah, Khalid and Abraham, Tanishq and Lê Khắc, Phúc and Melas, Luke and Ghosh, Ritobrata},
+doi = {10.5281/zenodo.1234},
+month = {7},
+title = {DALL·E Mini},
+url = {https://github.com/borisdayma/dalle-mini},
+year = {2021}
 }
 ```
 
