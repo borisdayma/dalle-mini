@@ -95,7 +95,6 @@ If you find DALL·E mini useful in your research or wish to refer, please use th
   doi = {10.5281/zenodo.4414861},
   howpublished = {\url{https://github.com/borisdayma/dalle-mini}}
 }
-
 ```
 
 ## References
