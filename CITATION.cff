@@ -36,7 +36,7 @@ keywords:
   - "zero-shot"
   - JAX
 license: "Apache-2.0"
-doi: 10.5281/zenodo.1234
+doi: 10.5281/zenodo.5146400
 message: "If you use this project, please cite it using these metadata."
 repository-code: "https://github.com/borisdayma/dalle-mini"
 title: "DALL·E Mini"
