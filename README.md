@@ -80,3 +80,66 @@ The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL
 
 - 🤗 Hugging Face for organizing [the FLAX/JAX community week](https://github.com/huggingface/transformers/tree/master/examples/research_projects/jax-projects)
 - Google Cloud team for providing access to TPU's
+
+## Citing DALL·E mini
+
+If you find DALL·E mini useful in your research or wish to refer, please use the following BibTeX entry.
+
+```
+@misc{dalle_mini2021,
+  author = {Boris Dayma, Suraj Patil, Pedro Cuenca, Khalid Saifullah, Tanishq Abraham, Phúc Lê Khắc, Luke Melas, Ritobrata Ghosh},
+  title = {DALL·E mini},
+  year = {2021},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  doi = {10.5281/zenodo.4414861},
+  howpublished = {\url{https://github.com/borisdayma/dalle-mini}}
+}
+
+```
+
+## References
+
+```
+@misc{ramesh2021zeroshot,
+      title={Zero-Shot Text-to-Image Generation}, 
+      author={Aditya Ramesh and Mikhail Pavlov and Gabriel Goh and Scott Gray and Chelsea Voss and Alec Radford and Mark Chen and Ilya Sutskever},
+      year={2021},
+      eprint={2102.12092},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+```
+
+```
+@misc{esser2021taming,
+      title={Taming Transformers for High-Resolution Image Synthesis}, 
+      author={Patrick Esser and Robin Rombach and Björn Ommer},
+      year={2021},
+      eprint={2012.09841},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+```
+
+```
+@misc{lewis2019bart,
+      title={BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension}, 
+      author={Mike Lewis and Yinhan Liu and Naman Goyal and Marjan Ghazvininejad and Abdelrahman Mohamed and Omer Levy and Ves Stoyanov and Luke Zettlemoyer},
+      year={2019},
+      eprint={1910.13461},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}
+}
+```
+
+```
+@misc{radford2021learning,
+      title={Learning Transferable Visual Models From Natural Language Supervision}, 
+      author={Alec Radford and Jong Wook Kim and Chris Hallacy and Aditya Ramesh and Gabriel Goh and Sandhini Agarwal and Girish Sastry and Amanda Askell and Pamela Mishkin and Jack Clark and Gretchen Krueger and Ilya Sutskever},
+      year={2021},
+      eprint={2103.00020},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+```
