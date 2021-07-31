@@ -1,31 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import random
 from dalle_mini.backend import ServiceError, get_images_from_backend
-
 import streamlit as st
 
-# streamlit.session_state is not available in Huggingface spaces.
-# Session state hack https://huggingface.slack.com/archives/C025LJDP962/p1626527367443200?thread_ts=1626525999.440500&cid=C025LJDP962
-
-from streamlit.report_thread import get_report_ctx
-def query_cache(q_emb=None):
-    ctx = get_report_ctx()
-    session_id = ctx.session_id
-    session = st.server.server.Server.get_current()._get_session_info(session_id).session
-    if not hasattr(session, "_query_state"):
-        setattr(session, "_query_state", q_emb)
-    if q_emb:
-        session._query_state = q_emb
-    return session._query_state
-
-def set_run_again(state):
-    query_cache(state)
-
 def should_run_again():
-    state = query_cache()
-    return state if state is not None else False
+    return st.session_state.get("again", False)
 
 st.sidebar.markdown("""
 <style>
@@ -57,7 +37,7 @@ prompt = st.text_input("What do you want to see?")
 
 test = st.empty()
 DEBUG = False
-if prompt != "" or (should_run_again and prompt != ""):
+if prompt != "" or (should_run_again() and prompt != ""):
     container = st.empty()
     # The following mimics `streamlit.info()`.
     # I tried to get the secondary background color using `components.streamlit.config.get_options_for_section("theme")["secondaryBackgroundColor"]`
@@ -91,8 +71,7 @@ if prompt != "" or (should_run_again and prompt != ""):
             cols[i%4].image(img)
 
         container.markdown(f"**{prompt}**")
-        
-        set_run_again(st.button('Again!', key='again_button'))
+        st.session_state["again"] = st.button('Again!', key='again_button')
     
     except ServiceError as error:
         container.text(f"Service unavailable, status: {error.status_code}")
