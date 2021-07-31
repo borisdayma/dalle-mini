@@ -66,7 +66,7 @@ if prompt != "" or (should_run_again and prompt != ""):
         <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/app/img/loading.gif" width="30"/>
         Generating predictions for: <b>{prompt}</b>
         </p>
-        <small><i>Predictions may take up to 40s under high load. Please, stand by.</i></small>
+        <small><i>Predictions may take up to 40s under high load. Please stand by.</i></small>
     """, unsafe_allow_html=True)
     # container.markdown("more markdown")
 
