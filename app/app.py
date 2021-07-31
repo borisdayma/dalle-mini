@@ -55,24 +55,31 @@ st.subheader('Generate images from text')
 
 prompt = st.text_input("What do you want to see?")
 
-#TODO: I think there's an issue where we can't run twice the same inference (not due to caching) - may need to use st.form
-
+test = st.empty()
 DEBUG = False
 if prompt != "" or (should_run_again and prompt != ""):
     container = st.empty()
+    # The following mimics `streamlit.info()`.
+    # I tried to get the secondary background color using `components.streamlit.config.get_options_for_section("theme")["secondaryBackgroundColor"]`
+    # but it returns None.
     container.markdown(f"""
-        <style> p {{ margin:0 }} </style>
-        <p style="background-color:#FCF3CF;">
-        <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/app/img/loading.gif" width="30"/>
-        Generating predictions for: <b>{prompt}</b>
-        </p>
+        <style> p {{ margin:0 }} div {{ margin:0 }} </style>
+        <div data-stale="false" class="element-container css-1e5imcs e1tzin5v1">
+        <div class="stAlert">
+        <div role="alert" data-baseweb="notification" class="st-ae st-af st-ag st-ah st-ai st-aj st-ak st-g3 st-am st-b8 st-ao st-ap st-aq st-ar st-as st-at st-au st-av st-aw st-ax st-ay st-az st-b9 st-b1 st-b2 st-b3 st-b4 st-b5 st-b6">
+        <div class="st-b7">
+        <div class="css-whx05o e13vu3m50">
+        <div data-testid="stMarkdownContainer" class="css-1ekf893 e16nr0p30">
+                <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/app/img/loading.gif" width="30"/>
+                Generating predictions for: <b>{prompt}</b>
+        </div>
+        </div>
+        </div>
+        </div>
+        </div>
+        </div>
         <small><i>Predictions may take up to 40s under high load. Please, stand by.</i></small>
     """, unsafe_allow_html=True)
-    # container.markdown("more markdown")
-
-    # container.markdown(f"Generating predictions for: **{prompt}**")
-    # container.info(f"this is an info field")
-    # container.warning(f"this is a warning field")
 
     try:
         backend_url = st.secrets["BACKEND_SERVER"]
