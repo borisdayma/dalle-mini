@@ -60,7 +60,19 @@ prompt = st.text_input("What do you want to see?")
 DEBUG = False
 if prompt != "" or (should_run_again and prompt != ""):
     container = st.empty()
-    container.markdown(f"Generating predictions for: **{prompt}**")
+    container.markdown(f"""
+        <style> p {{ margin:0 }} </style>
+        <p style="background-color:#FCF3CF;">
+        <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/app/img/loading.gif" width="30"/>
+        Generating predictions for: <b>{prompt}</b>
+        </p>
+        <small><i>Predictions may take up to 40s under high load. Please, stand by.</i></small>
+    """, unsafe_allow_html=True)
+    # container.markdown("more markdown")
+
+    # container.markdown(f"Generating predictions for: **{prompt}**")
+    # container.info(f"this is an info field")
+    # container.warning(f"this is a warning field")
 
     try:
         backend_url = st.secrets["BACKEND_SERVER"]
