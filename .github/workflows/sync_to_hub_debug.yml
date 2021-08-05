@@ -1,0 +1,16 @@
+name: Deploy to debug app
+
+  # to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  sync-to-hub-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Push to hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: git push --force https://boris:$HF_TOKEN@huggingface.co/spaces/flax-community/dalle-mini-debug main
