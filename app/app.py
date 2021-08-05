@@ -37,7 +37,7 @@ st.sidebar.markdown("""
     <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/img/logo.png"/>
 </p>
 """, unsafe_allow_html=True)
-st.sidebar.markdown("""
+st.sidebar.markdown(f"""
 ___
 <p style='text-align: center'>
 DALL·E mini is an AI model that generates images from any prompt you give!
@@ -48,6 +48,8 @@ Created by Boris Dayma et al. 2021
 <br/>
 <a href="https://github.com/borisdayma/dalle-mini" target="_blank">GitHub</a> | <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA" target="_blank">Project Report</a>
 </p>
+
+<p style='text-align: center'><small>Streamlit {st.__version__}</small></p>
         """, unsafe_allow_html=True)
 
 st.header('DALL·E mini')
