@@ -157,11 +157,16 @@ class DataTrainingArguments:
     train_file: Optional[str] = field(default=None, metadata={"help": "The input training data file (a text file)."})
     validation_file: Optional[str] = field(
         default=None,
-        metadata={"help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."},
+        metadata={"help": "An optional input evaluation data file (a text file)."},
     )
     test_file: Optional[str] = field(
         default=None,
         metadata={"help": "An optional input predict data file to do prediction on (a text file)."},
+    )
+    train_file_list: Optional[str] = field(default=None, metadata={"help": "A file containing a list of training data files."})
+    validation_file_list: Optional[str] = field(
+        default=None,
+        metadata={"help": "A file containing a list of validation data files."},
     )
     max_source_length: Optional[int] = field(
         default=128,
@@ -248,12 +253,14 @@ class DataTrainingArguments:
     )
 
     def __post_init__(self):
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-            raise ValueError("Need either a dataset name or a training/validation file.")
+        no_train = self.train_file is None and self.train_file_list is None
+        no_valid = self.validation_file is None and self.validation_file_list is None
+        if self.dataset_name is None and no_train and no_valid:
+            raise ValueError("Need either a dataset name or training/validation files.")
         else:
             if self.train_file is not None:
                 extension = self.train_file.split(".")[-1]
-                assert extension in ["tsv", "csv", "json"], "`train_file` should be a tsv, csv or json file."
+                assert extension in ["tsv", "csv", "json"], "`train_file` should be a tsv, csv or json file."                
             if self.validation_file is not None:
                 extension = self.validation_file.split(".")[-1]
                 assert extension in ["tsv", "csv", "json"], "`validation_file` should be a tsv, csv or json file."
@@ -363,6 +370,10 @@ def wandb_log(metrics, step=None, prefix=None):
             log_metrics['train/step'] = step
         wandb.log(log_metrics)
 
+def read_file_list(list_file_name):
+    with open(list_file_name) as f:
+        files = f.readlines()
+        return [name.strip() for name in files]
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -429,7 +440,15 @@ def main():
         data_files["validation"] = data_args.validation_file
     if data_args.test_file is not None:
         data_files["test"] = data_args.test_file
-    dataset = load_dataset("csv", data_files=data_files, cache_dir=model_args.cache_dir, delimiter="\t")
+
+    if data_args.train_file_list is not None:
+        data_files["train"] = read_file_list(data_args.train_file_list)
+    if data_args.validation_file_list is not None:
+        data_files["validation"] = read_file_list(data_args.validation_file_list)
+
+    # TODO: infer dataset type instead of hardcoding
+    dataset = load_dataset("json", data_files=data_files, cache_dir=model_args.cache_dir)
+
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
