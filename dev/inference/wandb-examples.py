@@ -32,6 +32,7 @@ from functools import partial
 
 from dalle_mini.helpers import captioned_strip
 
+MODEL = '13clbm7t'
 
 os.environ["WANDB_SILENT"] = "true"
 os.environ["WANDB_CONSOLE"] = "off"
@@ -39,17 +40,44 @@ os.environ["WANDB_CONSOLE"] = "off"
 # TODO: used for legacy support
 BASE_MODEL = 'facebook/bart-large-cnn'
 
-# set id to None so our latest images don't get overwritten
+# We'll reuse the same run, saving the id to disk if it does not exist.
 id = None
+run_file = 'wandb_examples_run'
+try:
+    with open(run_file, "r") as f:
+        id = f.read()
+except FileNotFoundError:
+    id = None
+
 run = wandb.init(id=id,
         entity='wandb',
         project="hf-flax-dalle-mini",
         job_type="predictions",
         resume="allow"
 )
-artifact = run.use_artifact('wandb/hf-flax-dalle-mini/model-4oh3u7ca:latest', type='bart_model')
+print(f"run id: {run.id}")
+with open(run_file, "w") as f:
+    f.write(run.id)
+
+artifact = run.use_artifact(f'wandb/hf-flax-dalle-mini/model-{MODEL}:latest', type='bart_model')
 artifact_dir = artifact.download()
 
+# Abort if model version is the same we last logged
+version_file = 'last_logged_model.txt'
+try:
+    with open(version_file, "r") as f:
+        model_version = f.read()
+        if model_version == artifact.version:
+            print("Skipping run - no new model")
+            import sys
+            sys.exit(0)
+except FileNotFoundError:
+    pass 
+
+# Save current version
+with open(version_file, "w") as f:
+    f.write(artifact.version)
+    
 # create our model
 model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
 
@@ -127,9 +155,9 @@ def log_to_wandb(prompts):
         selected = clip_top_k(prompt, images, k=8)
         strip = captioned_strip(selected, prompt)
         strips.append(wandb.Image(strip))
-    wandb.log({"images": strips})
+    wandb.log({"images": strips, "version": artifact.version})
 
-prompts = prompts = [
+prompts = [
     "white snow covered mountain under blue sky during daytime",
     "aerial view of beach during daytime",
     "aerial view of beach at night",
