@@ -28,7 +28,7 @@ from vqgan_jax.modeling_flax_vqgan import VQModel
 from transformers import CLIPProcessor, FlaxCLIPModel
 
 import wandb
-import os
+from functools import partial
 
 from dalle_mini.helpers import captioned_strip
 
@@ -69,6 +69,7 @@ def custom_to_pil(x):
         x = x.convert("RGB")
     return x
 
+@partial(jax.pmap, axis_name="batch")
 def generate(input, rng, params):
     return model.generate(
         **input,
@@ -81,30 +82,9 @@ def generate(input, rng, params):
         params=params,
     )
 
+@partial(jax.pmap, axis_name="batch")
 def get_images(indices, params):
     return vqgan.decode_code(indices, params=params)
-
-def plot_images(images):
-    fig = plt.figure(figsize=(40, 20))
-    columns = 4
-    rows = 2
-    plt.subplots_adjust(hspace=0, wspace=0)
-
-    for i in range(1, columns*rows +1):
-        fig.add_subplot(rows, columns, i)
-        plt.imshow(images[i-1])
-    plt.gca().axes.get_yaxis().set_visible(False)
-    plt.show()
-    
-def stack_reconstructions(images):
-    w, h = images[0].size[0], images[0].size[1]
-    img = Image.new("RGB", (len(images)*w, h))
-    for i, img_ in enumerate(images):
-        img.paste(img_, (i*w,0))
-    return img
-
-p_generate = jax.pmap(generate, "batch")
-p_get_images = jax.pmap(get_images, "batch")
 
 bart_params = replicate(model.params)
 vqgan_params = replicate(vqgan.params)
@@ -122,10 +102,10 @@ def hallucinate(prompt, num_images=64):
         key = random.randint(0, 1e7)
         rng = jax.random.PRNGKey(key)
         rngs = jax.random.split(rng, jax.local_device_count())
-        indices = p_generate(inputs, rngs, bart_params).sequences
+        indices = generate(inputs, rngs, bart_params).sequences
         indices = indices[:, :, 1:]
 
-        images = p_get_images(indices, vqgan_params)
+        images = get_images(indices, vqgan_params)
         images = np.squeeze(np.asarray(images), 1)
         for image in images:
             all_images.append(custom_to_pil(image))
