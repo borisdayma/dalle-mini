@@ -79,7 +79,8 @@ The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL
 ## Acknowledgements
 
 - 🤗 Hugging Face for organizing [the FLAX/JAX community week](https://github.com/huggingface/transformers/tree/master/examples/research_projects/jax-projects)
-- Google Cloud team for providing access to TPU's
+- Google [TPU Research Cloud (TRC) program](https://sites.research.google/trc/) for providing computing resources
+- [Weights & Biases](https://wandb.com/) for providing the infrastructure for experiment tracking and model management
 
 ## Citing DALL·E mini
 
