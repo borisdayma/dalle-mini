@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import random
 from dalle_mini.backend import ServiceError, get_images_from_backend
 
 import streamlit as st
