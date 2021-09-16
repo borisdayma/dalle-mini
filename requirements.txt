@@ -1,5 +1,0 @@
-# Requirements for huggingface spaces
-streamlit>=0.84.2
-
-# dalle-mini
-.
