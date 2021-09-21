@@ -87,7 +87,7 @@ if prompt != "" or (should_run_again and prompt != ""):
 
         cols = st.beta_columns(4)
         for i, img in enumerate(selected):
-            cols[i%4].image(img)
+            cols[i%4].image(img, use_column_width=False)
 
         container.markdown(f"**{prompt}**")
         
