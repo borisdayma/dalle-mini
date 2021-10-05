@@ -506,7 +506,9 @@ def main():
         "validation": data_args.validation_file,
     }
     dataset = load_dataset(
-        data_args.dataset_repo_or_path, data_files=data_files, streaming=True
+        data_args.dataset_repo_or_path,
+        data_files=data_files,
+        streaming=data_args.streaming,
     )
 
     # Set up items to load or create
