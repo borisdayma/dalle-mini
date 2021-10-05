@@ -922,11 +922,8 @@ def main():
                 eval_metrics.append(metrics)
 
             # normalize eval metrics
-            breakpoint()
             eval_metrics = get_metrics(eval_metrics)
-            breakpoint()
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
-            breakpoint()
 
             # log metrics
             wandb_log(eval_metrics, step=global_step, prefix="eval")
