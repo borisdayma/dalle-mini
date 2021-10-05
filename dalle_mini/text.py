@@ -5,8 +5,9 @@ Utilities for processing text.
 import requests
 from pathlib import Path
 from unidecode import unidecode
-import re, math, random, html
 
+import re, math, random, html
+import ftfy
 
 WIKI_STATS_URL = "https://github.com/borisdayma/wikipedia-word-frequency/raw/feat-update/results/enwiki-20210820-words-frequency.txt"
 WIKI_STATS_LOCAL = Path(WIKI_STATS_URL).parts[-1]
@@ -220,6 +221,9 @@ class TextNormalizer:
         self._hashtag_processor = HashtagProcessor()
 
     def __call__(self, t, clip=False):
+
+        # fix some characters
+        t = ftfy.fix_text(t)
         # fix html
         t = fix_html(t)
         if not clip:
