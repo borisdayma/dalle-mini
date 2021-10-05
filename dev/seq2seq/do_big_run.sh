@@ -1,16 +1,16 @@
 python run_seq2seq_flax.py \
-	--max_source_length 128 \
 	--dataset_repo_or_path dalle-mini/encoded \
 	--train_file **/train/*/*.jsonl \
 	--validation_file **/valid/*/*.jsonl \
+	--len_train 42684248 \
+	--len_eval 34328 \
 	--streaming \
-	--len_train 1000000 \
-	--len_eval 100 \
+	--normalize_text \
 	--output_dir output \
 	--per_device_train_batch_size 56 \
 	--per_device_eval_batch_size 56 \
 	--preprocessing_num_workers 80 \
-	--warmup_steps 250 \
+	--warmup_steps 500 \
 	--gradient_accumulation_steps 8 \
 	--do_train \
 	--do_eval \

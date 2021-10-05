@@ -138,16 +138,6 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    dataset_name: Optional[str] = field(
-        default=None,
-        metadata={"help": "The name of the dataset to use (via the datasets library)."},
-    )
-    dataset_config_name: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "The configuration name of the dataset to use (via the datasets library)."
-        },
-    )
     text_column: Optional[str] = field(
         default="caption",
         metadata={
@@ -260,14 +250,10 @@ class DataTrainingArguments:
     )
 
     def __post_init__(self):
-        if (
-            self.dataset_name is None
-            and self.train_file is None
-            and self.validation_file is None
-        ):
-            raise ValueError(
-                "Need either a dataset name or a training/validation file."
-            )
+        if self.dataset_repo_or_path is None:
+            raise ValueError("Need a dataset repository or path.")
+        if self.train_file is None or self.validation_file is None:
+            raise ValueError("Need training/validation file.")
         else:
             if self.train_file is not None:
                 extension = self.train_file.split(".")[-1]
@@ -287,6 +273,10 @@ class DataTrainingArguments:
                 ], "`validation_file` should be a tsv, csv or json file."
         if self.val_max_target_length is None:
             self.val_max_target_length = self.max_target_length
+        if self.streaming and (self.len_train is None or self.len_eval is None):
+            raise ValueError(
+                "Streaming requires providing length of training and validation datasets"
+            )
 
 
 class TrainState(train_state.TrainState):
@@ -467,18 +457,6 @@ def main():
             "Use --overwrite_output_dir to overcome."
         )
 
-    # Set up wandb run
-    wandb.init(
-        entity="dalle-mini",
-        project="dalle-mini",
-        job_type="Seq2Seq",
-        config=parser.parse_args(),
-    )
-
-    # set default x-axis as 'train/step'
-    wandb.define_metric("train/step")
-    wandb.define_metric("*", step_metric="train/step")
-
     # Make one log on every process with the configuration for debugging.
     pylogging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -527,6 +505,18 @@ def main():
         optimizer_step = step // training_args.gradient_accumulation_steps
 
         return step, optimizer_step, opt_state
+
+    # Set up wandb run
+    wandb.init(
+        entity="dalle-mini",
+        project="dalle-mini",
+        job_type="Seq2Seq",
+        config=parser.parse_args(),
+    )
+
+    # set default x-axis as 'train/step'
+    wandb.define_metric("train/step")
+    wandb.define_metric("*", step_metric="train/step")
 
     if model_args.from_checkpoint is not None:
         artifact = wandb.run.use_artifact(model_args.from_checkpoint)
@@ -1006,6 +996,7 @@ def main():
 
     for epoch in epochs:
         # ======================== Training ================================
+        wandb_log({"train/epoch": epoch}, step=global_step)
 
         # Create sampling rng
         rng, input_rng = jax.random.split(rng)
