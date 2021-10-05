@@ -20,9 +20,8 @@ Script adapted from run_summarization_flax.py
 # You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
 
 import os
-import logging as pylogging    # To avoid collision with transformers.utils.logging
+import logging as pylogging  # To avoid collision with transformers.utils.logging
 import sys
-import time
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -30,7 +29,6 @@ from typing import Callable, Optional
 import json
 
 import datasets
-import nltk  # Here to have a nice missing dependency error message early on
 import numpy as np
 from datasets import Dataset, load_dataset, load_metric
 from tqdm import tqdm
@@ -47,9 +45,7 @@ from flax.jax_utils import unreplicate
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_key
 from transformers import (
-    CONFIG_MAPPING,
     FLAX_MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING,
-    AutoConfig,
     AutoTokenizer,
     FlaxAutoModelForSeq2SeqLM,
     FlaxBartForConditionalGeneration,
@@ -61,17 +57,9 @@ from transformers.file_utils import is_offline_mode
 
 import wandb
 
-logger = pylogging.getLogger(__name__)
+from dalle_mini.text import TextNormalizer
 
-try:
-    nltk.data.find("tokenizers/punkt")
-except (LookupError, OSError):
-    if is_offline_mode():
-        raise LookupError(
-            "Offline mode: run this script without TRANSFORMERS_OFFLINE first to download nltk data files"
-        )
-    with FileLock(".lock") as lock:
-        nltk.download("punkt", quiet=True)
+logger = pylogging.getLogger(__name__)
 
 
 MODEL_CONFIG_CLASSES = list(FLAX_MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING.keys())
@@ -83,7 +71,7 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
 OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
 BOS_TOKEN_ID = 16384
-BASE_MODEL = 'facebook/bart-large-cnn'  # we currently have issues with bart-large
+BASE_MODEL = "facebook/bart-large-cnn"  # we currently have issues with bart-large
 
 
 @dataclass
@@ -101,20 +89,34 @@ class ModelArguments:
     )
     model_type: Optional[str] = field(
         default=None,
-        metadata={"help": "If training from scratch, pass a model type from the list: " + ", ".join(MODEL_TYPES)},
+        metadata={
+            "help": "If training from scratch, pass a model type from the list: "
+            + ", ".join(MODEL_TYPES)
+        },
     )
     config_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
+        default=None,
+        metadata={
+            "help": "Pretrained config name or path if not the same as model_name"
+        },
     )
     tokenizer_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+        default=None,
+        metadata={
+            "help": "Pretrained tokenizer name or path if not the same as model_name"
+        },
     )
     cache_dir: Optional[str] = field(
-        default=None, metadata={"help": "Where do you want to store the pretrained models downloaded from s3"}
+        default=None,
+        metadata={
+            "help": "Where do you want to store the pretrained models downloaded from s3"
+        },
     )
     use_fast_tokenizer: bool = field(
         default=True,
-        metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
+        metadata={
+            "help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."
+        },
     )
     dtype: Optional[str] = field(
         default="float32",
@@ -137,27 +139,51 @@ class DataTrainingArguments:
     """
 
     dataset_name: Optional[str] = field(
-        default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
+        default=None,
+        metadata={"help": "The name of the dataset to use (via the datasets library)."},
     )
     dataset_config_name: Optional[str] = field(
-        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
+        default=None,
+        metadata={
+            "help": "The configuration name of the dataset to use (via the datasets library)."
+        },
     )
     text_column: Optional[str] = field(
-        default='caption',
-        metadata={"help": "The name of the column in the datasets containing the full texts (for summarization)."},
+        default="caption",
+        metadata={
+            "help": "The name of the column in the datasets containing the full texts (for summarization)."
+        },
     )
     encoding_column: Optional[str] = field(
-        default='encoding',
-        metadata={"help": "The name of the column in the datasets containing the image encodings."},
+        default="encoding",
+        metadata={
+            "help": "The name of the column in the datasets containing the image encodings."
+        },
     )
-    train_file: Optional[str] = field(default=None, metadata={"help": "The input training data file (a text file)."})
+    dataset_repo_or_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "The dataset repository containing encoded files."},
+    )
+    train_file: Optional[str] = field(
+        default=None, metadata={"help": "The input training data file (a text file)."}
+    )
     validation_file: Optional[str] = field(
         default=None,
-        metadata={"help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."},
+        metadata={
+            "help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."
+        },
     )
-    test_file: Optional[str] = field(
+    streaming: bool = field(
+        default=False,
+        metadata={"help": "Whether to stream the dataset."},
+    )
+    len_train: Optional[int] = field(
         default=None,
-        metadata={"help": "An optional input predict data file to do prediction on (a text file)."},
+        metadata={"help": "Length of training dataset, required for streaming"},
+    )
+    len_eval: Optional[int] = field(
+        default=None,
+        metadata={"help": "Length of validation dataset, required for streaming"},
     )
     max_source_length: Optional[int] = field(
         default=128,
@@ -167,7 +193,8 @@ class DataTrainingArguments:
         },
     )
     no_decay: bool = field(
-        default=False, metadata={"help": "Whether to use decay in the learning rate scheduler."}
+        default=False,
+        metadata={"help": "Whether to use decay in the learning rate scheduler."},
     )
     max_target_length: Optional[int] = field(
         default=OUTPUT_LENGTH,
@@ -199,60 +226,65 @@ class DataTrainingArguments:
             "value if set."
         },
     )
-    max_predict_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of prediction examples to this "
-            "value if set."
-        },
+    normalize_text: bool = field(
+        default=False,
+        metadata={"help": "Normalize/Simplify text"},
     )
     preprocessing_num_workers: Optional[int] = field(
-        default=80,     # ensure we have the same datasets cached data and avoid using too much space
+        default=80,  # ensure we have the same datasets cached data and avoid using too much space
         metadata={"help": "The number of processes to use for the preprocessing."},
     )
     source_prefix: Optional[str] = field(
-        default=None, metadata={"help": "A prefix to add before every source text (useful for T5 models)."}
-    )
-    predict_with_generate: bool = field(
-        default=False, metadata={"help": "Whether to use generate to calculate generative metrics."}
-    )
-    num_beams: Optional[int] = field(
         default=None,
         metadata={
-            "help": "Number of beams to use for evaluation. This argument will be passed to `model.generate`, "
-            "which is used during evaluation."
+            "help": "A prefix to add before every source text (useful for T5 models)."
         },
     )
     overwrite_cache: bool = field(
-        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
+        default=False,
+        metadata={"help": "Overwrite the cached training and evaluation sets"},
     )
     log_interval: Optional[int] = field(
         default=40,
-        metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
-        },
+        metadata={"help": "Log frequency for metrics"},
     )
     log_model: bool = field(
-        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
+        default=False,
+        metadata={"help": "Overwrite the cached training and evaluation sets"},
     )
     save_model_steps: Optional[int] = field(
-        default=3000,   # about once every hour in our experiments
+        default=3000,  # about once every hour in our experiments
         metadata={
             "help": "For logging the model more frequently. Used only when `log_model` is set."
         },
     )
 
     def __post_init__(self):
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-            raise ValueError("Need either a dataset name or a training/validation file.")
+        if (
+            self.dataset_name is None
+            and self.train_file is None
+            and self.validation_file is None
+        ):
+            raise ValueError(
+                "Need either a dataset name or a training/validation file."
+            )
         else:
             if self.train_file is not None:
                 extension = self.train_file.split(".")[-1]
-                assert extension in ["tsv", "csv", "json"], "`train_file` should be a tsv, csv or json file."
+                assert extension in [
+                    "tsv",
+                    "csv",
+                    "json",
+                    "jsonl",
+                ], "`train_file` should be a tsv, csv or json file."
             if self.validation_file is not None:
                 extension = self.validation_file.split(".")[-1]
-                assert extension in ["tsv", "csv", "json"], "`validation_file` should be a tsv, csv or json file."
+                assert extension in [
+                    "tsv",
+                    "csv",
+                    "json",
+                    "jsonl",
+                ], "`validation_file` should be a tsv, csv or json file."
         if self.val_max_target_length is None:
             self.val_max_target_length = self.max_target_length
 
@@ -263,14 +295,20 @@ class TrainState(train_state.TrainState):
     optimizer_step: int
 
     def replicate(self):
-        return jax_utils.replicate(self).replace(dropout_rng=shard_prng_key(self.dropout_rng))
+        return jax_utils.replicate(self).replace(
+            dropout_rng=shard_prng_key(self.dropout_rng)
+        )
 
 
 class CustomFlaxBartModule(FlaxBartModule):
     def setup(self):
         # check config is valid, otherwise set default values
-        self.config.vocab_size_output = getattr(self.config, 'vocab_size_output', OUTPUT_VOCAB_SIZE)
-        self.config.max_position_embeddings_decoder = getattr(self.config, 'max_position_embeddings_decoder', OUTPUT_LENGTH)
+        self.config.vocab_size_output = getattr(
+            self.config, "vocab_size_output", OUTPUT_VOCAB_SIZE
+        )
+        self.config.max_position_embeddings_decoder = getattr(
+            self.config, "max_position_embeddings_decoder", OUTPUT_LENGTH
+        )
 
         # we keep shared to easily load pre-trained weights
         self.shared = nn.Embed(
@@ -286,18 +324,29 @@ class CustomFlaxBartModule(FlaxBartModule):
             embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
             dtype=self.dtype,
         )
-        self.encoder = FlaxBartEncoder(self.config, dtype=self.dtype, embed_tokens=self.shared)
+        self.encoder = FlaxBartEncoder(
+            self.config, dtype=self.dtype, embed_tokens=self.shared
+        )
 
         # the decoder has a different config
         decoder_config = BartConfig(self.config.to_dict())
-        decoder_config.max_position_embeddings = self.config.max_position_embeddings_decoder
+        decoder_config.max_position_embeddings = (
+            self.config.max_position_embeddings_decoder
+        )
         decoder_config.vocab_size = self.config.vocab_size_output
-        self.decoder = FlaxBartDecoder(decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed)
+        self.decoder = FlaxBartDecoder(
+            decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed
+        )
 
-class CustomFlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
+
+class CustomFlaxBartForConditionalGenerationModule(
+    FlaxBartForConditionalGenerationModule
+):
     def setup(self):
         # check config is valid, otherwise set default values
-        self.config.vocab_size_output = getattr(self.config, 'vocab_size_output', OUTPUT_VOCAB_SIZE)
+        self.config.vocab_size_output = getattr(
+            self.config, "vocab_size_output", OUTPUT_VOCAB_SIZE
+        )
 
         self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
         self.lm_head = nn.Dense(
@@ -306,13 +355,18 @@ class CustomFlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerat
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
         )
-        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, self.config.vocab_size_output))
+        self.final_logits_bias = self.param(
+            "final_logits_bias", self.bias_init, (1, self.config.vocab_size_output)
+        )
+
 
 class CustomFlaxBartForConditionalGeneration(FlaxBartForConditionalGeneration):
     module_class = CustomFlaxBartForConditionalGenerationModule
-    
 
-def data_loader(rng: jax.random.PRNGKey, dataset: Dataset, batch_size: int, shuffle: bool = False):
+
+def data_loader(
+    rng: jax.random.PRNGKey, dataset: Dataset, batch_size: int, shuffle: bool = False
+):
     """
     Returns batches of size `batch_size` from truncated `dataset`, sharded over all local devices.
     Shuffle batches if `shuffle` is `True`.
@@ -330,33 +384,58 @@ def data_loader(rng: jax.random.PRNGKey, dataset: Dataset, batch_size: int, shuf
     for idx in batch_idx:
         batch = dataset[idx]
         batch = {k: jnp.array(v) for k, v in batch.items()}
-
         batch = shard(batch)
-
         yield batch
 
 
+def data_loader_streaming(dataset: Dataset, batch_size: int):
+    keys = ["input_ids", "attention_mask", "labels", "decoder_input_ids"]
+    batch = {k: [] for k in keys}
+    for item in dataset:
+        for k, v in item.items():
+            batch[k].append(v)
+        if len(batch[keys[0]]) == batch_size:
+            batch = {k: jnp.array(v) for k, v in batch.items()}
+            batch = shard(batch)
+            yield batch
+            batch = {k: [] for k in keys}
+
+
 def create_learning_rate_fn(
-    train_ds_size: int, train_batch_size: int, num_train_epochs: int, num_warmup_steps: int, learning_rate: float, no_decay: bool
+    train_ds_size: int,
+    train_batch_size: int,
+    num_train_epochs: int,
+    num_warmup_steps: int,
+    learning_rate: float,
+    no_decay: bool,
 ) -> Callable[[int], jnp.array]:
     """Returns a linear warmup, linear_decay learning rate function."""
     steps_per_epoch = train_ds_size // train_batch_size
     num_train_steps = steps_per_epoch * num_train_epochs
-    warmup_fn = optax.linear_schedule(init_value=0.0, end_value=learning_rate, transition_steps=num_warmup_steps)
+    warmup_fn = optax.linear_schedule(
+        init_value=0.0, end_value=learning_rate, transition_steps=num_warmup_steps
+    )
     if no_decay:
         return warmup_fn
     decay_fn = optax.linear_schedule(
-        init_value=learning_rate, end_value=0, transition_steps=num_train_steps - num_warmup_steps
+        init_value=learning_rate,
+        end_value=0,
+        transition_steps=num_train_steps - num_warmup_steps,
     )
-    schedule_fn = optax.join_schedules(schedules=[warmup_fn, decay_fn], boundaries=[num_warmup_steps])
+    schedule_fn = optax.join_schedules(
+        schedules=[warmup_fn, decay_fn], boundaries=[num_warmup_steps]
+    )
     return schedule_fn
 
 
 def wandb_log(metrics, step=None, prefix=None):
     if jax.process_index() == 0:
-        log_metrics = {f'{prefix}/{k}' if prefix is not None else k: jax.device_get(v) for k,v in metrics.items()}
+        log_metrics = {
+            f"{prefix}/{k}" if prefix is not None else k: jax.device_get(v)
+            for k, v in metrics.items()
+        }
         if step is not None:
-            log_metrics['train/step'] = step
+            log_metrics["train/step"] = step
         wandb.log(log_metrics)
 
 
@@ -365,11 +444,15 @@ def main():
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    parser = HfArgumentParser(
+        (ModelArguments, DataTrainingArguments, TrainingArguments)
+    )
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args = parser.parse_json_file(
+            json_file=os.path.abspath(sys.argv[1])
+        )
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
@@ -383,18 +466,18 @@ def main():
             f"Output directory ({training_args.output_dir}) already exists and is not empty."
             "Use --overwrite_output_dir to overcome."
         )
-    
+
     # Set up wandb run
     wandb.init(
-        entity='wandb',
-        project='hf-flax-dalle-mini',
-        job_type='Seq2SeqVQGAN',
-        config=parser.parse_args()
+        entity="dalle-mini",
+        project="dalle-mini",
+        job_type="Seq2Seq",
+        config=parser.parse_args(),
     )
 
     # set default x-axis as 'train/step'
-    wandb.define_metric('train/step')
-    wandb.define_metric('*', step_metric='train/step')
+    wandb.define_metric("train/step")
+    wandb.define_metric("*", step_metric="train/step")
 
     # Make one log on every process with the configuration for debugging.
     pylogging.basicConfig(
@@ -418,16 +501,13 @@ def main():
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
     # (the dataset will be downloaded automatically from the datasets Hub).
     #
-    data_files = {}
-    if data_args.train_file is not None:
-        data_files["train"] = data_args.train_file
-    if data_args.validation_file is not None:
-        data_files["validation"] = data_args.validation_file
-    if data_args.test_file is not None:
-        data_files["test"] = data_args.test_file
-    dataset = load_dataset("csv", data_files=data_files, cache_dir=model_args.cache_dir, delimiter="\t")
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
+    data_files = {
+        "train": data_args.train_file,
+        "validation": data_args.validation_file,
+    }
+    dataset = load_dataset(
+        data_args.dataset_repo_or_path, data_files=data_files, streaming=True
+    )
 
     # Set up items to load or create
     tokenizer = None
@@ -435,17 +515,17 @@ def main():
 
     def restore_state(state, artifact_dir):
         # restore optimizer state
-        with (Path(artifact_dir) /  'opt_state.msgpack').open('rb') as f:
+        with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
             opt_state = from_bytes(state.opt_state, f.read())
-        
+
         # restore steps
-        with (Path(artifact_dir) /  'training_state.json').open('r') as f:
+        with (Path(artifact_dir) / "training_state.json").open("r") as f:
             training_state = json.load(f)
-        step = training_state['step']
+        step = training_state["step"]
         optimizer_step = step // training_args.gradient_accumulation_steps
 
         return step, optimizer_step, opt_state
-    
+
     if model_args.from_checkpoint is not None:
         artifact = wandb.run.use_artifact(model_args.from_checkpoint)
         artifact_dir = artifact.download()
@@ -461,40 +541,54 @@ def main():
         config = model.config
 
         # load tokenizer if present
-        if (Path(artifact_dir) / 'tokenizer_config.json').exists():
+        if (Path(artifact_dir) / "tokenizer_config.json").exists():
             tokenizer = AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
-        )
+                model_args.model_name_or_path,
+                cache_dir=model_args.cache_dir,
+                use_fast=model_args.use_fast_tokenizer,
+            )
 
     else:
         base_model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
-            model_args.model_name_or_path, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
+            model_args.model_name_or_path,
+            seed=training_args.seed,
+            dtype=getattr(jnp, model_args.dtype),
         )
         # Set up our new model config
         config = BartConfig.from_pretrained(model_args.model_name_or_path)
         config.tie_word_embeddings = False
         config.decoder_start_token_id = BOS_TOKEN_ID  # for first token
-        config.bos_token_id = BOS_TOKEN_ID  # should not be used (due to forced_bos_token_id)
-        config.pos_token_id = BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
+        config.bos_token_id = (
+            BOS_TOKEN_ID  # should not be used (due to forced_bos_token_id)
+        )
+        config.pos_token_id = (
+            BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
+        )
         config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
         config.forced_bos_token_id = None  # we don't need this token
         config.forced_eos_token_id = None  # we don't need this token
-        config.force_bos_token_to_be_generated = False  # otherwise it sets bos_token_id at loading
+        config.force_bos_token_to_be_generated = (
+            False  # otherwise it sets bos_token_id at loading
+        )
         config.min_length = data_args.max_target_length
         config.max_length = data_args.max_target_length
 
         # Create a custom model and initialize it randomly
-        model = CustomFlaxBartForConditionalGeneration(config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype))
+        model = CustomFlaxBartForConditionalGeneration(
+            config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
+        )
 
         # Use pre-trained weights for encoder
-        model.params['model']['encoder'] = base_model.params['model']['encoder']
-        model.params['model']['shared'] = base_model.params['model']['shared']
+        model.params["model"]["encoder"] = base_model.params["model"]["encoder"]
+        model.params["model"]["shared"] = base_model.params["model"]["shared"]
         del base_model
 
     # Load tokenizer if it has not been set
     if tokenizer is None:
         tokenizer = AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer
+            model_args.model_name_or_path,
+            cache_dir=model_args.cache_dir,
+            use_fast=model_args.use_fast_tokenizer,
         )
 
     print(f"TPUs: {jax.device_count()}")
@@ -504,22 +598,10 @@ def main():
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
-    if training_args.do_train:
-        column_names = dataset["train"].column_names
-    elif training_args.do_eval:
-        column_names = dataset["validation"].column_names
-    elif training_args.do_predict:
-        column_names = dataset["test"].column_names
-    else:
-        logger.info("There is nothing to do. Please pass `do_train`, `do_eval` and/or `do_predict`.")
-        return
 
     # Get the column names for input/target.
     text_column = data_args.text_column
     encoding_column = data_args.encoding_column
-
-    # Temporarily set max_target_length for training.
-    max_target_length = data_args.max_target_length
 
     def shift_tokens_right(input_ids: np.array, decoder_start_token_id: int):
         """
@@ -530,18 +612,28 @@ def main():
         shifted_input_ids[:, 0] = decoder_start_token_id
         return shifted_input_ids
 
+    text_normalizer = TextNormalizer() if data_args.normalize_text else None
+
+    def normalize_text(example):
+        example[text_column] = text_normalizer(example[text_column])
+        return example
+
     def preprocess_function(examples):
         inputs = examples[text_column]
-        inputs = [prefix + inp for inp in inputs]
-	# Setting padding="max_length" as we need fixed length inputs for jitted functions
+        inputs = [prefix + inp for inp in inputs] if prefix else inputs
+        # Setting padding="max_length" as we need fixed length inputs for jitted functions
         model_inputs = tokenizer(
-            inputs, max_length=data_args.max_source_length, padding="max_length", truncation=True, return_tensors="np"
+            inputs,
+            max_length=data_args.max_source_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="np",
         )
 
         # set up targets
         # Note: labels correspond to our target indices
         # decoder input ids are the same but shifted to the right with bos at the beginning (and without last token)
-        labels = [eval(indices) for indices in examples['encoding']]
+        labels = examples[encoding_column]
         labels = np.asarray(labels)
 
         # We need the labels, in addition to the decoder_input_ids, for the compute_loss function
@@ -558,46 +650,75 @@ def main():
             raise ValueError("--do_train requires a train dataset")
         train_dataset = dataset["train"]
         if data_args.max_train_samples is not None:
-            train_dataset = train_dataset.select(range(data_args.max_train_samples))
-        train_dataset = train_dataset.map(
-            preprocess_function,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
-            desc="Running tokenizer on train dataset",
+            train_dataset = (
+                train_dataset.take(data_args.max_train_samples)
+                if data_args.streaming
+                else train_dataset.select(range(data_args.max_train_samples))
+            )
+        if data_args.streaming:
+            train_dataset = train_dataset.shuffle(1000, training_args.seed)
+        if data_args.normalize_text:
+            train_dataset = (
+                train_dataset.map(text_normalizer)
+                if data_args.streaming
+                else train_dataset.map(
+                    normalize_text,
+                    num_proc=data_args.preprocessing_num_workers,
+                    load_from_cache_file=not data_args.overwrite_cache,
+                    desc="Normalizing the validation dataset",
+                )
+            )
+        train_dataset = (
+            train_dataset.map(
+                preprocess_function,
+                batched=True,
+            )
+            if data_args.streaming
+            else train_dataset.map(
+                preprocess_function,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                remove_columns=train_dataset.column_names,
+                load_from_cache_file=not data_args.overwrite_cache,
+                desc="Running tokenizer on validation dataset",
+            )
         )
 
     if training_args.do_eval:
-        max_target_length = data_args.val_max_target_length
         if "validation" not in dataset:
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = dataset["validation"]
         if data_args.max_eval_samples is not None:
-            eval_dataset = eval_dataset.select(range(data_args.max_eval_samples))
-        eval_dataset = eval_dataset.map(
-            preprocess_function,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
-            desc="Running tokenizer on validation dataset",
-        )
-
-    if training_args.do_predict:
-        max_target_length = data_args.val_max_target_length
-        if "test" not in dataset:
-            raise ValueError("--do_predict requires a test dataset")
-        predict_dataset = dataset["test"]
-        if data_args.max_predict_samples is not None:
-            predict_dataset = predict_dataset.select(range(data_args.max_predict_samples))
-        predict_dataset = predict_dataset.map(
-            preprocess_function,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
-            desc="Running tokenizer on prediction dataset",
+            eval_dataset = (
+                eval_dataset.take(data_args.max_train_samples)
+                if data_args.streaming
+                else eval_dataset.select(range(data_args.max_train_samples))
+            )
+        if data_args.normalize_text:
+            eval_dataset = (
+                eval_dataset.map(text_normalizer)
+                if data_args.streaming
+                else eval_dataset.map(
+                    normalize_text,
+                    num_proc=data_args.preprocessing_num_workers,
+                    load_from_cache_file=not data_args.overwrite_cache,
+                    desc="Normalizing the validation dataset",
+                )
+            )
+        eval_dataset = (
+            eval_dataset.map(
+                preprocess_function,
+                batched=True,
+            )
+            if data_args.streaming
+            else eval_dataset.map(
+                preprocess_function,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                remove_columns=eval_dataset.column_names,
+                load_from_cache_file=not data_args.overwrite_cache,
+                desc="Running tokenizer on validation dataset",
+            )
         )
 
     # Initialize our training
@@ -606,21 +727,40 @@ def main():
 
     # Store some constant
     num_epochs = int(training_args.num_train_epochs)
-    train_batch_size = int(training_args.per_device_train_batch_size) * jax.device_count()
+    train_batch_size = (
+        int(training_args.per_device_train_batch_size) * jax.device_count()
+    )
     total_batch_size = int(train_batch_size) * training_args.gradient_accumulation_steps
     eval_batch_size = int(training_args.per_device_eval_batch_size) * jax.device_count()
-    steps_per_epoch = len(train_dataset) // train_batch_size
+    if data_args.streaming:
+        len_train_dataset = data_args.len_train
+        if (
+            data_args.max_train_samples is not None
+            and data_args.max_train_samples < len_train_dataset
+        ):
+            len_train_dataset = data_args.max_train_samples
+
+        len_eval_dataset = data_args.len_eval
+        if (
+            data_args.max_eval_samples is not None
+            and data_args.max_eval_samples < len_eval_dataset
+        ):
+            len_eval_dataset = data_args.max_eval_samples
+    else:
+        len_train_dataset = len(train_dataset)
+        len_eval_dataset = len(eval_dataset)
+    steps_per_epoch = len_train_dataset // train_batch_size
     total_steps = steps_per_epoch * num_epochs
-    total_optimization_steps = (len(train_dataset) // total_batch_size) * num_epochs
+    total_optimization_steps = (len_train_dataset // total_batch_size) * num_epochs
 
     # Create learning rate schedule
     linear_decay_lr_schedule_fn = create_learning_rate_fn(
-        len(train_dataset),
+        len_train_dataset,
         total_batch_size,
         training_args.num_train_epochs,
         training_args.warmup_steps,
         training_args.learning_rate,
-        data_args.no_decay
+        data_args.no_decay,
     )
 
     # We use Optax's "masking" functionality to not apply weight decay
@@ -633,9 +773,17 @@ def main():
     def decay_mask_fn(params):
         flat_params = traverse_util.flatten_dict(params)
         layer_norm_params = [
-            (name, "scale") for name in ["self_attn_layer_norm", "layernorm_embedding", "final_layer_norm"]
+            (name, "scale")
+            for name in [
+                "self_attn_layer_norm",
+                "layernorm_embedding",
+                "final_layer_norm",
+            ]
         ]
-        flat_mask = {path: (path[-1] != "bias" and path[-2:] not in layer_norm_params) for path in flat_params}
+        flat_mask = {
+            path: (path[-1] != "bias" and path[-2:] not in layer_norm_params)
+            for path in flat_params
+        }
         return traverse_util.unflatten_dict(flat_mask)
 
     # create adam optimizer
@@ -667,7 +815,9 @@ def main():
     if model_args.from_checkpoint is not None:
         # restore optimizer state, step and optimizer_step
         step, optimizer_step, opt_state = restore_state(state, artifact_dir)
-        state = state.replace(step=step, optimizer_step=optimizer_step, opt_state=opt_state)
+        state = state.replace(
+            step=step, optimizer_step=optimizer_step, opt_state=opt_state
+        )
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
@@ -681,7 +831,9 @@ def main():
 
         def compute_loss(params):
             labels = batch.pop("labels")
-            logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
+            logits = state.apply_fn(
+                **batch, params=params, dropout_rng=dropout_rng, train=True
+            )[0]
             loss = loss_fn(logits, labels)
             return loss
 
@@ -690,10 +842,14 @@ def main():
         grad_accum = jax.tree_multimap(lambda x, y: x + y, grads, state.grad_accum)
 
         def update_fn():
-            grads = jax.tree_map(lambda x: x / training_args.gradient_accumulation_steps, grad_accum)
+            grads = jax.tree_map(
+                lambda x: x / training_args.gradient_accumulation_steps, grad_accum
+            )
             grads = jax.lax.pmean(grads, "batch")
             new_state = state.apply_gradients(
-                grads=grads, grad_accum=jax.tree_map(jnp.zeros_like, grads), optimizer_step=state.optimizer_step + 1
+                grads=grads,
+                grad_accum=jax.tree_map(jnp.zeros_like, grads),
+                optimizer_step=state.optimizer_step + 1,
             )
             return new_state
 
@@ -704,7 +860,10 @@ def main():
             None,
         )
 
-        metrics = {"loss": loss, "learning_rate": linear_decay_lr_schedule_fn(state.optimizer_step)}
+        metrics = {
+            "loss": loss,
+            "learning_rate": linear_decay_lr_schedule_fn(state.optimizer_step),
+        }
         metrics = jax.lax.pmean(metrics, axis_name="batch")
 
         return new_state.replace(dropout_rng=new_dropout_rng), metrics
@@ -720,39 +879,25 @@ def main():
         metrics = jax.lax.pmean(metrics, axis_name="batch")
         return metrics
 
-    # Define generation function
-    max_length = (
-        data_args.val_max_target_length if data_args.val_max_target_length is not None else model.config.max_length
-    )
-    num_beams = data_args.num_beams if data_args.num_beams is not None else model.config.num_beams
-    gen_kwargs = {"max_length": max_length, "num_beams": num_beams}
-
-    def generate_step(params, batch):
-        model.params = params
-        output_ids = model.generate(batch["input_ids"], attention_mask=batch["attention_mask"], **gen_kwargs)
-        return output_ids.sequences
-
     # Create parallel version of the train and eval step
-    p_train_step = jax.pmap(
-        train_step, "batch", donate_argnums=(0,)
-    )
+    p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0,))
     p_eval_step = jax.pmap(eval_step, "batch")
-    p_generate_step = jax.pmap(generate_step, "batch")
 
     # Replicate the train state on each device
     state = state.replicate()
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
+    logger.info(f"  Num examples = {len_train_dataset}")
     logger.info(f"  Num Epochs = {num_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}")
+    logger.info(
+        f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}"
+    )
     logger.info(
         f"  Total train batch size (w. parallel & distributed) = {train_batch_size * training_args.gradient_accumulation_steps}"
     )
     logger.info(f"  Total global steps = {total_steps}")
     logger.info(f"  Total optimization steps = {total_optimization_steps}")
 
-    train_time = 0
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
     global_step = 0
 
@@ -760,31 +905,31 @@ def main():
         # ======================== Evaluating ==============================
         eval_metrics = []
         if training_args.do_eval:
-            eval_preds = []
-            eval_labels = []
-
-            eval_loader = data_loader(input_rng, eval_dataset, eval_batch_size)
-            eval_steps = len(eval_dataset) // eval_batch_size
-            for _ in tqdm(range(eval_steps), desc="Evaluating...", position=2, leave=False):
+            if data_args.streaming:
+                eval_loader = data_loader_streaming(eval_dataset, eval_batch_size)
+            else:
+                eval_loader = data_loader(input_rng, eval_dataset, eval_batch_size)
+            eval_steps = len_eval_dataset // eval_batch_size
+            for batch in tqdm(
+                eval_loader,
+                desc="Evaluating...",
+                position=2,
+                leave=False,
+                total=eval_steps,
+            ):
                 # Model forward
-                batch = next(eval_loader)
-                labels = batch["labels"]
-
                 metrics = p_eval_step(state.params, batch)
                 eval_metrics.append(metrics)
 
-                # generation
-                if data_args.predict_with_generate:
-                    generated_ids = p_generate_step(state.params, batch)
-                    eval_preds.extend(jax.device_get(generated_ids.reshape(-1, gen_kwargs["max_length"])))
-                    eval_labels.extend(jax.device_get(labels.reshape(-1, labels.shape[-1])))
-
             # normalize eval metrics
+            breakpoint()
             eval_metrics = get_metrics(eval_metrics)
+            breakpoint()
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
+            breakpoint()
 
             # log metrics
-            wandb_log(eval_metrics, step=global_step, prefix='eval')
+            wandb_log(eval_metrics, step=global_step, prefix="eval")
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -808,28 +953,42 @@ def main():
 
             # save state
             state = unreplicate(state)
-            with (Path(training_args.output_dir) /  'opt_state.msgpack').open('wb') as f:
+            with (Path(training_args.output_dir) / "opt_state.msgpack").open("wb") as f:
                 f.write(to_bytes(state.opt_state))
-            with (Path(training_args.output_dir) /  'training_state.json').open('w') as f:
-                json.dump({'step': state.step.item()}, f)
+            with (Path(training_args.output_dir) / "training_state.json").open(
+                "w"
+            ) as f:
+                json.dump({"step": state.step.item()}, f)
 
             # save to W&B
             if data_args.log_model:
-                metadata = {'step': step, 'epoch': epoch}
+                metadata = {"step": step, "epoch": epoch}
                 if eval_metrics is not None:
-                    metadata['eval/loss'] = eval_metrics['loss']
+                    metadata["eval/loss"] = eval_metrics["loss"]
                 artifact = wandb.Artifact(
                     name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
                 )
-                artifact.add_file(str(Path(training_args.output_dir) / 'flax_model.msgpack')) 
-                artifact.add_file(str(Path(training_args.output_dir) / 'config.json')) 
-                artifact.add_file(str(Path(training_args.output_dir) / 'tokenizer.json'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'tokenizer_config.json'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'vocab.json'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'merges.txt'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'special_tokens_map.json'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'opt_state.msgpack'))
-                artifact.add_file(str(Path(training_args.output_dir) / 'training_state.json'))
+                artifact.add_file(
+                    str(Path(training_args.output_dir) / "flax_model.msgpack")
+                )
+                artifact.add_file(str(Path(training_args.output_dir) / "config.json"))
+                artifact.add_file(
+                    str(Path(training_args.output_dir) / "tokenizer.json")
+                )
+                artifact.add_file(
+                    str(Path(training_args.output_dir) / "tokenizer_config.json")
+                )
+                artifact.add_file(str(Path(training_args.output_dir) / "vocab.json"))
+                artifact.add_file(str(Path(training_args.output_dir) / "merges.txt"))
+                artifact.add_file(
+                    str(Path(training_args.output_dir) / "special_tokens_map.json")
+                )
+                artifact.add_file(
+                    str(Path(training_args.output_dir) / "opt_state.msgpack")
+                )
+                artifact.add_file(
+                    str(Path(training_args.output_dir) / "training_state.json")
+                )
                 wandb.run.log_artifact(artifact)
 
                 # save some space
@@ -843,39 +1002,47 @@ def main():
                     params=params,
                     push_to_hub=training_args.push_to_hub,
                     commit_message=f"Saving weights and logs of epoch {epoch+1}",
-                    temp_dir=True  # avoid issues with being in a repository
+                    temp_dir=True,  # avoid issues with being in a repository
                 )
-                
+
     for epoch in epochs:
         # ======================== Training ================================
-        train_start = time.time()
 
         # Create sampling rng
         rng, input_rng = jax.random.split(rng)
 
         # Generate an epoch by shuffling sampling indices from the train dataset
-        train_loader = data_loader(input_rng, train_dataset, train_batch_size, shuffle=True)
-        steps_per_epoch = len(train_dataset) // train_batch_size
+        if data_args.streaming:
+            train_dataset.set_epoch(epoch)
+            train_loader = data_loader_streaming(train_dataset, train_batch_size)
+        else:
+            train_loader = data_loader(
+                input_rng, train_dataset, train_batch_size, shuffle=True
+            )
         # train
-        for step in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
-            global_step +=1
-            batch = next(train_loader)
+        for batch in tqdm(
+            train_loader,
+            desc="Training...",
+            position=1,
+            leave=False,
+            total=steps_per_epoch,
+        ):
+            global_step += 1
             state, train_metric = p_train_step(state, batch)
 
             if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
                 # log metrics
-                wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
+                wandb_log(unreplicate(train_metric), step=global_step, prefix="train")
 
             if training_args.eval_steps and global_step % training_args.eval_steps == 0:
                 run_evaluation()
-            
+
             if global_step % data_args.save_model_steps == 0:
                 run_save_model(state, global_step, epoch)
-        
-        # log final train metrics
-        wandb_log(unreplicate(train_metric), step=global_step, prefix='train')
 
-        train_time += time.time() - train_start
+        # log final train metrics
+        wandb_log(unreplicate(train_metric), step=global_step, prefix="train")
+
         train_metric = unreplicate(train_metric)
         epochs.write(
             f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
@@ -886,39 +1053,6 @@ def main():
 
         # save checkpoint after each epoch and push checkpoint to the hub
         run_save_model(state, global_step, epoch, eval_metrics)
-
-
-    # ======================== Prediction loop ==============================
-    if training_args.do_predict:
-        logger.info("*** Predict ***")
-
-        pred_metrics = []
-        pred_generations = []
-        pred_labels = []
-
-        pred_loader = data_loader(input_rng, predict_dataset, eval_batch_size)
-        pred_steps = len(predict_dataset) // eval_batch_size
-        for _ in tqdm(range(pred_steps), desc="Predicting...", position=2, leave=False):
-            # Model forward
-            batch = next(pred_loader)
-            labels = batch["labels"]
-
-            metrics = p_eval_step(state.params, batch)
-            pred_metrics.append(metrics)
-
-            # generation
-            if data_args.predict_with_generate:
-                generated_ids = p_generate_step(state.params, batch)
-                pred_generations.extend(jax.device_get(generated_ids.reshape(-1, gen_kwargs["max_length"])))
-                pred_labels.extend(jax.device_get(labels.reshape(-1, labels.shape[-1])))
-
-        # normalize prediction metrics
-        pred_metrics = get_metrics(pred_metrics)
-        pred_metrics = jax.tree_map(jnp.mean, pred_metrics)
-
-        # Print metrics
-        desc = f"Predict Loss: {pred_metrics['loss']})"
-        logger.info(desc)
 
 
 if __name__ == "__main__":
