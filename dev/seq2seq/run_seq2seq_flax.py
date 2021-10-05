@@ -253,7 +253,7 @@ class DataTrainingArguments:
         metadata={"help": "Overwrite the cached training and evaluation sets"},
     )
     save_model_steps: Optional[int] = field(
-        default=3000,  # about once every hour in our experiments
+        default=5000,  # about once every 1.5h in our experiments
         metadata={
             "help": "For logging the model more frequently. Used only when `log_model` is set."
         },
@@ -290,9 +290,9 @@ class DataTrainingArguments:
 
 
 class TrainState(train_state.TrainState):
-    dropout_rng: jnp.ndarray
-    grad_accum: jnp.ndarray
-    optimizer_step: int
+    dropout_rng: jnp.ndarray = None
+    grad_accum: jnp.ndarray = None
+    optimizer_step: int = None
 
     def replicate(self):
         return jax_utils.replicate(self).replace(
