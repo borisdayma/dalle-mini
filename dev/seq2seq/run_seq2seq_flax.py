@@ -661,7 +661,7 @@ def main():
             train_dataset = train_dataset.shuffle(1000, training_args.seed)
         if data_args.normalize_text:
             train_dataset = (
-                train_dataset.map(text_normalizer)
+                train_dataset.map(normalize_text)
                 if data_args.streaming
                 else train_dataset.map(
                     normalize_text,
@@ -698,7 +698,7 @@ def main():
             )
         if data_args.normalize_text:
             eval_dataset = (
-                eval_dataset.map(text_normalizer)
+                eval_dataset.map(normalize_text)
                 if data_args.streaming
                 else eval_dataset.map(
                     normalize_text,
