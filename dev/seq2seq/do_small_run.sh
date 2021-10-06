@@ -1,7 +1,10 @@
 python run_seq2seq_flax.py \
-	--max_source_length 128 \
-	--train_file /data/CC12M/encoded-small-train.tsv \
-	--validation_file /data/CC12M/encoded-small-valid.tsv \
+	--dataset_repo_or_path dalle-mini/encoded \
+	--train_file **/train/*/*.jsonl \
+	--validation_file **/valid/*/*.jsonl \
+	--len_train 42684248 \
+	--len_eval 34328 \
+	--streaming \
 	--output_dir output \
 	--per_device_train_batch_size 56 \
 	--per_device_eval_batch_size 56 \
@@ -12,5 +15,5 @@ python run_seq2seq_flax.py \
 	--do_eval \
 	--adafactor \
 	--num_train_epochs 1 \
-	--max_train_samples 20000 \
+	--max_train_samples 10000 \
 	--learning_rate 0.005
