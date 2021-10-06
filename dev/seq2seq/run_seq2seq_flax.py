@@ -982,7 +982,7 @@ def main():
 
                 # save some space
                 c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
-                c.cleanup(wandb.util.from_human_size("15GB"))
+                c.cleanup(wandb.util.from_human_size("5GB"))
 
             # save to the hub
             if training_args.push_to_hub:
