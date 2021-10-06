@@ -280,9 +280,9 @@ class DataTrainingArguments:
 
 
 class TrainState(train_state.TrainState):
-    dropout_rng: jnp.ndarray = None
-    grad_accum: jnp.ndarray = None
-    optimizer_step: int = None
+    dropout_rng: jnp.ndarray
+    grad_accum: jnp.ndarray
+    optimizer_step: int
 
     def replicate(self):
         return jax_utils.replicate(self).replace(
