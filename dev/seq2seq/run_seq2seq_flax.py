@@ -100,12 +100,6 @@ class ModelArguments:
             "help": "Pretrained config name or path if not the same as model_name"
         },
     )
-    tokenizer_name: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Pretrained tokenizer name or path if not the same as model_name"
-        },
-    )
     cache_dir: Optional[str] = field(
         default=None,
         metadata={
@@ -539,11 +533,6 @@ def main():
             )
 
     else:
-        base_model = FlaxAutoModelForSeq2SeqLM.from_pretrained(
-            model_args.model_name_or_path,
-            seed=training_args.seed,
-            dtype=getattr(jnp, model_args.dtype),
-        )
         # Set up our new model config
         config = BartConfig.from_pretrained(model_args.model_name_or_path)
         config.tie_word_embeddings = False
@@ -567,11 +556,6 @@ def main():
         model = CustomFlaxBartForConditionalGeneration(
             config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
         )
-
-        # Use pre-trained weights for encoder
-        model.params["model"]["encoder"] = base_model.params["model"]["encoder"]
-        model.params["model"]["shared"] = base_model.params["model"]["shared"]
-        del base_model
 
     # Load tokenizer if it has not been set
     if tokenizer is None:
@@ -960,11 +944,11 @@ def main():
                 artifact.add_file(
                     str(Path(training_args.output_dir) / "training_state.json")
                 )
-                wandb.run.log_artifact(artifact)
-
                 # save some space
                 c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
                 c.cleanup(wandb.util.from_human_size("5GB"))
+
+                wandb.run.log_artifact(artifact)
 
             # save to the hub
             if training_args.push_to_hub:
