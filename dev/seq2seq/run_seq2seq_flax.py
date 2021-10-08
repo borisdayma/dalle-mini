@@ -416,7 +416,7 @@ def wandb_log(metrics, step=None, prefix=None):
             f"{prefix}/{k}" if prefix is not None else k: v for k, v in metrics.items()
         }
         if step is not None:
-            log_metrics["train/step"] = unreplicate(step)
+            log_metrics["train/step"] = step
         wandb.log(log_metrics)
 
 
@@ -846,7 +846,7 @@ def main():
         f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}"
     )
     logger.info(
-        f"  Total train batch size (w. parallel & distributed) = {batch_size_per_update}"
+        f"  Total train batch size (w. parallel, distributed & gradient accumulation) = {batch_size_per_update}"
     )
     logger.info(f"  Total global steps = {total_steps}")
     logger.info(f"  Total optimization steps = {total_optimization_steps}")
@@ -854,7 +854,7 @@ def main():
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
 
     # set default x-axis as 'train/step'
-    wandb_log({}, step=state.step)
+    wandb_log({}, step=unreplicate(state.step))
     wandb.define_metric("*", step_metric="train/step")
 
     # add interesting config parameters
@@ -893,7 +893,7 @@ def main():
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
             # log metrics
-            wandb_log(eval_metrics, step=state.step, prefix="eval")
+            wandb_log(eval_metrics, step=unreplicate(state.step), prefix="eval")
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -956,7 +956,7 @@ def main():
                 )
                 # save some space
                 c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
-                c.cleanup(wandb.util.from_human_size("5GB"))
+                c.cleanup("5GB")
 
                 wandb.run.log_artifact(artifact)
 
@@ -972,7 +972,8 @@ def main():
 
     for epoch in epochs:
         # ======================== Training ================================
-        wandb_log({"train/epoch": epoch}, step=state.step)
+        step = unreplicate(state.step)
+        wandb_log({"train/epoch": epoch}, step=step)
 
         # Create sampling rng
         rng, input_rng = jax.random.split(rng)
@@ -994,19 +995,20 @@ def main():
             total=steps_per_epoch,
         ):
             state, train_metric = p_train_step(state, batch)
+            step = unreplicate(state.step)
 
-            if state.step % data_args.log_interval == 0 and jax.process_index() == 0:
+            if step % data_args.log_interval == 0 and jax.process_index() == 0:
                 # log metrics
-                wandb_log(unreplicate(train_metric), step=state.step, prefix="train")
+                wandb_log(unreplicate(train_metric), step=step, prefix="train")
 
-            if training_args.eval_steps and state.step % training_args.eval_steps == 0:
+            if training_args.eval_steps and step % training_args.eval_steps == 0:
                 run_evaluation()
 
-            if state.step % data_args.save_model_steps == 0:
-                run_save_model(state, state.step, epoch)
+            if step % data_args.save_model_steps == 0:
+                run_save_model(state, step, epoch)
 
         # log final train metrics
-        wandb_log(unreplicate(train_metric), step=state.step, prefix="train")
+        wandb_log(unreplicate(train_metric), step=step, prefix="train")
 
         train_metric = unreplicate(train_metric)
         epochs.write(
