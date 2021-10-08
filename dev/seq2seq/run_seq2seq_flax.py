@@ -280,9 +280,7 @@ class DataTrainingArguments:
 
 
 class TrainState(train_state.TrainState):
-    dropout_rng: jnp.ndarray
-    grad_accum: jnp.ndarray
-    optimizer_step: int
+    dropout_rng: jnp.ndarray = None
 
     def replicate(self):
         return jax_utils.replicate(self).replace(
@@ -502,9 +500,8 @@ def main():
         with (Path(artifact_dir) / "training_state.json").open("r") as f:
             training_state = json.load(f)
         step = training_state["step"]
-        optimizer_step = step // training_args.gradient_accumulation_steps
 
-        return step, optimizer_step, opt_state
+        return step, opt_state
 
     # Set up wandb run
     wandb.init(
@@ -512,6 +509,7 @@ def main():
         project="dalle-mini",
         job_type="Seq2Seq",
         config=parser.parse_args(),
+        save_code=True,
     )
 
     # set default x-axis as 'train/step'
@@ -722,7 +720,7 @@ def main():
     train_batch_size = (
         int(training_args.per_device_train_batch_size) * jax.device_count()
     )
-    total_batch_size = int(train_batch_size) * training_args.gradient_accumulation_steps
+    batch_size_per_update = train_batch_size * training_args.gradient_accumulation_steps
     eval_batch_size = int(training_args.per_device_eval_batch_size) * jax.device_count()
     if data_args.streaming:
         len_train_dataset = data_args.len_train
@@ -743,12 +741,12 @@ def main():
         len_eval_dataset = len(eval_dataset)
     steps_per_epoch = len_train_dataset // train_batch_size
     total_steps = steps_per_epoch * num_epochs
-    total_optimization_steps = (len_train_dataset // total_batch_size) * num_epochs
+    total_optimization_steps = (len_train_dataset // batch_size_per_update) * num_epochs
 
     # Create learning rate schedule
-    linear_decay_lr_schedule_fn = create_learning_rate_fn(
+    learning_rate_fn = create_learning_rate_fn(
         len_train_dataset,
-        total_batch_size,
+        train_batch_size,
         training_args.num_train_epochs,
         training_args.warmup_steps,
         training_args.learning_rate,
@@ -783,16 +781,22 @@ def main():
         # We use the default parameters here to initialize adafactor,
         # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
         optimizer = optax.adafactor(
-            learning_rate=linear_decay_lr_schedule_fn,
+            learning_rate=learning_rate_fn,
         )
     else:
         optimizer = optax.adamw(
-            learning_rate=linear_decay_lr_schedule_fn,
+            learning_rate=learning_rate_fn,
             b1=training_args.adam_beta1,
             b2=training_args.adam_beta2,
             eps=training_args.adam_epsilon,
             weight_decay=training_args.weight_decay,
             mask=decay_mask_fn,
+        )
+
+    # add gradient accumulation
+    if training_args.gradient_accumulation_steps > 1:
+        optimizer = optax.chain(
+            optax.apply_every(training_args.gradient_accumulation_steps), optimizer
         )
 
     # Setup train state
@@ -801,15 +805,12 @@ def main():
         params=model.params,
         tx=optimizer,
         dropout_rng=dropout_rng,
-        grad_accum=jax.tree_map(jnp.zeros_like, model.params),
-        optimizer_step=0,
     )
     if model_args.from_checkpoint is not None:
-        # restore optimizer state, step and optimizer_step
-        step, optimizer_step, opt_state = restore_state(state, artifact_dir)
-        state = state.replace(
-            step=step, optimizer_step=optimizer_step, opt_state=opt_state
-        )
+        # restore optimizer state and step
+        step, opt_state = restore_state(state, artifact_dir)
+        state = state.replace(step=step, opt_state=opt_state)
+        # TODO: number of remaining training epochs/steps and dataloader state need to be adjusted
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
@@ -821,7 +822,7 @@ def main():
     def train_step(state, batch):
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
-        def compute_loss(params):
+        def compute_loss(params, batch):
             labels = batch.pop("labels")
             logits = state.apply_fn(
                 **batch, params=params, dropout_rng=dropout_rng, train=True
@@ -830,35 +831,16 @@ def main():
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
-        loss, grads = grad_fn(state.params)
-        grad_accum = jax.tree_multimap(lambda x, y: x + y, grads, state.grad_accum)
-
-        def update_fn():
-            grads = jax.tree_map(
-                lambda x: x / training_args.gradient_accumulation_steps, grad_accum
-            )
-            grads = jax.lax.pmean(grads, "batch")
-            new_state = state.apply_gradients(
-                grads=grads,
-                grad_accum=jax.tree_map(jnp.zeros_like, grads),
-                optimizer_step=state.optimizer_step + 1,
-            )
-            return new_state
-
-        new_state = jax.lax.cond(
-            (state.step + 1) % training_args.gradient_accumulation_steps == 0,
-            lambda _: update_fn(),
-            lambda _: state.replace(grad_accum=grad_accum, step=state.step + 1),
-            None,
-        )
+        loss, grads = grad_fn(state.params, batch)
+        grads = jax.lax.pmean(grads, "batch")
+        state = state.apply_gradients(grads=grads)
 
         metrics = {
             "loss": loss,
-            "learning_rate": linear_decay_lr_schedule_fn(state.optimizer_step),
+            "learning_rate": learning_rate_fn(state.step),
         }
         metrics = jax.lax.pmean(metrics, axis_name="batch")
-
-        return new_state.replace(dropout_rng=new_dropout_rng), metrics
+        return state.replace(dropout_rng=new_dropout_rng), metrics
 
     # Define eval fn
     def eval_step(params, batch):
