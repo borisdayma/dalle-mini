@@ -419,11 +419,10 @@ def create_learning_rate_fn(
 def wandb_log(metrics, step=None, prefix=None):
     if jax.process_index() == 0:
         log_metrics = {
-            f"{prefix}/{k}" if prefix is not None else k: jax.device_get(v)
-            for k, v in metrics.items()
+            f"{prefix}/{k}" if prefix is not None else k: v for k, v in metrics.items()
         }
         if step is not None:
-            log_metrics["train/step"] = step
+            log_metrics["train/step"] = unreplicate(step)
         wandb.log(log_metrics)
 
 
@@ -511,10 +510,6 @@ def main():
         config=parser.parse_args(),
         save_code=True,
     )
-
-    # set default x-axis as 'train/step'
-    wandb.define_metric("train/step")
-    wandb.define_metric("*", step_metric="train/step")
 
     if model_args.from_checkpoint is not None:
         artifact = wandb.run.use_artifact(model_args.from_checkpoint)
@@ -867,13 +862,27 @@ def main():
         f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}"
     )
     logger.info(
-        f"  Total train batch size (w. parallel & distributed) = {train_batch_size * training_args.gradient_accumulation_steps}"
+        f"  Total train batch size (w. parallel & distributed) = {batch_size_per_update}"
     )
     logger.info(f"  Total global steps = {total_steps}")
     logger.info(f"  Total optimization steps = {total_optimization_steps}")
 
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
-    global_step = 0
+
+    # set default x-axis as 'train/step'
+    wandb_log({}, step=state.step)
+    wandb.define_metric("*", step_metric="train/step")
+
+    # add interesting config parameters
+    wandb.config.update(
+        {
+            "len_train": len_train_dataset,
+            "len_eval": len_eval_dataset,
+            "batch_size_per_update": batch_size_per_update,
+            "total_steps": total_steps,
+            "total_optimization_steps": total_optimization_steps,
+        }
+    )
 
     def run_evaluation():
         # ======================== Evaluating ==============================
@@ -900,7 +909,7 @@ def main():
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
             # log metrics
-            wandb_log(eval_metrics, step=global_step, prefix="eval")
+            wandb_log(eval_metrics, step=state.step, prefix="eval")
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -923,6 +932,7 @@ def main():
             tokenizer.save_pretrained(training_args.output_dir)
 
             # save state
+            # TODO: maybe we should just save the full state object without params
             state = unreplicate(state)
             with (Path(training_args.output_dir) / "opt_state.msgpack").open("wb") as f:
                 f.write(to_bytes(state.opt_state))
@@ -978,7 +988,7 @@ def main():
 
     for epoch in epochs:
         # ======================== Training ================================
-        wandb_log({"train/epoch": epoch}, step=global_step)
+        wandb_log({"train/epoch": epoch}, step=state.step)
 
         # Create sampling rng
         rng, input_rng = jax.random.split(rng)
@@ -999,21 +1009,20 @@ def main():
             leave=False,
             total=steps_per_epoch,
         ):
-            global_step += 1
             state, train_metric = p_train_step(state, batch)
 
-            if global_step % data_args.log_interval == 0 and jax.process_index() == 0:
+            if state.step % data_args.log_interval == 0 and jax.process_index() == 0:
                 # log metrics
-                wandb_log(unreplicate(train_metric), step=global_step, prefix="train")
+                wandb_log(unreplicate(train_metric), step=state.step, prefix="train")
 
-            if training_args.eval_steps and global_step % training_args.eval_steps == 0:
+            if training_args.eval_steps and state.step % training_args.eval_steps == 0:
                 run_evaluation()
 
-            if global_step % data_args.save_model_steps == 0:
-                run_save_model(state, global_step, epoch)
+            if state.step % data_args.save_model_steps == 0:
+                run_save_model(state, state.step, epoch)
 
         # log final train metrics
-        wandb_log(unreplicate(train_metric), step=global_step, prefix="train")
+        wandb_log(unreplicate(train_metric), step=state.step, prefix="train")
 
         train_metric = unreplicate(train_metric)
         epochs.write(
@@ -1023,8 +1032,8 @@ def main():
         # Final evaluation
         eval_metrics = run_evaluation()
 
-        # save checkpoint after each epoch and push checkpoint to the hub
-        run_save_model(state, global_step, epoch, eval_metrics)
+        # save checkpoint after each epoch
+        run_save_model(state, state.step, epoch, eval_metrics)
 
 
 if __name__ == "__main__":
