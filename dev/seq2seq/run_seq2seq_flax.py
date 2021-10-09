@@ -927,6 +927,10 @@ def main():
 
             # save to W&B
             if data_args.log_model:
+                # save some space
+                c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
+                c.cleanup(wandb.util.from_human_size("5GB"))
+
                 metadata = {"step": step, "epoch": epoch}
                 if eval_metrics is not None:
                     metadata["eval/loss"] = eval_metrics["loss"]
@@ -954,9 +958,6 @@ def main():
                 artifact.add_file(
                     str(Path(training_args.output_dir) / "training_state.json")
                 )
-                # save some space
-                c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
-                c.cleanup("5GB")
 
                 wandb.run.log_artifact(artifact)
 
