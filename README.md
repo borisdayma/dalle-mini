@@ -16,7 +16,7 @@ _Generate images from a text prompt_
 
 Our logo was generated with DALL·E mini using the prompt "logo of an armchair in the shape of an avocado".
 
-You can create your own pictures with [the demo](https://huggingface.co/spaces/flax-community/dalle-mini).
+You can create your own pictures with [this demo](https://huggingface.co/spaces/flax-community/dalle-mini), or spin off your own playground and experiement with a full-stack app using the [DALL-E Playground repository](https://github.com/saharmor/dalle-playground).
 
 ## How does it work?
 
