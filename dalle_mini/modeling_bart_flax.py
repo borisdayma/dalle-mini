@@ -44,7 +44,7 @@ from transformers.modeling_flax_utils import (
 from transformers.utils import logging
 
 
-from configuration_bart import BartConfig
+from .configuration_bart import BartConfig
 
 
 logger = logging.get_logger(__name__)
@@ -80,7 +80,7 @@ class FlaxBartAttention(nn.Module):
         dense = partial(
             nn.Dense,
             self.embed_dim,
-            use_bias=self.bias,
+            use_bias=False,
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
@@ -242,10 +242,14 @@ class FlaxBartEncoderLayer(nn.Module):
         self.fc1 = nn.Dense(
             self.config.encoder_ffn_dim,
             dtype=self.dtype,
+            use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.fc2 = nn.Dense(
-            self.embed_dim, dtype=self.dtype, kernel_init=jax.nn.initializers.normal(self.config.init_std)
+            self.embed_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.final_layer_norm = nn.LayerNorm(dtype=self.dtype)
 
@@ -325,14 +329,18 @@ class FlaxBartDecoderLayer(nn.Module):
             dropout=self.config.attention_dropout,
             dtype=self.dtype,
         )
-        self.encoder_attn_layer_norm = nn.LayerNorm(dtype=self.dtype)
+        self.encoder_attn_layer_norm = nn
         self.fc1 = nn.Dense(
             self.config.encoder_ffn_dim,
             dtype=self.dtype,
+            use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.fc2 = nn.Dense(
-            self.embed_dim, dtype=self.dtype, kernel_init=jax.nn.initializers.normal(self.config.init_std)
+            self.embed_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.final_layer_norm = nn.LayerNorm(dtype=self.dtype)
 
@@ -414,7 +422,6 @@ class FlaxBartDecoderLayerCollection(nn.Module):
 class FlaxBartEncoder(nn.Module):
     config: BartConfig
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
-    embed_tokens: Optional[nn.Embed] = None
 
     def setup(self):
         self.dropout_layer = nn.Dropout(rate=self.config.dropout)
@@ -424,16 +431,15 @@ class FlaxBartEncoder(nn.Module):
         self.max_source_positions = self.config.max_position_embeddings
         self.embed_scale = math.sqrt(embed_dim) if self.config.scale_embedding else 1.0
 
-        if self.embed_tokens is None:
-            self.embed_tokens = nn.Embed(
-                self.config.vocab_size,
-                embed_dim,
-                embedding_init=jax.nn.initializers.normal(self.config.init_std),
-            )
+        self.embed_tokens = nn.Embed(
+            self.config.vocab_size,
+            embed_dim,
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+        )
 
         # Bart is set up so that if padding_idx is specified then offset the embedding ids by 2
         # and adjust num_embeddings appropriately. Other models don't have this hack
-        self.offset = 2
+        self.offset = 0
         self.embed_positions = nn.Embed(
             self.config.max_position_embeddings + self.offset,
             embed_dim,
@@ -472,7 +478,6 @@ class FlaxBartEncoder(nn.Module):
 class FlaxBartDecoder(nn.Module):
     config: BartConfig
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
-    embed_tokens: Optional[nn.Embed] = None
 
     def setup(self):
         self.dropout_layer = nn.Dropout(rate=self.config.dropout)
@@ -482,18 +487,17 @@ class FlaxBartDecoder(nn.Module):
         self.max_target_positions = self.config.max_position_embeddings
         self.embed_scale = math.sqrt(self.config.d_model) if self.config.scale_embedding else 1.0
 
-        if self.embed_tokens is None:
-            self.embed_tokens = nn.Embed(
-                self.config.vocab_size,
-                embed_dim,
-                embedding_init=jax.nn.initializers.normal(self.config.init_std),
-            )
+        self.embed_tokens = nn.Embed(
+            self.config.decoder_vocab_size,
+            embed_dim,
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+        )
 
         # Bart is set up so that if padding_idx is specified then offset the embedding ids by 2
         # and adjust num_embeddings appropriately. Other models don't have this hack
-        self.offset = 2
+        self.offset = 0
         self.embed_positions = nn.Embed(
-            self.config.max_position_embeddings + self.offset,
+            self.config.decoder_max_position_embeddings + self.offset,
             embed_dim,
             embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
@@ -546,20 +550,8 @@ class FlaxBartModule(nn.Module):
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
 
     def setup(self):
-        self.shared = nn.Embed(
-            self.config.vocab_size,
-            self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
-        )
-        # a separate embedding is used for the decoder
-        self.decoder_embed = nn.Embed(
-            self.config.decoder_vocab_size,
-            self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
-        )
-
-        self.encoder = FlaxBartEncoder(self.config, dtype=self.dtype, embed_tokens=self.shared)
-        self.decoder = FlaxBartDecoder(self.config, dtype=self.dtype, embed_tokens=self.decoder_embed)
+        self.encoder = FlaxBartEncoder(self.config, dtype=self.dtype)
+        self.decoder = FlaxBartDecoder(self.config, dtype=self.dtype)
 
     def _get_encoder_module(self):
         return self.encoder
@@ -575,8 +567,6 @@ class FlaxBartModule(nn.Module):
         decoder_attention_mask,
         position_ids,
         decoder_position_ids,
-        output_attentions: bool = False,
-        output_hidden_states: bool = False,
         return_dict: bool = True,
         deterministic: bool = True,
     ):
@@ -584,9 +574,6 @@ class FlaxBartModule(nn.Module):
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             deterministic=deterministic,
         )
 
@@ -596,9 +583,6 @@ class FlaxBartModule(nn.Module):
             position_ids=decoder_position_ids,
             encoder_hidden_states=encoder_outputs[0],
             encoder_attention_mask=attention_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             deterministic=deterministic,
         )
 
@@ -629,8 +613,8 @@ class FlaxBartPreTrainedModel(FlaxPreTrainedModel):
         dtype: jnp.dtype = jnp.float32,
         **kwargs,
     ):
-        module = self.module_class(config=config, dtype=dtype, **kwargs)
-        super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype)
+        module = self.module_class(config=config, dtype=dtype)
+        super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype, **kwargs)
 
     def init_weights(self, rng: jax.random.PRNGKey, input_shape: Tuple) -> FrozenDict:
         # init input tensors
@@ -755,17 +739,11 @@ class FlaxBartPreTrainedModel(FlaxPreTrainedModel):
         decoder_attention_mask: Optional[jnp.ndarray] = None,
         position_ids: Optional[jnp.ndarray] = None,
         decoder_position_ids: Optional[jnp.ndarray] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         train: bool = False,
         params: dict = None,
         dropout_rng: PRNGKey = None,
     ):
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
         return_dict = return_dict if return_dict is not None else self.config.return_dict
 
         # prepare encoder inputs
@@ -817,7 +795,6 @@ class FlaxBartForConditionalGenerationModule(nn.Module):
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
-        self.final_logits_bias = self.param("final_logits_bias", self.bias_init, (1, self.config.decoder_vocab_size))
 
     def _get_encoder_module(self):
         return self.model.encoder
@@ -852,8 +829,6 @@ class FlaxBartForConditionalGenerationModule(nn.Module):
             lm_logits = self.lm_head.apply({"params": {"kernel": shared_embedding.T}}, hidden_states)
         else:
             lm_logits = self.lm_head(hidden_states)
-
-        lm_logits += self.final_logits_bias
 
         return FlaxSeq2SeqLMOutput(
             logits=lm_logits,
