@@ -252,8 +252,7 @@ class FlaxBartEncoderLayer(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.final_layer_norm = nn.LayerNorm(dtype=self.dtype)
-    
-    @nn.remat
+
     def __call__(
         self,
         hidden_states: jnp.ndarray,
@@ -283,8 +282,9 @@ class FlaxBartEncoderLayerCollection(nn.Module):
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
 
     def setup(self):
+        layer_module = nn.remat(FlaxBartEncoderLayer) if self.config.gradient_checkpointing else FlaxBartEncoderLayer
         self.layers = [
-            FlaxBartEncoderLayer(self.config, name=str(i), dtype=self.dtype) for i in range(self.config.encoder_layers)
+            layer_module(self.config, name=str(i), dtype=self.dtype) for i in range(self.config.encoder_layers)
         ]
 
     def __call__(
@@ -344,8 +344,7 @@ class FlaxBartDecoderLayer(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.final_layer_norm = nn.LayerNorm(dtype=self.dtype)
-    
-    @nn.remat
+
     def __call__(
         self,
         hidden_states: jnp.ndarray,
@@ -394,8 +393,9 @@ class FlaxBartDecoderLayerCollection(nn.Module):
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
 
     def setup(self):
+        layer_module = nn.remat(FlaxBartDecoderLayer) if self.config.gradient_checkpointing else FlaxBartDecoderLayer
         self.layers = [
-            FlaxBartDecoderLayer(self.config, name=str(i), dtype=self.dtype) for i in range(self.config.decoder_layers)
+            layer_module(self.config, name=str(i), dtype=self.dtype) for i in range(self.config.decoder_layers)
         ]
 
     def __call__(
