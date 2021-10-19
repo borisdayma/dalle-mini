@@ -329,7 +329,7 @@ class FlaxBartDecoderLayer(nn.Module):
             dropout=self.config.attention_dropout,
             dtype=self.dtype,
         )
-        self.encoder_attn_layer_norm = nn
+        self.encoder_attn_layer_norm = nn.LayerNorm(dtype=self.dtype)
         self.fc1 = nn.Dense(
             self.config.encoder_ffn_dim,
             dtype=self.dtype,
