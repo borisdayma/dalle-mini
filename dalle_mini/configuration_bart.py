@@ -139,6 +139,7 @@ class BartConfig(PretrainedConfig):
         is_encoder_decoder=True,
         decoder_start_token_id=16384,
         forced_eos_token_id=2,
+        tie_word_embeddings=False, # don't tie for scaling reasons
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -173,6 +174,7 @@ class BartConfig(PretrainedConfig):
             is_encoder_decoder=is_encoder_decoder,
             decoder_start_token_id=decoder_start_token_id,
             forced_eos_token_id=forced_eos_token_id,
+            tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
 
