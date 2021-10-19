@@ -252,7 +252,8 @@ class FlaxBartEncoderLayer(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.final_layer_norm = nn.LayerNorm(dtype=self.dtype)
-
+    
+    @nn.remat
     def __call__(
         self,
         hidden_states: jnp.ndarray,
@@ -343,7 +344,8 @@ class FlaxBartDecoderLayer(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.final_layer_norm = nn.LayerNorm(dtype=self.dtype)
-
+    
+    @nn.remat
     def __call__(
         self,
         hidden_states: jnp.ndarray,
