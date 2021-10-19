@@ -461,8 +461,10 @@ class FlaxBartEncoder(nn.Module):
         input_ids = input_ids.reshape(-1, input_shape[-1])
 
         inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+        inputs_embeds = inputs_embeds.astype(self.dtype)
 
         embed_pos = self.embed_positions(position_ids + self.offset)
+        embed_pos = embed_pos.astype(self.dtype)
 
         hidden_states = inputs_embeds + embed_pos
         hidden_states = self.layernorm_embedding(hidden_states)
@@ -521,9 +523,11 @@ class FlaxBartDecoder(nn.Module):
         input_ids = input_ids.reshape(-1, input_shape[-1])
 
         inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+        inputs_embeds = inputs_embeds.astype(self.dtype)
 
         # embed positions
         positions = self.embed_positions(position_ids + self.offset)
+        positions = positions.astype(self.dtype)
 
         hidden_states = inputs_embeds + positions
         hidden_states = self.layernorm_embedding(hidden_states)
