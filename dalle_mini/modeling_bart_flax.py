@@ -24,6 +24,7 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict, unfreeze
+from flax.traverse_util import flatten_dict
 from flax.linen import combine_masks, make_causal_mask
 from flax.linen.attention import dot_product_attention_weights
 from jax import lax
@@ -621,6 +622,11 @@ class FlaxBartPreTrainedModel(FlaxPreTrainedModel):
     ):
         module = self.module_class(config=config, dtype=dtype)
         super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype, **kwargs)
+
+    @property
+    def num_params(self):
+        num_params = jax.tree_map(lambda param: param.size, flatten_dict(unfreeze(self.params))).values()
+        return sum(list(num_params))
 
     def init_weights(self, rng: jax.random.PRNGKey, input_shape: Tuple) -> FrozenDict:
         # init input tensors
