@@ -47,7 +47,6 @@ from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_ke
 from transformers import (
     FLAX_MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING,
     AutoTokenizer,
-    FlaxAutoModelForSeq2SeqLM,
     FlaxBartForConditionalGeneration,
     HfArgumentParser,
     TrainingArguments,
@@ -548,8 +547,12 @@ def main():
         config.max_length = data_args.max_target_length
 
         # Create a custom model and initialize it randomly
-        model = CustomFlaxBartForConditionalGeneration(
-            config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
+        model = CustomFlaxBartForConditionalGeneration.from_pretrained(
+            model_args.model_name_or_path,
+            ignore_mismatched_sizes=True,
+            config=config,
+            seed=training_args.seed,
+            dtype=getattr(jnp, model_args.dtype),
         )
 
     # Load tokenizer if it has not been set
