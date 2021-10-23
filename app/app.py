@@ -85,7 +85,7 @@ if prompt != "" or (should_run_again and prompt != ""):
         print(f"Getting selections: {prompt}")
         selected = get_images_from_backend(prompt, backend_url)
 
-        cols = st.beta_columns(4)
+        cols = st.columns(4)
         for i, img in enumerate(selected):
             cols[i%4].image(img)
 
