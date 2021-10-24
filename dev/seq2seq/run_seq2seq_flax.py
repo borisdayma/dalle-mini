@@ -801,8 +801,8 @@ def main():
     p_eval_step = jax.pmap(eval_step, "batch")
 
     # Replicate the train state on each device
-    state = state.replicate()
     del model._params
+    state = state.replicate()
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len_train_dataset}")
