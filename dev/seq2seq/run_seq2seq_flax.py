@@ -753,6 +753,7 @@ def main():
         # restore optimizer state and step
         state = state.restore_state(artifact_dir)
         # TODO: number of remaining training epochs/steps and dataloader state need to be adjusted
+        # TODO: optimizer may use a different step for learning rate, we should serialize/restore entire state
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
@@ -937,7 +938,7 @@ def main():
     for epoch in epochs:
         # ======================== Training ================================
         step = unreplicate(state.step)
-        # wandb_log({"train/epoch": epoch}, step=step)
+        wandb_log({"train/epoch": epoch}, step=step)
 
         # Generate an epoch by shuffling sampling indices from the train dataset
         if data_args.streaming:
