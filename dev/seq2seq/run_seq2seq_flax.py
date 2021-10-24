@@ -23,21 +23,19 @@ import os
 import logging as pylogging  # To avoid collision with transformers.utils.logging
 import sys
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
 from typing import Callable, Optional
 import json
 
 import datasets
 import numpy as np
-from datasets import Dataset, load_dataset, load_metric
+from datasets import Dataset, load_dataset
 from tqdm import tqdm
 
 import jax
 import jax.numpy as jnp
 import optax
 import transformers
-from filelock import FileLock
 from flax import jax_utils, traverse_util
 from flax.serialization import from_bytes, to_bytes
 import flax.linen as nn
@@ -45,25 +43,18 @@ from flax.jax_utils import unreplicate
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_key
 from transformers import (
-    FLAX_MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING,
     AutoTokenizer,
-    FlaxAutoModelForSeq2SeqLM,
     FlaxBartForConditionalGeneration,
     HfArgumentParser,
     TrainingArguments,
 )
 from transformers.models.bart.modeling_flax_bart import *
-from transformers.file_utils import is_offline_mode
 
 import wandb
 
 from dalle_mini.text import TextNormalizer
 
 logger = pylogging.getLogger(__name__)
-
-
-MODEL_CONFIG_CLASSES = list(FLAX_MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING.keys())
-MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
 # Model hyperparameters, for convenience
@@ -87,23 +78,10 @@ class ModelArguments:
             "Don't set if you want to train a model from scratch."
         },
     )
-    model_type: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "If training from scratch, pass a model type from the list: "
-            + ", ".join(MODEL_TYPES)
-        },
-    )
     config_name: Optional[str] = field(
         default=None,
         metadata={
             "help": "Pretrained config name or path if not the same as model_name"
-        },
-    )
-    cache_dir: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Where do you want to store the pretrained models downloaded from s3"
         },
     )
     use_fast_tokenizer: bool = field(
@@ -280,6 +258,19 @@ class TrainState(train_state.TrainState):
         return jax_utils.replicate(self).replace(
             dropout_rng=shard_prng_key(self.dropout_rng)
         )
+
+    def restore_state(self, artifact_dir):
+        # restore optimizer state
+        with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
+            opt_state = from_bytes(self.opt_state, f.read())
+
+        # restore steps
+        with (Path(artifact_dir) / "training_state.json").open("r") as f:
+            training_state = json.load(f)
+        step = training_state["step"]
+
+        # replace state
+        return self.replace(step=step, opt_state=opt_state)
 
 
 class CustomFlaxBartModule(FlaxBartModule):
@@ -480,22 +471,6 @@ def main():
         streaming=data_args.streaming,
     )
 
-    # Set up items to load or create
-    tokenizer = None
-    artifact_dir = None
-
-    def restore_state(state, artifact_dir):
-        # restore optimizer state
-        with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
-            opt_state = from_bytes(state.opt_state, f.read())
-
-        # restore steps
-        with (Path(artifact_dir) / "training_state.json").open("r") as f:
-            training_state = json.load(f)
-        step = training_state["step"]
-
-        return step, opt_state
-
     # Set up wandb run
     wandb.init(
         entity="dalle-mini",
@@ -510,22 +485,11 @@ def main():
         artifact_dir = artifact.download()
         model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
 
-        # some models will try to change bos (because of force_bos_token_to_be_generated)
-        # we ensure bos and eos are not forced
-        model.config.force_bos_token_to_be_generated = False
-        model.config.forced_bos_token_id = None
-        model.config.forced_eos_token_id = None
-
-        # used in the preprocessing function
-        config = model.config
-
-        # load tokenizer if present
-        if (Path(artifact_dir) / "tokenizer_config.json").exists():
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_args.model_name_or_path,
-                cache_dir=model_args.cache_dir,
-                use_fast=model_args.use_fast_tokenizer,
-            )
+        # load tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
+            artifact_dir,
+            use_fast=model_args.use_fast_tokenizer,
+        )
 
     else:
         # Set up our new model config
@@ -552,11 +516,9 @@ def main():
             config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
         )
 
-    # Load tokenizer if it has not been set
-    if tokenizer is None:
+        # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
-            cache_dir=model_args.cache_dir,
             use_fast=model_args.use_fast_tokenizer,
         )
 
@@ -609,7 +571,9 @@ def main():
         model_inputs["labels"] = labels
 
         # In our case, this prepends the bos token and removes the last one
-        decoder_input_ids = shift_tokens_right(labels, config.decoder_start_token_id)
+        decoder_input_ids = shift_tokens_right(
+            labels, model.config.decoder_start_token_id
+        )
         model_inputs["decoder_input_ids"] = decoder_input_ids
 
         return model_inputs
@@ -787,8 +751,7 @@ def main():
     )
     if model_args.from_checkpoint is not None:
         # restore optimizer state and step
-        step, opt_state = restore_state(state, artifact_dir)
-        state = state.replace(step=step, opt_state=opt_state)
+        state = state.restore_state(artifact_dir)
         # TODO: number of remaining training epochs/steps and dataloader state need to be adjusted
 
     # label smoothed cross entropy
@@ -974,16 +937,14 @@ def main():
     for epoch in epochs:
         # ======================== Training ================================
         step = unreplicate(state.step)
-        wandb_log({"train/epoch": epoch}, step=step)
-
-        # Create sampling rng
-        rng, input_rng = jax.random.split(rng)
+        # wandb_log({"train/epoch": epoch}, step=step)
 
         # Generate an epoch by shuffling sampling indices from the train dataset
         if data_args.streaming:
             train_dataset.set_epoch(epoch)
             train_loader = data_loader_streaming(train_dataset, train_batch_size)
         else:
+            rng, input_rng = jax.random.split(rng)
             train_loader = data_loader(
                 input_rng, train_dataset, train_batch_size, shuffle=True
             )
