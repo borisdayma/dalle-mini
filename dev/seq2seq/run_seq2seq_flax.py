@@ -262,15 +262,15 @@ class TrainState(train_state.TrainState):
     def restore_state(self, artifact_dir):
         # restore optimizer state
         with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
-            opt_state = from_bytes(self.opt_state, f.read())
+            new_opt_state = from_bytes(self.opt_state, f.read())
 
         # restore steps
         with (Path(artifact_dir) / "training_state.json").open("r") as f:
             training_state = json.load(f)
-        step = training_state["step"]
+        new_step = training_state["step"]
 
         # replace state
-        return self.replace(step=step, opt_state=opt_state)
+        return self.replace(step=new_step, opt_state=new_opt_state)
 
 
 class CustomFlaxBartModule(FlaxBartModule):
@@ -802,6 +802,7 @@ def main():
 
     # Replicate the train state on each device
     state = state.replicate()
+    del model._params
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len_train_dataset}")
