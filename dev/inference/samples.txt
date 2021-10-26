@@ -12,15 +12,6 @@ still life in the style of Kandinsky
 still life in the style of Picasso
 a colorful stairway to heaven
 a background consisting of colors blue, green, and red
-an avocado armchair
-an armchair in the shape of an avocado
-illustration of an avocado armchair
-illustration of an armchair in the shape of an avocado
-logo of an avocado armchair
-an avocado armchair flying into space
-a cute avocado armchair singing karaoke on stage in front of a crowd of strawberry shaped lamps
-an illustration of an avocado in a christmas sweater staring at its reflection in a mirror
-illustration of an avocado armchair getting married to a pineapple
 Mohammed Ali and Mike Tyson in a hypothetical match
 Pele and Maradona in a hypothetical match
 view of Mars from space
@@ -32,7 +23,7 @@ epic sword fight
 underwater cathedral
 a photo of a fantasy version of New York City
 a picture of fantasy kingdoms
-a volcano erupting in the middle of San Francisco
+a volcano erupting next to San Francisco golden gate bridge
 big wave destroying a city
 Paris in a far future, futuristic Paris
 real painting of an alien from Monet
@@ -93,7 +84,6 @@ an illustration of a baby cucumber with a mustache playing chess
 an illustration of a baby daikon radish in a tutu walking a dog
 an illustration of a baby hedgehog in a cape staring at its reflection in a mirror
 an illustration of a baby panda with headphones holding an umbrella in the rain
-an illustration of an avocado in a beanie riding a motorcycle
 urinals are lined up in a jungle
 a human face
 a person is holding a phone and a waterbottle, running a marathon
@@ -109,3 +99,13 @@ sad, sadness
 the representation of infinity
 the end of the world
 the last sunrise on earth
+an avocado armchair
+an armchair in the shape of an avocado
+illustration of an avocado armchair
+illustration of an armchair in the shape of an avocado
+logo of an avocado armchair
+an avocado armchair flying into space
+a cute avocado armchair singing karaoke on stage in front of a crowd of strawberry shaped lamps
+an illustration of an avocado in a christmas sweater staring at its reflection in a mirror
+illustration of an avocado armchair getting married to a pineapple
+an illustration of an avocado in a beanie riding a motorcycle
