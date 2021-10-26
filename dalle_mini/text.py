@@ -98,23 +98,8 @@ def replace_person_token(t):
 
 
 def fix_html(t):
-    "Adapted from fastai"
-    t = (
-        t.replace("#39;", "'")
-        .replace("&amp;", "&")
-        .replace("amp;", "&")
-        .replace("#146;", "'")
-        .replace("nbsp;", " ")
-        .replace("#36;", "$")
-        .replace("\\n", "\n")
-        .replace("quot;", "'")
-        .replace("<br />", "\n")
-        .replace('\\"', '"')
-        .replace("<unk>", " ")
-        .replace(" @.@ ", ".")
-        .replace(" @-@ ", "-")
-    )
-    return html.unescape(t)
+    # from OpenAI CLIP
+    return html.unescape(html.unescape(t)
 
 
 def replace_punctuation_with_commas(t):
