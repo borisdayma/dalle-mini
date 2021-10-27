@@ -99,7 +99,7 @@ def replace_person_token(t):
 
 def fix_html(t):
     # from OpenAI CLIP
-    return html.unescape(html.unescape(t)
+    return html.unescape(html.unescape(t))
 
 
 def replace_punctuation_with_commas(t):
