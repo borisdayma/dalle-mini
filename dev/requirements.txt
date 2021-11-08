@@ -3,7 +3,7 @@ requests
 jax[tpu]>=0.2.16
 transformers
 datasets
-flax
+flax==0.3.5
 jupyter
 wandb
 nltk
