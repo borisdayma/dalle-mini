@@ -144,8 +144,8 @@ def handle_special_chars(t):
     "Handle special characters"
     # replace "-" with a space when between words without space
     t = re.sub("([a-zA-Z])-([a-zA-Z])", r"\1 \2", t)
-    # always add space around & or %
-    return re.sub("([%&])", r" \1 ", t)
+    # always add space around & or % or / or $
+    return re.sub("([%&\/$])", r" \1 ", t)
 
 
 def expand_hashtags(t, hashtag_processor):
@@ -153,7 +153,7 @@ def expand_hashtags(t, hashtag_processor):
     return re.sub("#(\w+)", lambda m: " , " + hashtag_processor(m.group(1)), t)
 
 
-_re_ignore_chars = """[_#\/\\]"""
+_re_ignore_chars = """[_#\\]"""
 
 
 def ignore_chars(t):
