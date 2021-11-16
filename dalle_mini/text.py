@@ -150,7 +150,7 @@ def handle_special_chars(t):
 
 def expand_hashtags(t, hashtag_processor):
     "Remove # and try to split words"
-    return re.sub("#(\w+)", lambda m: hashtag_processor(m.group(1)), t)
+    return re.sub("#(\w+)", lambda m: " , " + hashtag_processor(m.group(1)), t)
 
 
 _re_ignore_chars = """[_#\/\\%]"""
@@ -197,15 +197,13 @@ class TextNormalizer:
     def __init__(self):
         self._hashtag_processor = HashtagProcessor()
 
-    def __call__(self, t, clip=False):
-
+    def __call__(self, t):
         # fix some characters
         t = ftfy.fix_text(t)
         # fix html
         t = fix_html(t)
-        if not clip:
-            # decode and simplify text: see unidecode library
-            t = unidecode(t)
+        # decode and simplify text: see unidecode library
+        t = unidecode(t)
         # lower case
         t = t.lower()
         # replace <PERSON> (for CC12M)
@@ -218,32 +216,31 @@ class TextNormalizer:
         t = remove_urls(t)
         # remove commas in numbers
         t = remove_comma_numbers(t)
-        if not clip:
-            # handle dots in numbers and quotes - Part 1
-            t = pre_process_dot_numbers(t)
-            t = pre_process_quotes(t)
-            # handle special characters
-            t = handle_special_chars(t)
-            # handle hashtags
-            t = expand_hashtags(t, self._hashtag_processor)
-            # ignore useless characters
-            t = ignore_chars(t)
-            # simplify quotes
-            t = simplify_quotes(t)
-            # all punctuation becomes commas
-            t = replace_punctuation_with_commas(t)
-            # handle dots in numbers and quotes - Part 2
-            t = post_process_dot_numbers(t)
-            t = post_process_quotes(t)
-            # handle repeating characters
-            t = remove_repeating_chars(t)
-            # merge commas
-            t = merge_commas(t)
-            # merge quotes
-            t = merge_quotes(t)
+        # handle dots in numbers and quotes - Part 1
+        t = pre_process_dot_numbers(t)
+        t = pre_process_quotes(t)
+        # handle special characters
+        t = handle_special_chars(t)
+        # handle hashtags
+        t = expand_hashtags(t, self._hashtag_processor)
+        # ignore useless characters
+        t = ignore_chars(t)
+        # simplify quotes
+        t = simplify_quotes(t)
+        # all punctuation becomes commas
+        t = replace_punctuation_with_commas(t)
+        # handle dots in numbers and quotes - Part 2
+        t = post_process_dot_numbers(t)
+        t = post_process_quotes(t)
+        # handle repeating characters
+        t = remove_repeating_chars(t)
+        # merge quotes
+        t = merge_quotes(t)
+        # merge commas
+        t = merge_commas(t)
         # remove multiple spaces
         t = remove_extra_spaces(t)
         # remove first and last comma
         t = remove_first_last_commas(t)
         # always start with a space
-        return f" {t}" if not clip else t
+        return f" {t}"
