@@ -95,7 +95,7 @@ def fix_html(t):
 
 
 def replace_punctuation_with_commas(t):
-    return re.sub("([()[\].,|:;?!=+~\-\/])", ",", t)
+    return re.sub("[()[\].,|:;?!=+~\-\/{}]", ",", t)
 
 
 def simplify_quotes(t):
