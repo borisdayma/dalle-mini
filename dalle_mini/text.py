@@ -95,7 +95,7 @@ def fix_html(t):
 
 
 def replace_punctuation_with_commas(t):
-    return re.sub("""([()[\].,|:;?!=+~\-])""", ",", t)
+    return re.sub("([()[\].,|:;?!=+~\-\/])", ",", t)
 
 
 def simplify_quotes(t):
@@ -114,7 +114,7 @@ def remove_comma_numbers(t):
 
 
 def pre_process_dot_numbers(t):
-    return re.sub("(\d)\.(\d)", fr"\1{temp_token}dot{temp_token}\2", t)
+    return re.sub("(\w)\.(\w)", fr"\1{temp_token}dot{temp_token}\2", t)
 
 
 def post_process_dot_numbers(t):
@@ -132,6 +132,14 @@ def post_process_quotes(t):
     return re.sub(f"{temp_token}quote{temp_token}", "'", t)
 
 
+def pre_process_dates(t):
+    return re.sub("(\d)/(\d)", fr"\1{temp_token}slash{temp_token}\2", t)
+
+
+def post_process_dates(t):
+    return re.sub(f"{temp_token}slash{temp_token}", "/", t)
+
+
 def merge_commas(t):
     return re.sub("(\s*,+\s*)+", ", ", t)
 
@@ -143,17 +151,17 @@ def add_space_after_commas(t):
 def handle_special_chars(t):
     "Handle special characters"
     # replace "-" with a space when between words without space
-    t = re.sub("([a-zA-Z])-([a-zA-Z])", r"\1 \2", t)
-    # always add space around & or % or / or $
-    return re.sub("([%&\/$])", r" \1 ", t)
+    t = re.sub("(\w)-(\w)", r"\1 \2", t)
+    # always add space around some characters
+    return re.sub("([%&\/$*])", r" \1 ", t)
 
 
 def expand_hashtags(t, hashtag_processor):
     "Remove # and try to split words"
-    return re.sub("#(\w+)", lambda m: " , " + hashtag_processor(m.group(1)), t)
+    return re.sub("#(\w+)", lambda m: hashtag_processor(m.group(1)), t)
 
 
-_re_ignore_chars = """[_#\\]"""
+_re_ignore_chars = r"[_#\\]"
 
 
 def ignore_chars(t):
@@ -219,6 +227,7 @@ class TextNormalizer:
         # handle dots in numbers and quotes - Part 1
         t = pre_process_dot_numbers(t)
         t = pre_process_quotes(t)
+        t = pre_process_dates(t)
         # handle special characters
         t = handle_special_chars(t)
         # handle hashtags
@@ -232,6 +241,7 @@ class TextNormalizer:
         # handle dots in numbers and quotes - Part 2
         t = post_process_dot_numbers(t)
         t = post_process_quotes(t)
+        t = post_process_dates(t)
         # handle repeating characters
         t = remove_repeating_chars(t)
         # merge quotes
