@@ -10,6 +10,8 @@ pinned: false
 
 # DALL·E Mini
 
+[![Join us on Discord](https://img.shields.io/discord/823813159592001537?color=5865F2&logo=discord&logoColor=white)](https://discord.gg/xBPBXfcFHd)
+
 _Generate images from a text prompt_
 
 <img src="img/logo.png" width="200">
@@ -63,16 +65,26 @@ Trained models are on 🤗 Model Hub:
 
 The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone to us.
 
-## Authors
+## Authors & Contributors
+
+### Main Authors
 
 - [Boris Dayma](https://github.com/borisdayma)
 - [Suraj Patil](https://github.com/patil-suraj)
 - [Pedro Cuenca](https://github.com/pcuenca)
+
+### Other Members of dalle-mini team during FLAX/JAX community week
+
 - [Khalid Saifullah](https://github.com/khalidsaifullaah)
 - [Tanishq Abraham](https://github.com/tmabraham)
 - [Phúc Lê Khắc](https://github.com/lkhphuc)
 - [Luke Melas](https://github.com/lukemelas)
 - [Ritobrata Ghosh](https://github.com/ghosh-r)
+
+### Contributing
+
+Join the community on the [DALLE-Pytorch Discord](https://discord.gg/xBPBXfcFHd).
+Any contribution is welcome, from reporting issues to proposing fixes/improvements or testing the model on cool prompts!
 
 ## Acknowledgements
 
