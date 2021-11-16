@@ -2,36 +2,28 @@
 Utilities for processing text.
 """
 
-import requests
 from pathlib import Path
 from unidecode import unidecode
 
 import re, math, random, html
 import ftfy
 
-WIKI_STATS_URL = "https://github.com/borisdayma/wikipedia-word-frequency/raw/feat-update/results/enwiki-20210820-words-frequency.txt"
-WIKI_STATS_LOCAL = Path(WIKI_STATS_URL).parts[-1]
+from huggingface_hub import hf_hub_download
 
 # based on wiki word occurence
 person_token = [("a person", 282265), ("someone", 121194), ("somebody", 12219)]
 temp_token = "xtokx"  # avoid repeating chars
 
 
-def get_wiki_file():
-    if not Path(WIKI_STATS_LOCAL).exists():
-        r = requests.get(WIKI_STATS_URL, stream=True)
-        with open(WIKI_STATS_LOCAL, "wb") as fd:
-            for chunk in r.iter_content(chunk_size=128):
-                fd.write(chunk)
-    return WIKI_STATS_LOCAL
-
-
 class HashtagProcessor:
     # Adapted from wordninja library
     # We use our wikipedia word count + a good heuristic to make it work
     def __init__(self):
+        wiki_word_frequency = hf_hub_download(
+            "dalle-mini/dalle-mini", filename="enwiki-words-frequency.txt"
+        )
         self._word_cost = (
-            l.split()[0] for l in Path(get_wiki_file()).read_text().splitlines()
+            l.split()[0] for l in Path(wiki_word_frequency).read_text().splitlines()
         )
         self._word_cost = {
             str(k): math.log(float(i + 1)) for i, k in enumerate(self._word_cost)
@@ -158,7 +150,7 @@ def handle_special_chars(t):
 
 def expand_hashtags(t, hashtag_processor):
     "Remove # and try to split words"
-    return re.sub("#(\w+)", lambda m: hashtag_processor(m.group(1)), t)
+    return re.sub("#(\w+)", lambda m: " , " + hashtag_processor(m.group(1)), t)
 
 
 _re_ignore_chars = """[_#\/\\%]"""
@@ -205,15 +197,13 @@ class TextNormalizer:
     def __init__(self):
         self._hashtag_processor = HashtagProcessor()
 
-    def __call__(self, t, clip=False):
-
+    def __call__(self, t):
         # fix some characters
         t = ftfy.fix_text(t)
         # fix html
         t = fix_html(t)
-        if not clip:
-            # decode and simplify text: see unidecode library
-            t = unidecode(t)
+        # decode and simplify text: see unidecode library
+        t = unidecode(t)
         # lower case
         t = t.lower()
         # replace <PERSON> (for CC12M)
@@ -226,32 +216,31 @@ class TextNormalizer:
         t = remove_urls(t)
         # remove commas in numbers
         t = remove_comma_numbers(t)
-        if not clip:
-            # handle dots in numbers and quotes - Part 1
-            t = pre_process_dot_numbers(t)
-            t = pre_process_quotes(t)
-            # handle special characters
-            t = handle_special_chars(t)
-            # handle hashtags
-            t = expand_hashtags(t, self._hashtag_processor)
-            # ignore useless characters
-            t = ignore_chars(t)
-            # simplify quotes
-            t = simplify_quotes(t)
-            # all punctuation becomes commas
-            t = replace_punctuation_with_commas(t)
-            # handle dots in numbers and quotes - Part 2
-            t = post_process_dot_numbers(t)
-            t = post_process_quotes(t)
-            # handle repeating characters
-            t = remove_repeating_chars(t)
-            # merge commas
-            t = merge_commas(t)
-            # merge quotes
-            t = merge_quotes(t)
+        # handle dots in numbers and quotes - Part 1
+        t = pre_process_dot_numbers(t)
+        t = pre_process_quotes(t)
+        # handle special characters
+        t = handle_special_chars(t)
+        # handle hashtags
+        t = expand_hashtags(t, self._hashtag_processor)
+        # ignore useless characters
+        t = ignore_chars(t)
+        # simplify quotes
+        t = simplify_quotes(t)
+        # all punctuation becomes commas
+        t = replace_punctuation_with_commas(t)
+        # handle dots in numbers and quotes - Part 2
+        t = post_process_dot_numbers(t)
+        t = post_process_quotes(t)
+        # handle repeating characters
+        t = remove_repeating_chars(t)
+        # merge quotes
+        t = merge_quotes(t)
+        # merge commas
+        t = merge_commas(t)
         # remove multiple spaces
         t = remove_extra_spaces(t)
         # remove first and last comma
         t = remove_first_last_commas(t)
         # always start with a space
-        return f" {t}" if not clip else t
+        return f" {t}"
