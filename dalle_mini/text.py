@@ -2,36 +2,28 @@
 Utilities for processing text.
 """
 
-import requests
 from pathlib import Path
 from unidecode import unidecode
 
 import re, math, random, html
 import ftfy
 
-WIKI_STATS_URL = "https://github.com/borisdayma/wikipedia-word-frequency/raw/feat-update/results/enwiki-20210820-words-frequency.txt"
-WIKI_STATS_LOCAL = Path(WIKI_STATS_URL).parts[-1]
+from huggingface_hub import hf_hub_download
 
 # based on wiki word occurence
 person_token = [("a person", 282265), ("someone", 121194), ("somebody", 12219)]
 temp_token = "xtokx"  # avoid repeating chars
 
 
-def get_wiki_file():
-    if not Path(WIKI_STATS_LOCAL).exists():
-        r = requests.get(WIKI_STATS_URL, stream=True)
-        with open(WIKI_STATS_LOCAL, "wb") as fd:
-            for chunk in r.iter_content(chunk_size=128):
-                fd.write(chunk)
-    return WIKI_STATS_LOCAL
-
-
 class HashtagProcessor:
     # Adapted from wordninja library
     # We use our wikipedia word count + a good heuristic to make it work
     def __init__(self):
+        wiki_word_frequency = hf_hub_download(
+            "dalle-mini/dalle-mini", filename="enwiki-words-frequency.txt"
+        )
         self._word_cost = (
-            l.split()[0] for l in Path(get_wiki_file()).read_text().splitlines()
+            l.split()[0] for l in Path(wiki_word_frequency).read_text().splitlines()
         )
         self._word_cost = {
             str(k): math.log(float(i + 1)) for i, k in enumerate(self._word_cost)
