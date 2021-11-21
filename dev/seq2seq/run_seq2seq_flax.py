@@ -151,7 +151,7 @@ class DataTrainingArguments:
             "than this will be truncated, sequences shorter will be padded."
         },
     )
-    no_decay: bool = field(
+    use_decay: bool = field(
         default=False,
         metadata={"help": "Whether to use decay in the learning rate scheduler."},
     )
@@ -170,18 +170,16 @@ class DataTrainingArguments:
         },
     )
     preprocessing_num_workers: Optional[int] = field(
-        default=80,  # ensure we have the same datasets cached data and avoid using too much space
-        metadata={"help": "The number of processes to use for the preprocessing."},
-    )
-    source_prefix: Optional[str] = field(
         default=None,
         metadata={
-            "help": "A prefix to add before every source text (useful for T5 models)."
+            "help": "The number of processes to use for the preprocessing. Not used in streaming mode."
         },
     )
     overwrite_cache: bool = field(
         default=False,
-        metadata={"help": "Overwrite the cached training and evaluation sets"},
+        metadata={
+            "help": "Overwrite the cached training and evaluation sets. Not used in streaming mode."
+        },
     )
     log_interval: Optional[int] = field(
         default=40,
@@ -189,41 +187,16 @@ class DataTrainingArguments:
     )
     log_model: bool = field(
         default=False,
-        metadata={"help": "Overwrite the cached training and evaluation sets"},
+        metadata={"help": "Log frequency for model"},
     )
     save_model_steps: Optional[int] = field(
-        default=5000,  # about once every 1.5h in our experiments
-        metadata={
-            "help": "For logging the model more frequently. Used only when `log_model` is set."
-        },
+        default=5000,
+        metadata={"help": "For saving/logging the model more frequently"},
     )
 
     def __post_init__(self):
         if self.dataset_repo_or_path is None:
             raise ValueError("Need a dataset repository or path.")
-        if self.train_file is None or self.validation_file is None:
-            raise ValueError("Need training/validation file.")
-        else:
-            if self.train_file is not None:
-                extension = self.train_file.split(".")[-1]
-                assert extension in [
-                    "tsv",
-                    "csv",
-                    "json",
-                    "jsonl",
-                ], "`train_file` should be a tsv, csv or json file."
-            if self.validation_file is not None:
-                extension = self.validation_file.split(".")[-1]
-                assert extension in [
-                    "tsv",
-                    "csv",
-                    "json",
-                    "jsonl",
-                ], "`validation_file` should be a tsv, csv or json file."
-        if self.streaming and (self.len_train is None or self.len_eval is None):
-            raise ValueError(
-                "Streaming requires providing length of training and validation datasets"
-            )
 
 
 class TrainState(train_state.TrainState):
@@ -291,7 +264,7 @@ def create_learning_rate_fn(
     num_train_epochs: int,
     num_warmup_steps: int,
     learning_rate: float,
-    no_decay: bool,
+    use_decay: bool,
 ) -> Callable[[int], jnp.array]:
     """Returns a linear warmup, linear_decay learning rate function."""
     steps_per_epoch = train_ds_size // train_batch_size
@@ -299,7 +272,7 @@ def create_learning_rate_fn(
     warmup_fn = optax.linear_schedule(
         init_value=0.0, end_value=learning_rate, transition_steps=num_warmup_steps
     )
-    if no_decay:
+    if not use_decay:
         return warmup_fn
     decay_fn = optax.linear_schedule(
         init_value=learning_rate,
@@ -372,10 +345,13 @@ def main():
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
     # (the dataset will be downloaded automatically from the datasets Hub).
     #
-    data_files = {
-        "train": data_args.train_file,
-        "validation": data_args.validation_file,
-    }
+    if data_args.train_file is not None or data_args.validation_file is not None:
+        data_files = {
+            "train": data_args.train_file,
+            "validation": data_args.validation_file,
+        }
+    else:
+        data_files = None
     dataset = load_dataset(
         data_args.dataset_repo_or_path,
         data_files=data_files,
@@ -449,8 +425,6 @@ def main():
     print(f"TPUs: {jax.device_count()}")
     assert jax.device_count() == 8, "TPUs in use, please check running processes"
 
-    prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
-
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
 
@@ -475,7 +449,6 @@ def main():
 
     def preprocess_function(examples):
         inputs = examples[text_column]
-        inputs = [prefix + inp for inp in inputs] if prefix else inputs
         # Setting padding="max_length" as we need fixed length inputs for jitted functions
         model_inputs = tokenizer(
             inputs,
@@ -617,7 +590,7 @@ def main():
         training_args.num_train_epochs,
         training_args.warmup_steps,
         training_args.learning_rate,
-        data_args.no_decay,
+        data_args.use_decay,
     )
 
     # We use Optax's "masking" functionality to not apply weight decay
@@ -625,8 +598,6 @@ def main():
     # mask boolean with the same structure as the parameters.
     # The mask is True for parameters that should be decayed.
     # Note that this mask is specifically adapted for FlaxBart.
-    # For FlaxT5, one should correct the layer norm parameter naming
-    # accordingly - see `run_t5_mlm_flax.py` e.g.
     def decay_mask_fn(params):
         flat_params = traverse_util.flatten_dict(params)
         layer_norm_params = [
@@ -649,6 +620,8 @@ def main():
         # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
         optimizer = optax.adafactor(
             learning_rate=learning_rate_fn,
+            weight_decay_rate=training_args.weight_decay,
+            weight_decay_mask=decay_mask_fn
         )
     else:
         optimizer = optax.adamw(
