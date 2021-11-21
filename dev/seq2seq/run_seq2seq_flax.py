@@ -17,10 +17,9 @@
 Fine-tuning the library models for seq2seq, text to image.
 Script adapted from run_summarization_flax.py
 """
-# You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
 
 import os
-import logging as pylogging  # To avoid collision with transformers.utils.logging
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,7 +43,6 @@ from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_key
 from transformers import (
     AutoTokenizer,
-    FlaxBartForConditionalGeneration,
     HfArgumentParser,
     TrainingArguments,
 )
@@ -53,16 +51,9 @@ from transformers.models.bart.modeling_flax_bart import *
 import wandb
 
 from dalle_mini.text import TextNormalizer
+from dalle_mini.model import CustomFlaxBartForConditionalGeneration
 
-logger = pylogging.getLogger(__name__)
-
-
-# Model hyperparameters, for convenience
-# TODO: the model has now it's own definition file and should be imported
-OUTPUT_VOCAB_SIZE = 16384 + 1  # encoded image token space + 1 for bos
-OUTPUT_LENGTH = 256 + 1  # number of encoded tokens + 1 for bos
-BOS_TOKEN_ID = 16384
-BASE_MODEL = "facebook/bart-large-cnn"  # we currently have issues with bart-large
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,23 +63,29 @@ class ModelArguments:
     """
 
     model_name_or_path: Optional[str] = field(
-        default=BASE_MODEL,
+        default=None,
         metadata={
             "help": "The model checkpoint for weights initialization."
             "Don't set if you want to train a model from scratch."
         },
     )
-    config_name: Optional[str] = field(
+    image_vocab_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "Vocab size of image encoder"},
+    )
+    image_length: Optional[int] = field(
+        default=None,
+        metadata={"help": "Number of tokens per image"},
+    )
+    tokenizer_name: Optional[str] = field(
         default=None,
         metadata={
-            "help": "Pretrained config name or path if not the same as model_name"
+            "help": "Pretrained tokenizer name or path if not the same as model_name_or_path"
         },
     )
-    use_fast_tokenizer: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."
-        },
+    normalize_text: bool = field(
+        default=False,
+        metadata={"help": "Whether to normalize text or not."},
     )
     dtype: Optional[str] = field(
         default="float32",
@@ -158,22 +155,6 @@ class DataTrainingArguments:
         default=False,
         metadata={"help": "Whether to use decay in the learning rate scheduler."},
     )
-    max_target_length: Optional[int] = field(
-        default=OUTPUT_LENGTH,
-        metadata={
-            "help": "The maximum total sequence length for target text after tokenization. Sequences longer "
-            "than this will be truncated, sequences shorter will be padded."
-        },
-    )
-    val_max_target_length: Optional[int] = field(
-        default=OUTPUT_LENGTH,
-        metadata={
-            "help": "The maximum total sequence length for validation target text after tokenization. Sequences longer "
-            "than this will be truncated, sequences shorter will be padded. Will default to `max_target_length`."
-            "This argument is also used to override the `max_length` param of `model.generate`, which is used "
-            "during evaluation."
-        },
-    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
@@ -187,10 +168,6 @@ class DataTrainingArguments:
             "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
             "value if set."
         },
-    )
-    normalize_text: bool = field(
-        default=False,
-        metadata={"help": "Normalize/Simplify text"},
     )
     preprocessing_num_workers: Optional[int] = field(
         default=80,  # ensure we have the same datasets cached data and avoid using too much space
@@ -243,8 +220,6 @@ class DataTrainingArguments:
                     "json",
                     "jsonl",
                 ], "`validation_file` should be a tsv, csv or json file."
-        if self.val_max_target_length is None:
-            self.val_max_target_length = self.max_target_length
         if self.streaming and (self.len_train is None or self.len_eval is None):
             raise ValueError(
                 "Streaming requires providing length of training and validation datasets"
@@ -271,70 +246,6 @@ class TrainState(train_state.TrainState):
 
         # replace state
         return self.replace(step=new_step, opt_state=new_opt_state)
-
-
-class CustomFlaxBartModule(FlaxBartModule):
-    def setup(self):
-        # check config is valid, otherwise set default values
-        self.config.vocab_size_output = getattr(
-            self.config, "vocab_size_output", OUTPUT_VOCAB_SIZE
-        )
-        self.config.max_position_embeddings_decoder = getattr(
-            self.config, "max_position_embeddings_decoder", OUTPUT_LENGTH
-        )
-
-        # we keep shared to easily load pre-trained weights
-        self.shared = nn.Embed(
-            self.config.vocab_size,
-            self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-            dtype=self.dtype,
-        )
-        # a separate embedding is used for the decoder
-        self.decoder_embed = nn.Embed(
-            self.config.vocab_size_output,
-            self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-            dtype=self.dtype,
-        )
-        self.encoder = FlaxBartEncoder(
-            self.config, dtype=self.dtype, embed_tokens=self.shared
-        )
-
-        # the decoder has a different config
-        decoder_config = BartConfig(self.config.to_dict())
-        decoder_config.max_position_embeddings = (
-            self.config.max_position_embeddings_decoder
-        )
-        decoder_config.vocab_size = self.config.vocab_size_output
-        self.decoder = FlaxBartDecoder(
-            decoder_config, dtype=self.dtype, embed_tokens=self.decoder_embed
-        )
-
-
-class CustomFlaxBartForConditionalGenerationModule(
-    FlaxBartForConditionalGenerationModule
-):
-    def setup(self):
-        # check config is valid, otherwise set default values
-        self.config.vocab_size_output = getattr(
-            self.config, "vocab_size_output", OUTPUT_VOCAB_SIZE
-        )
-
-        self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
-        self.lm_head = nn.Dense(
-            self.config.vocab_size_output,
-            use_bias=False,
-            dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-        )
-        self.final_logits_bias = self.param(
-            "final_logits_bias", self.bias_init, (1, self.config.vocab_size_output)
-        )
-
-
-class CustomFlaxBartForConditionalGeneration(FlaxBartForConditionalGeneration):
-    module_class = CustomFlaxBartForConditionalGenerationModule
 
 
 def data_loader(
@@ -440,13 +351,13 @@ def main():
         )
 
     # Make one log on every process with the configuration for debugging.
-    pylogging.basicConfig(
+    logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-        level=pylogging.INFO,
+        level=logging.INFO,
     )
     # Setup logging, we only want one process per machine to log things on the screen.
-    logger.setLevel(pylogging.INFO if jax.process_index() == 0 else pylogging.ERROR)
+    logger.setLevel(logging.INFO if jax.process_index() == 0 else logging.ERROR)
     if jax.process_index() == 0:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -483,44 +394,57 @@ def main():
     if model_args.from_checkpoint is not None:
         artifact = wandb.run.use_artifact(model_args.from_checkpoint)
         artifact_dir = artifact.download()
+
+        # load model
         model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
 
         # load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
             artifact_dir,
-            use_fast=model_args.use_fast_tokenizer,
+            use_fast=True,
         )
 
     else:
         # Set up our new model config
+        # TODO: simplify with custom config class
         config = BartConfig.from_pretrained(model_args.model_name_or_path)
-        config.tie_word_embeddings = False
-        config.decoder_start_token_id = BOS_TOKEN_ID  # for first token
-        config.bos_token_id = (
-            BOS_TOKEN_ID  # should not be used (due to forced_bos_token_id)
-        )
-        config.pos_token_id = (
-            BOS_TOKEN_ID  # should not be needed (as we generate until max_length)
-        )
-        config.eos_token_id = BOS_TOKEN_ID + 1  # unreachable
+        config.image_vocab_size = model_args.image_vocab_size
+        config.image_length = model_args.image_length
+        # we append decoder bos to image vocab
+        config.decoder_start_token_id = config.image_vocab_size
+        # ensure we don't generate bos (in addition to decoder start token)
+        config.force_bos_token_to_be_generated = False
         config.forced_bos_token_id = None  # we don't need this token
         config.forced_eos_token_id = None  # we don't need this token
-        config.force_bos_token_to_be_generated = (
-            False  # otherwise it sets bos_token_id at loading
-        )
-        config.min_length = data_args.max_target_length
-        config.max_length = data_args.max_target_length
+
+        config.tie_word_embeddings = False
+        config.min_length = model_args.image_length + 1
+        config.max_length = model_args.image_length + 1
+
+        # below tokens need to be set to avoid error during generation (converted to jnp.array)
+        # they are not expected to be used and are set to unreachable token id
+        config.bos_token_id = config.image_vocab_size + 1
+        config.pos_token_id = config.image_vocab_size + 1
+        config.eos_token_id = config.image_vocab_size + 1
+
+        # save whether we normalize the text
+        config.normalize_text = model_args.normalize_text
 
         # Create a custom model and initialize it randomly
-        model = CustomFlaxBartForConditionalGeneration(
+        model = CustomFlaxBartForConditionalGeneration.from_config(
             config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
         )
 
         # Load tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path,
-            use_fast=model_args.use_fast_tokenizer,
-        )
+        if model_args.tokenizer_name is not None:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_args.tokenizer_name, use_fast=True
+            )
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_args.model_name_or_path,
+                use_fast=True,
+            )
 
     print(f"TPUs: {jax.device_count()}")
     assert jax.device_count() == 8, "TPUs in use, please check running processes"
@@ -543,7 +467,7 @@ def main():
         shifted_input_ids[:, 0] = decoder_start_token_id
         return shifted_input_ids
 
-    text_normalizer = TextNormalizer() if data_args.normalize_text else None
+    text_normalizer = TextNormalizer() if model.config.normalize_text else None
 
     def normalize_text(example):
         example[text_column] = text_normalizer(example[text_column])
@@ -590,7 +514,7 @@ def main():
             )
         if data_args.streaming:
             train_dataset = train_dataset.shuffle(1000, training_args.seed)
-        if data_args.normalize_text:
+        if model.config.normalize_text:
             train_dataset = (
                 train_dataset.map(normalize_text)
                 if data_args.streaming
@@ -627,7 +551,7 @@ def main():
                 if data_args.streaming
                 else eval_dataset.select(range(data_args.max_train_samples))
             )
-        if data_args.normalize_text:
+        if model.config.normalize_text:
             eval_dataset = (
                 eval_dataset.map(normalize_text)
                 if data_args.streaming
