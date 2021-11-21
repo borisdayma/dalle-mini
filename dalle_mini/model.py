@@ -18,21 +18,20 @@ class CustomFlaxBartModule(FlaxBartModule):
         self.shared = nn.Embed(
             self.config.vocab_size,
             self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-            dtype=self.dtype,
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
         # a separate embedding is used for the decoder
         self.decoder_embed = nn.Embed(
             self.config.image_vocab_size + 1,
             self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
-            dtype=self.dtype,
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.encoder = FlaxBartEncoder(
             self.config, dtype=self.dtype, embed_tokens=self.shared
         )
 
         # the decoder has a different config
+        # TODO: should not be needed once we have custom config/module
         decoder_config = BartConfig(self.config.to_dict())
         decoder_config.max_position_embeddings = (
             self.config.image_length + 1  # image tokens + BOS
@@ -47,16 +46,11 @@ class CustomFlaxBartForConditionalGenerationModule(
     FlaxBartForConditionalGenerationModule
 ):
     def setup(self):
-        # check config is valid, otherwise set default values
-        # TODO: simplify with custom config class
-        self.config.text_normalized = True / False
-
         self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
         self.lm_head = nn.Dense(
             self.config.image_vocab_size + 1,  # encoded image token space + 1 for bos
             use_bias=False,
-            dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std, self.dtype),
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.final_logits_bias = self.param(
             "final_logits_bias", self.bias_init, (1, self.config.image_vocab_size + 1)
