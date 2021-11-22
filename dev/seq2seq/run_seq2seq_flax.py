@@ -21,6 +21,7 @@ Script adapted from run_summarization_flax.py
 import os
 import logging
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -37,7 +38,6 @@ import optax
 import transformers
 from flax import jax_utils, traverse_util
 from flax.serialization import from_bytes, to_bytes
-import flax.linen as nn
 from flax.jax_utils import unreplicate
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_key
@@ -136,14 +136,6 @@ class DataTrainingArguments:
         default=False,
         metadata={"help": "Whether to stream the dataset."},
     )
-    len_train: Optional[int] = field(
-        default=None,
-        metadata={"help": "Length of training dataset, required for streaming"},
-    )
-    len_eval: Optional[int] = field(
-        default=None,
-        metadata={"help": "Length of validation dataset, required for streaming"},
-    )
     max_source_length: Optional[int] = field(
         default=128,
         metadata={
@@ -189,10 +181,6 @@ class DataTrainingArguments:
         default=False,
         metadata={"help": "Log frequency for model"},
     )
-    save_model_steps: Optional[int] = field(
-        default=5000,
-        metadata={"help": "For saving/logging the model more frequently"},
-    )
 
     def __post_init__(self):
         if self.dataset_repo_or_path is None:
@@ -201,6 +189,9 @@ class DataTrainingArguments:
 
 class TrainState(train_state.TrainState):
     dropout_rng: jnp.ndarray = None
+    epoch: int = 0
+    train_time: float = 0.0  # total time the model trained
+    train_samples: int = 0  # number of samples seen
 
     def replicate(self):
         return jax_utils.replicate(self).replace(
@@ -212,13 +203,17 @@ class TrainState(train_state.TrainState):
         with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
             new_opt_state = from_bytes(self.opt_state, f.read())
 
-        # restore steps
+        # restore other parameters
         with (Path(artifact_dir) / "training_state.json").open("r") as f:
             training_state = json.load(f)
-        new_step = training_state["step"]
 
         # replace state
-        return self.replace(step=new_step, opt_state=new_opt_state)
+        return self.replace(
+            opt_state=new_opt_state,
+            step=training_state["step"],
+            train_time=training_state["train_time"],
+            train_samples=training_state["train_samples"],
+        )
 
 
 def data_loader(
@@ -259,16 +254,16 @@ def data_loader_streaming(dataset: Dataset, batch_size: int):
 
 
 def create_learning_rate_fn(
-    train_ds_size: int,
-    train_batch_size: int,
-    num_train_epochs: int,
     num_warmup_steps: int,
     learning_rate: float,
     use_decay: bool,
+    num_train_steps: int = None,  # used only with `use_decay`, typically train_size // batch_size * num_epochs
 ) -> Callable[[int], jnp.array]:
     """Returns a linear warmup, linear_decay learning rate function."""
-    steps_per_epoch = train_ds_size // train_batch_size
-    num_train_steps = steps_per_epoch * num_train_epochs
+    if use_decay:
+        assert (
+            num_train_steps is not None
+        ), "Learning rate with decay requires number of training steps"
     warmup_fn = optax.linear_schedule(
         init_value=0.0, end_value=learning_rate, transition_steps=num_warmup_steps
     )
@@ -364,7 +359,6 @@ def main():
         project="dalle-mini",
         job_type="Seq2Seq",
         config=parser.parse_args(),
-        save_code=True,
     )
 
     if model_args.from_checkpoint is not None:
@@ -562,35 +556,26 @@ def main():
     )
     batch_size_per_update = train_batch_size * training_args.gradient_accumulation_steps
     eval_batch_size = int(training_args.per_device_eval_batch_size) * jax.device_count()
+    len_train_dataset, len_eval_dataset = None, None
     if data_args.streaming:
-        len_train_dataset = data_args.len_train
-        if (
-            data_args.max_train_samples is not None
-            and data_args.max_train_samples < len_train_dataset
-        ):
+        # we don't know the length, let's just assume max_samples if defined
+        if data_args.max_train_samples is not None:
             len_train_dataset = data_args.max_train_samples
-
-        len_eval_dataset = data_args.len_eval
-        if (
-            data_args.max_eval_samples is not None
-            and data_args.max_eval_samples < len_eval_dataset
-        ):
+        if data_args.max_eval_samples is not None:
             len_eval_dataset = data_args.max_eval_samples
     else:
         len_train_dataset = len(train_dataset)
         len_eval_dataset = len(eval_dataset)
-    steps_per_epoch = len_train_dataset // train_batch_size
-    total_steps = steps_per_epoch * num_epochs
-    total_optimization_steps = (len_train_dataset // batch_size_per_update) * num_epochs
+    steps_per_epoch = (
+        len_train_dataset // train_batch_size if len_train_dataset is not None else None
+    )
 
     # Create learning rate schedule
     learning_rate_fn = create_learning_rate_fn(
-        len_train_dataset,
-        train_batch_size,
-        training_args.num_train_epochs,
         training_args.warmup_steps,
         training_args.learning_rate,
         data_args.use_decay,
+        steps_per_epoch * num_epochs,
     )
 
     # We use Optax's "masking" functionality to not apply weight decay
@@ -621,7 +606,7 @@ def main():
         optimizer = optax.adafactor(
             learning_rate=learning_rate_fn,
             weight_decay_rate=training_args.weight_decay,
-            weight_decay_mask=decay_mask_fn
+            weight_decay_mask=decay_mask_fn,
         )
     else:
         optimizer = optax.adamw(
@@ -647,10 +632,9 @@ def main():
         dropout_rng=dropout_rng,
     )
     if model_args.from_checkpoint is not None:
-        # restore optimizer state and step
+        # restore optimizer state and other parameters
+        # we currently ignore partial epoch training: see https://github.com/borisdayma/dalle-mini/issues/105
         state = state.restore_state(artifact_dir)
-        # TODO: number of remaining training epochs/steps and dataloader state need to be adjusted
-        # TODO: optimizer may use a different step for learning rate, we should serialize/restore entire state
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
@@ -659,7 +643,7 @@ def main():
         return loss
 
     # Define gradient update step fn
-    def train_step(state, batch):
+    def train_step(state, batch, delta_time):
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
         def compute_loss(params, batch):
@@ -673,14 +657,20 @@ def main():
         grad_fn = jax.value_and_grad(compute_loss)
         loss, grads = grad_fn(state.params, batch)
         grads = jax.lax.pmean(grads, "batch")
-        state = state.apply_gradients(grads=grads)
+        state = state.apply_gradients(
+            grads=grads,
+            dropout_rng=new_dropout_rng,
+            train_time=state.train_time + delta_time,
+            train_samples=state.train_samples + train_batch_size,
+        )
 
         metrics = {
             "loss": loss,
             "learning_rate": learning_rate_fn(state.step),
         }
         metrics = jax.lax.pmean(metrics, axis_name="batch")
-        return state.replace(dropout_rng=new_dropout_rng), metrics
+
+        return state, metrics
 
     # Define eval fn
     def eval_step(params, batch):
@@ -697,10 +687,6 @@ def main():
     p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0,))
     p_eval_step = jax.pmap(eval_step, "batch")
 
-    # Replicate the train state on each device
-    del model._params
-    state = state.replicate()
-
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len_train_dataset}")
     logger.info(f"  Num Epochs = {num_epochs}")
@@ -710,13 +696,12 @@ def main():
     logger.info(
         f"  Total train batch size (w. parallel, distributed & gradient accumulation) = {batch_size_per_update}"
     )
-    logger.info(f"  Total global steps = {total_steps}")
-    logger.info(f"  Total optimization steps = {total_optimization_steps}")
-
-    epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
+    epochs = tqdm(
+        range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
+    )
 
     # set default x-axis as 'train/step'
-    wandb_log({}, step=unreplicate(state.step))
+    wandb_log({}, step=state.step)
     wandb.define_metric("*", step_metric="train/step")
 
     # add interesting config parameters
@@ -725,10 +710,11 @@ def main():
             "len_train": len_train_dataset,
             "len_eval": len_eval_dataset,
             "batch_size_per_update": batch_size_per_update,
-            "total_steps": total_steps,
-            "total_optimization_steps": total_optimization_steps,
         }
     )
+
+    # replicate state on each device
+    state = state.replicate()
 
     def run_evaluation():
         # ======================== Evaluating ==============================
@@ -755,7 +741,7 @@ def main():
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
             # log metrics
-            wandb_log(eval_metrics, step=unreplicate(state.step), prefix="eval")
+            wandb_log(eval_metrics, step=get_metrics(state.step), prefix="eval")
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -764,10 +750,9 @@ def main():
 
             return eval_metrics
 
-    def run_save_model(state, step, epoch, eval_metrics=None):
+    def run_save_model(state, eval_metrics=None):
         if jax.process_index() == 0:
-            params = jax.device_get(jax.tree_map(lambda x: x[0], state.params))
-
+            params = jax.device_get(unreplicate(state.params))
             # save model locally
             model.save_pretrained(
                 training_args.output_dir,
@@ -778,24 +763,32 @@ def main():
             tokenizer.save_pretrained(training_args.output_dir)
 
             # save state
-            # TODO: maybe we should just save the full state object without params
-            state = unreplicate(state)
+            opt_state = unreplicate(state.opt_state)
             with (Path(training_args.output_dir) / "opt_state.msgpack").open("wb") as f:
-                f.write(to_bytes(state.opt_state))
+                f.write(to_bytes(opt_state))
             with (Path(training_args.output_dir) / "training_state.json").open(
                 "w"
             ) as f:
-                json.dump({"step": state.step.item()}, f)
+                json.dump(
+                    {
+                        k: get_metrics(state[k])
+                        for k in ["step", "epoch", "train_time", "train_samples"]
+                    },
+                    f,
+                )
 
             # save to W&B
             if data_args.log_model:
                 # save some space
                 c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
-                c.cleanup(wandb.util.from_human_size("5GB"))
+                c.cleanup(wandb.util.from_human_size("10GB"))
 
-                metadata = {"step": step, "epoch": epoch}
+                metadata = {
+                    k: get_metrics(state[k])
+                    for k in ["step", "epoch", "train_time", "train_samples"]
+                }
                 if eval_metrics is not None:
-                    metadata["eval/loss"] = eval_metrics["loss"]
+                    metadata["eval"] = eval_metrics
                 artifact = wandb.Artifact(
                     name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
                 )
@@ -829,18 +822,19 @@ def main():
                     training_args.output_dir,
                     params=params,
                     push_to_hub=training_args.push_to_hub,
-                    commit_message=f"Saving weights and logs of epoch {epoch+1}",
+                    commit_message=f"Saving weights and logs at step {get_metrics(state.step)+1}",
                     temp_dir=True,  # avoid issues with being in a repository
                 )
 
+    last_time = time.perf_counter()
     for epoch in epochs:
+        state.replace(epoch=jax_utils.replicate(epoch))
         # ======================== Training ================================
-        step = unreplicate(state.step)
-        wandb_log({"train/epoch": epoch}, step=step)
+        wandb_log({"train/epoch": epoch}, step=get_metrics(state.step))
 
         # Generate an epoch by shuffling sampling indices from the train dataset
         if data_args.streaming:
-            train_dataset.set_epoch(epoch)
+            train_dataset.set_epoch(epoch)  # shuffle dataset
             train_loader = data_loader_streaming(train_dataset, train_batch_size)
         else:
             rng, input_rng = jax.random.split(rng)
@@ -855,23 +849,31 @@ def main():
             leave=False,
             total=steps_per_epoch,
         ):
-            state, train_metric = p_train_step(state, batch)
-            step = unreplicate(state.step)
+
+            # calculate delta time (we have a lag of one step but it's ok)
+            new_time = time.perf_counter()
+            delta_time = new_time - last_time
+            last_time = new_time
+
+            # train step
+            state, train_metric = p_train_step(state, batch, delta_time)
+            step = get_metrics(state.step)
 
             if step % data_args.log_interval == 0 and jax.process_index() == 0:
                 # log metrics
-                wandb_log(unreplicate(train_metric), step=step, prefix="train")
+                wandb_log(get_metrics(train_metric), step=step, prefix="train")
 
+            eval_metrics = None
             if training_args.eval_steps and step % training_args.eval_steps == 0:
-                run_evaluation()
+                eval_metrics = run_evaluation()
 
-            if step % data_args.save_model_steps == 0:
-                run_save_model(state, step, epoch)
+            if step % training_args.save_steps == 0:
+                run_save_model(state, eval_metrics)
 
         # log final train metrics
-        wandb_log(unreplicate(train_metric), step=step, prefix="train")
+        train_metric = get_metrics(train_metric)
+        wandb_log(train_metric, step=step, prefix="train")
 
-        train_metric = unreplicate(train_metric)
         epochs.write(
             f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
         )
@@ -880,7 +882,7 @@ def main():
         eval_metrics = run_evaluation()
 
         # save checkpoint after each epoch
-        run_save_model(state, state.step, epoch, eval_metrics)
+        run_save_model(state, eval_metrics)
 
 
 if __name__ == "__main__":
