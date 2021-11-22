@@ -46,7 +46,7 @@ from transformers import (
     HfArgumentParser,
     TrainingArguments,
 )
-from transformers.models.bart.modeling_flax_bart import *
+from transformers.models.bart.modeling_flax_bart import BartConfig
 
 import wandb
 
@@ -398,7 +398,7 @@ def main():
         config.normalize_text = model_args.normalize_text
 
         # Create a custom model and initialize it randomly
-        model = CustomFlaxBartForConditionalGeneration.from_config(
+        model = CustomFlaxBartForConditionalGeneration(
             config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
         )
 
@@ -566,13 +566,16 @@ def main():
     steps_per_epoch = (
         len_train_dataset // train_batch_size if len_train_dataset is not None else None
     )
+    num_train_steps = (
+        steps_per_epoch * num_epochs if steps_per_epoch is not None else None
+    )
 
     # Create learning rate schedule
     learning_rate_fn = create_learning_rate_fn(
         training_args.warmup_steps,
         training_args.learning_rate,
         data_args.use_decay,
-        steps_per_epoch * num_epochs,
+        num_train_steps,
     )
 
     # We use Optax's "masking" functionality to not apply weight decay
@@ -602,8 +605,8 @@ def main():
         # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
         optimizer = optax.adafactor(
             learning_rate=learning_rate_fn,
-            weight_decay_rate=training_args.weight_decay,
-            weight_decay_mask=decay_mask_fn,
+            # weight_decay_rate=training_args.weight_decay,
+            # weight_decay_mask=decay_mask_fn,
         )
     else:
         optimizer = optax.adamw(
@@ -721,7 +724,11 @@ def main():
                 eval_loader = data_loader_streaming(eval_dataset, eval_batch_size)
             else:
                 eval_loader = data_loader(input_rng, eval_dataset, eval_batch_size)
-            eval_steps = len_eval_dataset // eval_batch_size
+            eval_steps = (
+                len_eval_dataset // eval_batch_size
+                if len_eval_dataset is not None
+                else None
+            )
             for batch in tqdm(
                 eval_loader,
                 desc="Evaluating...",
@@ -738,7 +745,7 @@ def main():
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
             # log metrics
-            wandb_log(eval_metrics, step=get_metrics(state.step), prefix="eval")
+            wandb_log(eval_metrics, step=unreplicate(state.step), prefix="eval")
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -763,14 +770,15 @@ def main():
             opt_state = unreplicate(state.opt_state)
             with (Path(training_args.output_dir) / "opt_state.msgpack").open("wb") as f:
                 f.write(to_bytes(opt_state))
+            state_dict = {
+                k: unreplicate(getattr(state, k))
+                for k in ["step", "epoch", "train_time", "train_samples"]
+            }
             with (Path(training_args.output_dir) / "training_state.json").open(
                 "w"
             ) as f:
                 json.dump(
-                    {
-                        k: get_metrics(state[k])
-                        for k in ["step", "epoch", "train_time", "train_samples"]
-                    },
+                    state_dict,
                     f,
                 )
 
@@ -780,10 +788,7 @@ def main():
                 c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
                 c.cleanup(wandb.util.from_human_size("10GB"))
 
-                metadata = {
-                    k: get_metrics(state[k])
-                    for k in ["step", "epoch", "train_time", "train_samples"]
-                }
+                metadata = dict(state_dict)
                 if eval_metrics is not None:
                     metadata["eval"] = eval_metrics
                 artifact = wandb.Artifact(
@@ -819,7 +824,7 @@ def main():
                     training_args.output_dir,
                     params=params,
                     push_to_hub=training_args.push_to_hub,
-                    commit_message=f"Saving weights and logs at step {get_metrics(state.step)+1}",
+                    commit_message=f"Saving weights and logs at step {unreplicate(state.step)+1}",
                     temp_dir=True,  # avoid issues with being in a repository
                 )
 
@@ -830,7 +835,7 @@ def main():
     for epoch in epochs:
         state.replace(epoch=jax_utils.replicate(epoch))
         # ======================== Training ================================
-        wandb_log({"train/epoch": epoch}, step=get_metrics(state.step))
+        wandb_log({"train/epoch": epoch}, step=unreplicate(state.step))
 
         # Generate an epoch by shuffling sampling indices from the train dataset
         if data_args.streaming:
@@ -856,12 +861,20 @@ def main():
             last_time = new_time
 
             # train step
-            state, train_metric = p_train_step(state, batch, delta_time)
-            step = get_metrics(state.step)
+            state, train_metric = p_train_step(
+                state, batch, jax_utils.replicate(delta_time)
+            )
+            step = unreplicate(state.step)
 
             if step % data_args.log_interval == 0 and jax.process_index() == 0:
                 # log metrics
-                wandb_log(get_metrics(train_metric), step=step, prefix="train")
+                wandb_log(unreplicate(train_metric), step=step, prefix="train")
+                # log state parameters
+                state_dict = {
+                    k.split("_")[-1]: unreplicate(getattr(state, k))
+                    for k in ["epoch", "train_time", "train_samples"]
+                }
+                wandb_log(state_dict, step=step, prefix="train")
 
             eval_metrics = None
             if training_args.eval_steps and step % training_args.eval_steps == 0:
@@ -872,7 +885,7 @@ def main():
 
         # log final train metrics
         if train_metric is not None:
-            train_metric = get_metrics(train_metric)
+            train_metric = unreplicate(train_metric)
             wandb_log(train_metric, step=step, prefix="train")
 
             epochs.write(
