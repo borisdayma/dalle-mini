@@ -336,10 +336,7 @@ def main():
     # Set the verbosity to info of the Transformers logger (on main process only):
     logger.info(f"Training/evaluation parameters {training_args}")
 
-    # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
-    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
-    # (the dataset will be downloaded automatically from the datasets Hub).
-    #
+    # Load dataset
     if data_args.train_file is not None or data_args.validation_file is not None:
         data_files = {
             "train": data_args.train_file,
@@ -826,7 +823,10 @@ def main():
                     temp_dir=True,  # avoid issues with being in a repository
                 )
 
+    # init variables
     last_time = time.perf_counter()
+    train_metric = None
+
     for epoch in epochs:
         state.replace(epoch=jax_utils.replicate(epoch))
         # ======================== Training ================================
@@ -871,12 +871,13 @@ def main():
                 run_save_model(state, eval_metrics)
 
         # log final train metrics
-        train_metric = get_metrics(train_metric)
-        wandb_log(train_metric, step=step, prefix="train")
+        if train_metric is not None:
+            train_metric = get_metrics(train_metric)
+            wandb_log(train_metric, step=step, prefix="train")
 
-        epochs.write(
-            f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
-        )
+            epochs.write(
+                f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
+            )
 
         # Final evaluation
         eval_metrics = run_evaluation()
