@@ -605,8 +605,8 @@ def main():
         # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
         optimizer = optax.adafactor(
             learning_rate=learning_rate_fn,
-            # weight_decay_rate=training_args.weight_decay,
-            # weight_decay_mask=decay_mask_fn,
+            weight_decay_rate=training_args.weight_decay,
+            weight_decay_mask=decay_mask_fn,
         )
     else:
         optimizer = optax.adamw(
