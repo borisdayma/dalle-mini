@@ -129,6 +129,12 @@ class DataTrainingArguments:
         default=False,
         metadata={"help": "Whether to stream the dataset."},
     )
+    use_auth_token: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use the authentication token for private datasets."
+        },
+    )
     max_source_length: Optional[int] = field(
         default=128,
         metadata={
@@ -256,9 +262,18 @@ class TrainingArguments:
         metadata={"help": "Log model to wandb at `save_steps` frequency."},
     )
 
-    seed: int = field(
+    seed_model: int = field(
         default=42,
-        metadata={"help": "Random seed that will be set at the beginning of training."},
+        metadata={
+            "help": "Random seed for the model that will be set at the beginning of training."
+        },
+    )
+    # default seed of None ensures we don't repeat the same items if script was interrupted during an epoch
+    seed_dataset: int = field(
+        default=None,
+        metadata={
+            "help": "Random seed for the dataset that will be set at the beginning of training."
+        },
     )
 
     push_to_hub: bool = field(
@@ -304,7 +319,9 @@ class TrainState(train_state.TrainState):
 
 
 def data_loader(
-    rng: jax.random.PRNGKey, dataset: Dataset, batch_size: int, shuffle: bool = False
+    dataset: Dataset,
+    batch_size: int,
+    rng: jax.random.PRNGKey = None,
 ):
     """
     Returns batches of size `batch_size` from truncated `dataset`, sharded over all local devices.
@@ -312,7 +329,7 @@ def data_loader(
     """
     steps_per_epoch = len(dataset) // batch_size
 
-    if shuffle:
+    if rng is not None:
         batch_idx = jax.random.permutation(rng, len(dataset))
     else:
         batch_idx = jnp.arange(len(dataset))
@@ -432,6 +449,7 @@ def main():
         data_args.dataset_repo_or_path,
         data_files=data_files,
         streaming=data_args.streaming,
+        use_auth_token=data_args.use_auth_token,
     )
 
     # Set up wandb run
@@ -483,7 +501,7 @@ def main():
 
         # Create a custom model and initialize it randomly
         model = CustomFlaxBartForConditionalGeneration(
-            config, seed=training_args.seed, dtype=getattr(jnp, model_args.dtype)
+            config, seed=training_args.seed_model, dtype=getattr(jnp, model_args.dtype)
         )
 
         # Load tokenizer
@@ -561,7 +579,14 @@ def main():
                 else train_dataset.select(range(data_args.max_train_samples))
             )
         if data_args.streaming:
-            train_dataset = train_dataset.shuffle(1000, training_args.seed)
+            train_dataset = train_dataset.shuffle(1000, training_args.seed_dataset)
+        else:
+            seed_dataset = (
+                training_args.seed_dataset
+                if training_args.seed_dataset is not None
+                else np.random.get_state()[1][0]
+            )
+            rng_dataset = jax.random.PRNGKey(seed_dataset)
         if model.config.normalize_text:
             train_dataset = (
                 train_dataset.map(normalize_text)
@@ -627,7 +652,7 @@ def main():
         )
 
     # Initialize our training
-    rng = jax.random.PRNGKey(training_args.seed)
+    rng = jax.random.PRNGKey(training_args.seed_model)
     rng, dropout_rng = jax.random.split(rng)
 
     # Store some constant
@@ -808,7 +833,7 @@ def main():
             if data_args.streaming:
                 eval_loader = data_loader_streaming(eval_dataset, eval_batch_size)
             else:
-                eval_loader = data_loader(input_rng, eval_dataset, eval_batch_size)
+                eval_loader = data_loader(eval_dataset, eval_batch_size)
             eval_steps = (
                 len_eval_dataset // eval_batch_size
                 if len_eval_dataset is not None
@@ -927,10 +952,8 @@ def main():
             train_dataset.set_epoch(epoch)  # shuffle dataset
             train_loader = data_loader_streaming(train_dataset, train_batch_size)
         else:
-            rng, input_rng = jax.random.split(rng)
-            train_loader = data_loader(
-                input_rng, train_dataset, train_batch_size, shuffle=True
-            )
+            rng_dataset, input_rng = jax.random.split(rng_dataset)
+            train_loader = data_loader(train_dataset, train_batch_size, rng=input_rng)
         # train
         for batch in tqdm(
             train_loader,
