@@ -44,7 +44,6 @@ from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_ke
 from transformers import (
     AutoTokenizer,
     HfArgumentParser,
-    TrainingArguments,
 )
 from transformers.models.bart.modeling_flax_bart import BartConfig
 
@@ -93,12 +92,6 @@ class ModelArguments:
             "help": "Floating-point format in which the model weights should be initialized and trained. Choose one of `[float32, float16, bfloat16]`."
         },
     )
-    from_checkpoint: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Loads a pretrained wandb checkpoint. Use artifact reference."
-        },
-    )
 
 
 @dataclass
@@ -143,10 +136,6 @@ class DataTrainingArguments:
             "than this will be truncated, sequences shorter will be padded."
         },
     )
-    use_decay: bool = field(
-        default=False,
-        metadata={"help": "Whether to use decay in the learning rate scheduler."},
-    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
@@ -173,18 +162,116 @@ class DataTrainingArguments:
             "help": "Overwrite the cached training and evaluation sets. Not used in streaming mode."
         },
     )
-    log_interval: Optional[int] = field(
-        default=40,
-        metadata={"help": "Log frequency for metrics"},
-    )
-    log_model: bool = field(
-        default=False,
-        metadata={"help": "Log frequency for model"},
-    )
 
     def __post_init__(self):
         if self.dataset_repo_or_path is None:
             raise ValueError("Need a dataset repository or path.")
+
+
+@dataclass
+class TrainingArguments:
+    """
+    Arguments pertaining to training parameters.
+    """
+
+    output_dir: str = field(
+        metadata={
+            "help": "The output directory where the model predictions and checkpoints will be written."
+        },
+    )
+    overwrite_output_dir: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Overwrite the content of the output directory. "
+                "Use this to continue training if output_dir points to a checkpoint directory."
+            )
+        },
+    )
+
+    do_train: bool = field(default=False, metadata={"help": "Whether to run training."})
+    do_eval: bool = field(
+        default=False, metadata={"help": "Whether to run eval on the dev set."}
+    )
+
+    per_device_train_batch_size: int = field(
+        default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for training."}
+    )
+    per_device_eval_batch_size: int = field(
+        default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation."}
+    )
+
+    gradient_accumulation_steps: int = field(
+        default=1,
+        metadata={
+            "help": "Number of updates steps to accumulate before performing a backward/update pass."
+        },
+    )
+
+    learning_rate: float = field(
+        default=5e-5, metadata={"help": "The initial learning rate."}
+    )
+    adafactor: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to replace AdamW by Adafactor."},
+    )
+    weight_decay: float = field(
+        default=None, metadata={"help": "Weight decay if we apply some."}
+    )
+    adam_beta1: float = field(
+        default=0.9, metadata={"help": "Beta1 for AdamW optimizer"}
+    )
+    adam_beta2: float = field(
+        default=0.999, metadata={"help": "Beta2 for AdamW optimizer"}
+    )
+    adam_epsilon: float = field(
+        default=1e-8, metadata={"help": "Epsilon for AdamW optimizer."}
+    )
+    max_grad_norm: float = field(
+        default=1.0, metadata={"help": "Max gradient norm for Adafactor."}
+    )
+    use_decay: bool = field(
+        default=False,
+        metadata={"help": "Whether to use decay in the learning rate scheduler."},
+    )
+
+    num_train_epochs: float = field(
+        default=3.0, metadata={"help": "Total number of training epochs to perform."}
+    )
+    warmup_steps: int = field(
+        default=0, metadata={"help": "Linear warmup over warmup_steps."}
+    )
+
+    logging_steps: int = field(
+        default=40, metadata={"help": "Log every X updates steps."}
+    )
+    eval_steps: int = field(
+        default=400, metadata={"help": "Run an evaluation every X steps."}
+    )
+    save_steps: int = field(
+        default=4000, metadata={"help": "Save checkpoint every X updates steps."}
+    )
+    log_model: bool = field(
+        default=False,
+        metadata={"help": "Log model to wandb at `save_steps` frequency."},
+    )
+
+    seed: int = field(
+        default=42,
+        metadata={"help": "Random seed that will be set at the beginning of training."},
+    )
+
+    push_to_hub: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether or not to upload the trained model to the model hub after training."
+        },
+    )
+
+    resume_from_wandb_checkpoint: Optional[str] = field(
+        default=None,
+        metadata={"help": "The reference to a wandb artifact for resuming training."},
+    )
 
 
 class TrainState(train_state.TrainState):
@@ -291,10 +378,7 @@ def wandb_log(metrics, step=None, prefix=None):
 
 
 def main():
-    # See all possible arguments in src/transformers/training_args.py
-    # or by passing the --help flag to this script.
-    # We now keep distinct sets of args, for a cleaner separation of concerns.
-
+    # See all possible arguments by passing the --help flag to this script.
     parser = HfArgumentParser(
         (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
@@ -358,8 +442,8 @@ def main():
         config=parser.parse_args(),
     )
 
-    if model_args.from_checkpoint is not None:
-        artifact = wandb.run.use_artifact(model_args.from_checkpoint)
+    if training_args.resume_from_wandb_checkpoint is not None:
+        artifact = wandb.run.use_artifact(training_args.resume_from_wandb_checkpoint)
         artifact_dir = artifact.download()
 
         # load model
@@ -574,7 +658,7 @@ def main():
     learning_rate_fn = create_learning_rate_fn(
         training_args.warmup_steps,
         training_args.learning_rate,
-        data_args.use_decay,
+        training_args.use_decay,
         num_train_steps,
     )
 
@@ -607,6 +691,7 @@ def main():
             learning_rate=learning_rate_fn,
             weight_decay_rate=training_args.weight_decay,
             weight_decay_mask=decay_mask_fn,
+            clipping_threshold=training_args.max_grad_norm,
         )
     else:
         optimizer = optax.adamw(
@@ -631,7 +716,7 @@ def main():
         tx=optimizer,
         dropout_rng=dropout_rng,
     )
-    if model_args.from_checkpoint is not None:
+    if training_args.resume_from_wandb_checkpoint is not None:
         # restore optimizer state and other parameters
         # we currently ignore partial epoch training: see https://github.com/borisdayma/dalle-mini/issues/105
         state = state.restore_state(artifact_dir)
@@ -771,7 +856,7 @@ def main():
             with (Path(training_args.output_dir) / "opt_state.msgpack").open("wb") as f:
                 f.write(to_bytes(opt_state))
             state_dict = {
-                k: unreplicate(getattr(state, k))
+                k: jax.device_get(unreplicate(getattr(state, k))).item()
                 for k in ["step", "epoch", "train_time", "train_samples"]
             }
             with (Path(training_args.output_dir) / "training_state.json").open(
@@ -783,7 +868,7 @@ def main():
                 )
 
             # save to W&B
-            if data_args.log_model:
+            if training_args.log_model:
                 # save some space
                 c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
                 c.cleanup(wandb.util.from_human_size("10GB"))
@@ -866,7 +951,7 @@ def main():
             )
             step = unreplicate(state.step)
 
-            if step % data_args.log_interval == 0 and jax.process_index() == 0:
+            if step % training_args.logging_steps == 0 and jax.process_index() == 0:
                 # log metrics
                 wandb_log(unreplicate(train_metric), step=step, prefix="train")
                 # log state parameters
