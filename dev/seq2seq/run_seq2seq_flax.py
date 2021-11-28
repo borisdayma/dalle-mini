@@ -475,6 +475,8 @@ def main():
 
         # load model
         model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
+        # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
+        print(model.params)
 
         # load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
@@ -529,7 +531,10 @@ def main():
                 config=config,
                 seed=training_args.seed_model,
                 dtype=getattr(jnp, model_args.dtype),
+                ignore_mismatched_sizes=True,
             )
+            # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
+            print(model.params)
         else:
             model = CustomFlaxBartForConditionalGeneration(
                 config,
