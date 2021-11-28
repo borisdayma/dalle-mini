@@ -68,6 +68,12 @@ class ModelArguments:
             "Don't set if you want to train a model from scratch."
         },
     )
+    config_name: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Pretrained config name or path if not the same as model_name"
+        },
+    )
     image_vocab_size: Optional[int] = field(
         default=None,
         metadata={"help": "Vocab size of image encoder"},
@@ -82,9 +88,11 @@ class ModelArguments:
             "help": "Pretrained tokenizer name or path if not the same as model_name_or_path"
         },
     )
-    normalize_text: bool = field(
-        default=False,
-        metadata={"help": "Whether to normalize text or not."},
+    normalize_text: Optional[bool] = field(
+        default=None,
+        metadata={
+            "help": "Whether to normalize text or not. By default, we refer to base model or don't normalize for new models."
+        },
     )
     dtype: Optional[str] = field(
         default="float32",
@@ -125,8 +133,9 @@ class DataTrainingArguments:
             "help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."
         },
     )
+    # data loading should not be a bottleneck so we use "streaming" mode by default
     streaming: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Whether to stream the dataset."},
     )
     use_auth_token: bool = field(
@@ -283,9 +292,9 @@ class TrainingArguments:
         },
     )
 
-    resume_from_wandb_checkpoint: Optional[str] = field(
+    resume_from_checkpoint: Optional[str] = field(
         default=None,
-        metadata={"help": "The reference to a wandb artifact for resuming training."},
+        metadata={"help": "Reference to a wandb artifact for resuming training."},
     )
 
 
@@ -460,12 +469,14 @@ def main():
         config=parser.parse_args(),
     )
 
-    if training_args.resume_from_wandb_checkpoint is not None:
-        artifact = wandb.run.use_artifact(training_args.resume_from_wandb_checkpoint)
+    if training_args.resume_from_checkpoint is not None:
+        artifact = wandb.run.use_artifact(training_args.resume_from_checkpoint)
         artifact_dir = artifact.download()
 
         # load model
         model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
+        # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
+        print(model.params)
 
         # load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
@@ -476,9 +487,20 @@ def main():
     else:
         # Set up our new model config
         # TODO: simplify with custom config class
-        config = BartConfig.from_pretrained(model_args.model_name_or_path)
-        config.image_vocab_size = model_args.image_vocab_size
-        config.image_length = model_args.image_length
+        if model_args.config_name:
+            config = BartConfig.from_pretrained(model_args.config_name)
+        else:
+            config = BartConfig.from_pretrained(model_args.model_name_or_path)
+        if model_args.image_vocab_size:
+            config.image_vocab_size = model_args.image_vocab_size
+        assert (
+            getattr(config, "image_vocab_size") is not None
+        ), "image_vocab_size must be specified when not present in base model/config"
+        if model_args.image_length:
+            config.image_length = model_args.image_length
+        assert (
+            getattr(config, "image_length") is not None
+        ), "image_length must be specified when not present in base model/config"
         # we append decoder bos to image vocab
         config.decoder_start_token_id = config.image_vocab_size
         # ensure we don't generate bos (in addition to decoder start token)
@@ -487,8 +509,8 @@ def main():
         config.forced_eos_token_id = None  # we don't need this token
 
         config.tie_word_embeddings = False
-        config.min_length = model_args.image_length + 1
-        config.max_length = model_args.image_length + 1
+        config.min_length = config.image_length + 1
+        config.max_length = config.image_length + 1
 
         # below tokens need to be set to avoid error during generation (converted to jnp.array)
         # they are not expected to be used and are set to unreachable token id
@@ -497,12 +519,27 @@ def main():
         config.eos_token_id = config.image_vocab_size + 1
 
         # save whether we normalize the text
-        config.normalize_text = model_args.normalize_text
+        if model_args.normalize_text is not None:
+            config.normalize_text = model_args.normalize_text
+        else:
+            config.normalize_text = getattr(config, "normalize_text", False)
 
-        # Create a custom model and initialize it randomly
-        model = CustomFlaxBartForConditionalGeneration(
-            config, seed=training_args.seed_model, dtype=getattr(jnp, model_args.dtype)
-        )
+        # Load or create new model
+        if model_args.model_name_or_path:
+            model = CustomFlaxBartForConditionalGeneration.from_pretrained(
+                model_args.model_name_or_path,
+                config=config,
+                seed=training_args.seed_model,
+                dtype=getattr(jnp, model_args.dtype),
+            )
+            # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
+            print(model.params)
+        else:
+            model = CustomFlaxBartForConditionalGeneration(
+                config,
+                seed=training_args.seed_model,
+                dtype=getattr(jnp, model_args.dtype),
+            )
 
         # Load tokenizer
         if model_args.tokenizer_name is not None:
@@ -741,7 +778,7 @@ def main():
         tx=optimizer,
         dropout_rng=dropout_rng,
     )
-    if training_args.resume_from_wandb_checkpoint is not None:
+    if training_args.resume_from_checkpoint is not None:
         # restore optimizer state and other parameters
         # we currently ignore partial epoch training: see https://github.com/borisdayma/dalle-mini/issues/105
         state = state.restore_state(artifact_dir)
