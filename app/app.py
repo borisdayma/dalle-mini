@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-from dalle_mini.backend import ServiceError, get_images_from_backend
+from dalle_mini.backend import ServiceError, get_images_from_backend, get_model_version
 
 import streamlit as st
 
@@ -81,7 +81,7 @@ if prompt != "" or (should_run_again and prompt != ""):
     """, unsafe_allow_html=True)
 
     try:
-        backend_url = st.secrets["BACKEND_SERVER"]
+        backend_url = st.secrets["BACKEND_SERVER"] + "/generate"
         print(f"Getting selections: {prompt}")
         selected = get_images_from_backend(prompt, backend_url)
 
@@ -92,6 +92,12 @@ if prompt != "" or (should_run_again and prompt != ""):
         container.markdown(f"**{prompt}**")
         
         set_run_again(st.button('Again!', key='again_button'))
+
+        version_url = st.secrets["BACKEND_SERVER"] + "/version"
+        version = get_model_version(version_url)
+
+        st.sidebar.markdown(f"<small><center>{version}</center></small>", unsafe_allow_html=True)
+        # output
     
     except ServiceError as error:
         container.text(f"Service unavailable, status: {error.status_code}")

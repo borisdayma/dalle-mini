@@ -18,3 +18,11 @@ def get_images_from_backend(prompt, backend_url):
         return images
     else:
         raise ServiceError(r.status_code)
+
+def get_model_version(url):
+    r = requests.get(url)
+    if r.status_code == 200:
+        version = r.json()["version"]
+        return version
+    else:
+        raise ServiceError(r.status_code)
