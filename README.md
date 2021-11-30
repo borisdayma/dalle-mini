@@ -28,7 +28,9 @@ Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini
 
 ### Dependencies Installation
 
-For development, use `pip install -e ".[dev]"`.
+For inference only, use `pip install git+https://github.com/borisdayma/dalle-mini.git`.
+
+For development, clone the repo and use `pip install -e ".[dev]"`.
 
 ### Training of VQGAN
 
