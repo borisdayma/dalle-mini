@@ -4,8 +4,8 @@ emoji: 🥑
 colorFrom: yellow
 colorTo: green
 sdk: streamlit
-app_file: app/app.py
-pinned: false
+app_file: app/streamlit/app.py
+pinned: True
 ---
 
 # DALL·E Mini
