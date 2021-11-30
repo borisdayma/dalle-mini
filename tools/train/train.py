@@ -18,36 +18,30 @@ Fine-tuning the library models for seq2seq, text to image.
 Script adapted from run_summarization_flax.py
 """
 
-import os
+import json
 import logging
+import os
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
-import json
 
 import datasets
-from datasets import Dataset
-from tqdm import tqdm
-from dataclasses import asdict
-
 import jax
 import jax.numpy as jnp
 import optax
 import transformers
+import wandb
+from datasets import Dataset
 from flax import jax_utils, traverse_util
-from flax.serialization import from_bytes, to_bytes
 from flax.jax_utils import unreplicate
+from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard_prng_key
-from transformers import (
-    AutoTokenizer,
-    HfArgumentParser,
-)
+from tqdm import tqdm
+from transformers import AutoTokenizer, HfArgumentParser
 from transformers.models.bart.modeling_flax_bart import BartConfig
-
-import wandb
 
 from dalle_mini.data import Dataset
 from dalle_mini.model import CustomFlaxBartForConditionalGeneration
@@ -797,7 +791,7 @@ def main():
 
     # init variables
     last_time = time.perf_counter()
-    train_metric = None
+    train_metrics = None
 
     for epoch in epochs:
         state.replace(epoch=jax_utils.replicate(epoch))
@@ -821,20 +815,20 @@ def main():
             last_time = new_time
 
             # train step
-            state, train_metric = p_train_step(
+            state, train_metrics = p_train_step(
                 state, batch, jax_utils.replicate(delta_time)
             )
             step = unreplicate(state.step)
 
             if step % training_args.logging_steps == 0 and jax.process_index() == 0:
                 # log metrics
-                wandb_log(unreplicate(train_metric), step=step, prefix="train")
+                metrics = unreplicate(train_metrics)
                 # log state parameters
                 state_dict = {
                     k.split("_")[-1]: unreplicate(getattr(state, k))
                     for k in ["epoch", "train_time", "train_samples"]
                 }
-                wandb_log(state_dict, step=step, prefix="train")
+                wandb_log({**metrics, **state_dict}, step=step, prefix="train")
 
             eval_metrics = None
             if training_args.eval_steps and step % training_args.eval_steps == 0:
@@ -844,12 +838,12 @@ def main():
                 run_save_model(state, eval_metrics)
 
         # log final train metrics
-        if train_metric is not None:
-            train_metric = unreplicate(train_metric)
-            wandb_log(train_metric, step=step, prefix="train")
+        if train_metrics is not None:
+            train_metrics = unreplicate(train_metrics)
+            wandb_log(train_metrics, step=step, prefix="train")
 
             epochs.write(
-                f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
+                f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
             )
 
         # Final evaluation

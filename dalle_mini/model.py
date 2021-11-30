@@ -1,15 +1,13 @@
-import jax
 import flax.linen as nn
-
-from transformers.models.bart.modeling_flax_bart import (
-    FlaxBartModule,
-    FlaxBartForConditionalGenerationModule,
-    FlaxBartForConditionalGeneration,
-    FlaxBartEncoder,
-    FlaxBartDecoder,
-)
-
+import jax
 from transformers import BartConfig
+from transformers.models.bart.modeling_flax_bart import (
+    FlaxBartDecoder,
+    FlaxBartEncoder,
+    FlaxBartForConditionalGeneration,
+    FlaxBartForConditionalGenerationModule,
+    FlaxBartModule,
+)
 
 
 class CustomFlaxBartModule(FlaxBartModule):
@@ -46,6 +44,11 @@ class CustomFlaxBartForConditionalGenerationModule(
     FlaxBartForConditionalGenerationModule
 ):
     def setup(self):
+        # set default config
+        self.config.normalize_text = getattr(self.config, "normalize_text", False)
+        self.config.image_length = getattr(self.config, "image_length", 256)
+        self.config.image_vocab_size = getattr(self.config, "image_vocab_size", 16384)
+
         self.model = CustomFlaxBartModule(config=self.config, dtype=self.dtype)
         self.lm_head = nn.Dense(
             self.config.image_vocab_size + 1,  # encoded image token space + 1 for bos

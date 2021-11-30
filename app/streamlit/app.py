@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-from dalle_mini.backend import ServiceError, get_images_from_backend
 import streamlit as st
+
+from .backend import ServiceError, get_images_from_backend
 
 st.sidebar.markdown(
     """
@@ -50,7 +51,7 @@ if prompt != "":
         <div class="st-b7">
         <div class="css-whx05o e13vu3m50">
         <div data-testid="stMarkdownContainer" class="css-1ekf893 e16nr0p30">
-                <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/app/img/loading.gif" width="30"/>
+                <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/app/streamlit/img/loading.gif" width="30"/>
                 Generating predictions for: <b>{prompt}</b>
         </div>
         </div>
