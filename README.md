@@ -28,7 +28,7 @@ Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini
 
 ### Dependencies Installation
 
-For development, use [`dev/requirements.txt`](dev/requirements.txt) or [`dev/environment.yaml`](dev/environment.yaml).
+For development, use `pip install -e ".[dev]"`.
 
 ### Training of VQGAN
 
@@ -42,15 +42,15 @@ Use [patil-suraj/vqgan-jax](https://github.com/patil-suraj/vqgan-jax).
 
 ### Training of Seq2Seq
 
-Refer to [`dev/seq2seq`](dev/seq2seq) folder.
+Use [`tools/train/train.py`](tools/train/train.py).
 
 You can also adjust the [sweep configuration file](https://docs.wandb.ai/guides/sweeps) if you need to perform a hyperparameter search.
 
 ### Inference Pipeline
 
-To generate sample predictions and understand the inference pipeline step by step, refer to [`dev/inference/inference_pipeline.ipynb`](dev/inference/inference_pipeline.ipynb).
+To generate sample predictions and understand the inference pipeline step by step, refer to [`tools/inference/inference_pipeline.ipynb`](tools/inference/inference_pipeline.ipynb).
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/dev/inference/inference_pipeline.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/tools/inference/inference_pipeline.ipynb)
 
 ## FAQ
 
