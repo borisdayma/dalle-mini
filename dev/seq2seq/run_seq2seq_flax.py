@@ -30,6 +30,7 @@ import json
 import datasets
 from datasets import Dataset
 from tqdm import tqdm
+from dataclasses import asdict
 
 import jax
 import jax.numpy as jnp
@@ -411,7 +412,9 @@ def main():
 
     # Load dataset
     dataset = Dataset(
-        **data_args, do_train=training_args.do_train, do_eval=training_args.do_eval
+        **asdict(data_args),
+        do_train=training_args.do_train,
+        do_eval=training_args.do_eval,
     )
 
     # Set up wandb run
@@ -511,7 +514,7 @@ def main():
     # Preprocessing the datasets.
     # We need to normalize and tokenize inputs and targets.
 
-    dataset = dataset.preprocess(
+    dataset.preprocess(
         tokenizer=tokenizer,
         decoder_start_token_id=model.config.decoder_start_token_id,
         normalize_text=model.config.normalize_text,

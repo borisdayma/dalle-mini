@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
+from functools import partial
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -25,9 +26,9 @@ class Dataset:
     do_train: bool = False
     do_eval: bool = True
     seed_dataset: int = None
-    train_dataset = field(init=False)
-    eval_dataset = field(init=False)
-    rng_dataset = field(init=False)
+    train_dataset: Dataset = field(init=False)
+    eval_dataset: Dataset = field(init=False)
+    rng_dataset: jnp.ndarray = field(init=False)
 
     def __post_init__(self):
         # define data_files
@@ -81,26 +82,21 @@ class Dataset:
         # normalize text
         if normalize_text:
             text_normalizer = TextNormalizer()
+            partial_normalize_function = partial(
+                normalize_function,
+                text_column=self.text_column,
+                text_normalizer=text_normalizer,
+            )
             for ds in ["train_dataset", "eval_dataset"]:
                 if hasattr(self, ds):
                     setattr(
                         self,
                         ds,
                         (
-                            getattr(self, ds).map(
-                                normalize_text,
-                                fn_kwargs={
-                                    "text_column": self.text_column,
-                                    "text_normalizer": text_normalizer,
-                                },
-                            )
+                            getattr(self, ds).map(partial_normalize_function)
                             if self.streaming
                             else getattr(self, ds).map(
-                                normalize_text,
-                                fn_kwargs={
-                                    "text_column": self.text_column,
-                                    "text_normalizer": text_normalizer,
-                                },
+                                partial_normalize_function,
                                 num_proc=self.preprocessing_num_workers,
                                 load_from_cache_file=not self.overwrite_cache,
                                 desc="Normalizing datasets",
@@ -109,6 +105,14 @@ class Dataset:
                     )
 
         # preprocess
+        partial_preprocess_function = partial(
+            preprocess_function,
+            tokenizer=tokenizer,
+            text_column=self.text_column,
+            encoding_column=self.encoding_column,
+            max_source_length=self.max_source_length,
+            decoder_start_token_id=decoder_start_token_id,
+        )
         for ds in ["train_dataset", "eval_dataset"]:
             if hasattr(self, ds):
                 setattr(
@@ -116,27 +120,13 @@ class Dataset:
                     ds,
                     (
                         getattr(self, ds).map(
-                            preprocess_function,
+                            partial_preprocess_function,
                             batched=True,
-                            fn_kwargs={
-                                "tokenizer": tokenizer,
-                                "text_column": self.text_column,
-                                "encoding_column": self.encoding_column,
-                                "max_source_length": self.max_source_length,
-                                "decoder_start_token_id": decoder_start_token_id,
-                            },
                         )
                         if self.streaming
                         else getattr(self, ds).map(
-                            preprocess_function,
+                            partial_preprocess_function,
                             batched=True,
-                            fn_kwargs={
-                                "tokenizer": tokenizer,
-                                "text_column": self.text_column,
-                                "encoding_column": self.encoding_column,
-                                "max_source_length": self.max_source_length,
-                                "decoder_start_token_id": decoder_start_token_id,
-                            },
                             remove_columns=getattr(ds, "column_names"),
                             num_proc=self.preprocessing_num_workers,
                             load_from_cache_file=not self.overwrite_cache,
@@ -230,7 +220,7 @@ def shift_tokens_right(input_ids: np.array, decoder_start_token_id: int):
     return shifted_input_ids
 
 
-def normalize_text(example, text_column, text_normalizer):
+def normalize_function(example, text_column, text_normalizer):
     example[text_column] = text_normalizer(example[text_column])
     return example
 
