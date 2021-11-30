@@ -28,8 +28,7 @@ from typing import Callable, Optional
 import json
 
 import datasets
-import numpy as np
-from datasets import Dataset, load_dataset
+from datasets import Dataset
 from tqdm import tqdm
 
 import jax
@@ -40,7 +39,7 @@ from flax import jax_utils, traverse_util
 from flax.serialization import from_bytes, to_bytes
 from flax.jax_utils import unreplicate
 from flax.training import train_state
-from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_key
+from flax.training.common_utils import get_metrics, onehot, shard_prng_key
 from transformers import (
     AutoTokenizer,
     HfArgumentParser,
@@ -49,7 +48,7 @@ from transformers.models.bart.modeling_flax_bart import BartConfig
 
 import wandb
 
-from dalle_mini.text import TextNormalizer
+from dalle_mini.data import Dataset
 from dalle_mini.model import CustomFlaxBartForConditionalGeneration
 
 logger = logging.getLogger(__name__)
@@ -120,18 +119,21 @@ class DataTrainingArguments:
             "help": "The name of the column in the datasets containing the image encodings."
         },
     )
-    dataset_repo_or_path: Optional[str] = field(
+    dataset_repo_or_path: str = field(
         default=None,
         metadata={"help": "The dataset repository containing encoded files."},
     )
     train_file: Optional[str] = field(
-        default=None, metadata={"help": "The input training data file (a text file)."}
+        default=None,
+        metadata={"help": "The input training data file (glob acceptable)."},
     )
     validation_file: Optional[str] = field(
         default=None,
-        metadata={
-            "help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."
-        },
+        metadata={"help": "An optional input evaluation data file (glob acceptable)."},
+    )
+    dataset_type: str = field(
+        default="datasets",
+        metadata={"help": "Either 🤗 'dataset' (default) or 'webdataset'."},
     )
     # data loading should not be a bottleneck so we use "streaming" mode by default
     streaming: bool = field(
@@ -175,6 +177,13 @@ class DataTrainingArguments:
         default=False,
         metadata={
             "help": "Overwrite the cached training and evaluation sets. Not used in streaming mode."
+        },
+    )
+    # default seed of None ensures we don't repeat the same items if script was interrupted during an epoch
+    seed_dataset: int = field(
+        default=None,
+        metadata={
+            "help": "Random seed for the dataset that will be set at the beginning of training."
         },
     )
 
@@ -277,13 +286,6 @@ class TrainingArguments:
             "help": "Random seed for the model that will be set at the beginning of training."
         },
     )
-    # default seed of None ensures we don't repeat the same items if script was interrupted during an epoch
-    seed_dataset: int = field(
-        default=None,
-        metadata={
-            "help": "Random seed for the dataset that will be set at the beginning of training."
-        },
-    )
 
     push_to_hub: bool = field(
         default=False,
@@ -325,45 +327,6 @@ class TrainState(train_state.TrainState):
             train_time=training_state["train_time"],
             train_samples=training_state["train_samples"],
         )
-
-
-def data_loader(
-    dataset: Dataset,
-    batch_size: int,
-    rng: jax.random.PRNGKey = None,
-):
-    """
-    Returns batches of size `batch_size` from truncated `dataset`, sharded over all local devices.
-    Shuffle batches if `shuffle` is `True`.
-    """
-    steps_per_epoch = len(dataset) // batch_size
-
-    if rng is not None:
-        batch_idx = jax.random.permutation(rng, len(dataset))
-    else:
-        batch_idx = jnp.arange(len(dataset))
-
-    batch_idx = batch_idx[: steps_per_epoch * batch_size]  # Skip incomplete batch.
-    batch_idx = batch_idx.reshape((steps_per_epoch, batch_size))
-
-    for idx in batch_idx:
-        batch = dataset[idx]
-        batch = {k: jnp.array(v) for k, v in batch.items()}
-        batch = shard(batch)
-        yield batch
-
-
-def data_loader_streaming(dataset: Dataset, batch_size: int):
-    keys = ["input_ids", "attention_mask", "labels", "decoder_input_ids"]
-    batch = {k: [] for k in keys}
-    for item in dataset:
-        for k, v in item.items():
-            batch[k].append(v)
-        if len(batch[keys[0]]) == batch_size:
-            batch = {k: jnp.array(v) for k, v in batch.items()}
-            batch = shard(batch)
-            yield batch
-            batch = {k: [] for k in keys}
 
 
 def create_learning_rate_fn(
@@ -447,18 +410,8 @@ def main():
     logger.info(f"Training/evaluation parameters {training_args}")
 
     # Load dataset
-    if data_args.train_file is not None or data_args.validation_file is not None:
-        data_files = {
-            "train": data_args.train_file,
-            "validation": data_args.validation_file,
-        }
-    else:
-        data_files = None
-    dataset = load_dataset(
-        data_args.dataset_repo_or_path,
-        data_files=data_files,
-        streaming=data_args.streaming,
-        use_auth_token=data_args.use_auth_token,
+    dataset = Dataset(
+        **data_args, do_train=training_args.do_train, do_eval=training_args.do_eval
     )
 
     # Set up wandb run
@@ -552,141 +505,17 @@ def main():
                 use_fast=True,
             )
 
-    print(f"TPUs: {jax.device_count()}")
+    logger.info(f"TPUs: {jax.device_count()}")
     assert jax.device_count() == 8, "TPUs in use, please check running processes"
 
     # Preprocessing the datasets.
-    # We need to tokenize inputs and targets.
+    # We need to normalize and tokenize inputs and targets.
 
-    # Get the column names for input/target.
-    text_column = data_args.text_column
-    encoding_column = data_args.encoding_column
-
-    def shift_tokens_right(input_ids: np.array, decoder_start_token_id: int):
-        """
-        Shift input ids one token to the right.
-        """
-        shifted_input_ids = np.zeros(input_ids.shape)
-        shifted_input_ids[:, 1:] = input_ids[:, :-1]
-        shifted_input_ids[:, 0] = decoder_start_token_id
-        return shifted_input_ids
-
-    text_normalizer = TextNormalizer() if model.config.normalize_text else None
-
-    def normalize_text(example):
-        example[text_column] = text_normalizer(example[text_column])
-        return example
-
-    def preprocess_function(examples):
-        inputs = examples[text_column]
-        # Setting padding="max_length" as we need fixed length inputs for jitted functions
-        model_inputs = tokenizer(
-            inputs,
-            max_length=data_args.max_source_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="np",
-        )
-
-        # set up targets
-        # Note: labels correspond to our target indices
-        # decoder input ids are the same but shifted to the right with bos at the beginning (and without last token)
-        labels = examples[encoding_column]
-        labels = np.asarray(labels)
-
-        # We need the labels, in addition to the decoder_input_ids, for the compute_loss function
-        model_inputs["labels"] = labels
-
-        # In our case, this prepends the bos token and removes the last one
-        decoder_input_ids = shift_tokens_right(
-            labels, model.config.decoder_start_token_id
-        )
-        model_inputs["decoder_input_ids"] = decoder_input_ids
-
-        return model_inputs
-
-    if training_args.do_train:
-        if "train" not in dataset:
-            raise ValueError("--do_train requires a train dataset")
-        train_dataset = dataset["train"]
-        if data_args.max_train_samples is not None:
-            train_dataset = (
-                train_dataset.take(data_args.max_train_samples)
-                if data_args.streaming
-                else train_dataset.select(range(data_args.max_train_samples))
-            )
-        if data_args.streaming:
-            train_dataset = train_dataset.shuffle(1000, training_args.seed_dataset)
-        else:
-            seed_dataset = (
-                training_args.seed_dataset
-                if training_args.seed_dataset is not None
-                else np.random.get_state()[1][0]
-            )
-            rng_dataset = jax.random.PRNGKey(seed_dataset)
-        if model.config.normalize_text:
-            train_dataset = (
-                train_dataset.map(normalize_text)
-                if data_args.streaming
-                else train_dataset.map(
-                    normalize_text,
-                    num_proc=data_args.preprocessing_num_workers,
-                    load_from_cache_file=not data_args.overwrite_cache,
-                    desc="Normalizing the validation dataset",
-                )
-            )
-        train_dataset = (
-            train_dataset.map(
-                preprocess_function,
-                batched=True,
-            )
-            if data_args.streaming
-            else train_dataset.map(
-                preprocess_function,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                remove_columns=train_dataset.column_names,
-                load_from_cache_file=not data_args.overwrite_cache,
-                desc="Running tokenizer on validation dataset",
-            )
-        )
-
-    if training_args.do_eval:
-        if "validation" not in dataset:
-            raise ValueError("--do_eval requires a validation dataset")
-        eval_dataset = dataset["validation"]
-        if data_args.max_eval_samples is not None:
-            eval_dataset = (
-                eval_dataset.take(data_args.max_train_samples)
-                if data_args.streaming
-                else eval_dataset.select(range(data_args.max_train_samples))
-            )
-        if model.config.normalize_text:
-            eval_dataset = (
-                eval_dataset.map(normalize_text)
-                if data_args.streaming
-                else eval_dataset.map(
-                    normalize_text,
-                    num_proc=data_args.preprocessing_num_workers,
-                    load_from_cache_file=not data_args.overwrite_cache,
-                    desc="Normalizing the validation dataset",
-                )
-            )
-        eval_dataset = (
-            eval_dataset.map(
-                preprocess_function,
-                batched=True,
-            )
-            if data_args.streaming
-            else eval_dataset.map(
-                preprocess_function,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                remove_columns=eval_dataset.column_names,
-                load_from_cache_file=not data_args.overwrite_cache,
-                desc="Running tokenizer on validation dataset",
-            )
-        )
+    dataset = dataset.preprocess(
+        tokenizer=tokenizer,
+        decoder_start_token_id=model.config.decoder_start_token_id,
+        normalize_text=model.config.normalize_text,
+    )
 
     # Initialize our training
     rng = jax.random.PRNGKey(training_args.seed_model)
@@ -699,16 +528,7 @@ def main():
     )
     batch_size_per_update = train_batch_size * training_args.gradient_accumulation_steps
     eval_batch_size = int(training_args.per_device_eval_batch_size) * jax.device_count()
-    len_train_dataset, len_eval_dataset = None, None
-    if data_args.streaming:
-        # we don't know the length, let's just assume max_samples if defined
-        if data_args.max_train_samples is not None:
-            len_train_dataset = data_args.max_train_samples
-        if data_args.max_eval_samples is not None:
-            len_eval_dataset = data_args.max_eval_samples
-    else:
-        len_train_dataset = len(train_dataset)
-        len_eval_dataset = len(eval_dataset)
+    len_train_dataset, len_eval_dataset = dataset.length
     steps_per_epoch = (
         len_train_dataset // train_batch_size if len_train_dataset is not None else None
     )
@@ -854,8 +674,8 @@ def main():
     # add interesting config parameters
     wandb.config.update(
         {
-            "len_train": len_train_dataset,
-            "len_eval": len_eval_dataset,
+            "len_train_dataset": len_train_dataset,
+            "len_eval_dataset": len_eval_dataset,
             "batch_size_per_update": batch_size_per_update,
         }
     )
@@ -867,10 +687,7 @@ def main():
         # ======================== Evaluating ==============================
         eval_metrics = []
         if training_args.do_eval:
-            if data_args.streaming:
-                eval_loader = data_loader_streaming(eval_dataset, eval_batch_size)
-            else:
-                eval_loader = data_loader(eval_dataset, eval_batch_size)
+            eval_loader = dataset.dataloader("eval", eval_batch_size)
             eval_steps = (
                 len_eval_dataset // eval_batch_size
                 if len_eval_dataset is not None
@@ -985,12 +802,7 @@ def main():
         wandb_log({"train/epoch": epoch}, step=unreplicate(state.step))
 
         # Generate an epoch by shuffling sampling indices from the train dataset
-        if data_args.streaming:
-            train_dataset.set_epoch(epoch)  # shuffle dataset
-            train_loader = data_loader_streaming(train_dataset, train_batch_size)
-        else:
-            rng_dataset, input_rng = jax.random.split(rng_dataset)
-            train_loader = data_loader(train_dataset, train_batch_size, rng=input_rng)
+        train_loader = dataset.dataloader("train", train_batch_size)
         # train
         for batch in tqdm(
             train_loader,
