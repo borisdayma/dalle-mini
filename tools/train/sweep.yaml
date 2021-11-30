@@ -1,6 +1,6 @@
-program: run_seq2seq_flax.py
-entity: wandb
-project: hf-flax-dalle-mini
+program: train.py
+entity: dalle-mini
+project: dalle-mini
 method: random
 metric:
   name: eval/loss
@@ -8,36 +8,47 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform
-    # from exp(min) to exp(max), ie 5e-5 to 5e-3 on log scale
-    min: -9.9
-    max: -5.3
+    # from exp(min) to exp(max)
+    min: -6.9
+    max: -3.5
   gradient_accumulation_steps:
     value: 8
   warmup_steps:
-    # in term of optimization steps so multiplied by gradient accumulation
-    value: 125
+    value: 4000
+#TODO: outdated command
 command:
   - python3
   - ${program}
-  - "--train_file"
-  - "/data/CC12M/encoded-small-train.tsv"
-  - "--validation_file"
-  - "/data/CC12M/encoded-small-valid.tsv"
-  - "--output_dir"
-  - "./output_sweep"
-  - "--overwrite_output_dir"
-  - "--adafactor"
-  - "--num_train_epochs"
-  - 1
-  - "--max_train_samples"
-  - 1500000
+  - "--tokenizer_name"
+  - "boris/dalle-mini-tokenizer"
+  - "--config_name"
+  - "facebook/bart-large-cnn"
+  - "--dataset_repo_or_path"
+  - "boris/gis_vqgan_f16_16384"
+  - "--streaming"
+  - "--use_auth_token"
+  - "--image_vocab_size"
+  - 16384
+  - "--image_length"
+  - 256
+  - "--normalize_text"
+  - True
   - "--per_device_train_batch_size"
   - 56
   - "--per_device_eval_batch_size"
   - 56
-  - "--preprocessing_num_workers"
-  - 80
-  - "--no_decay"
+  - "--adafactor"
   - "--do_train"
   - "--do_eval"
+  - "--num_train_epochs"
+  - 1
+  - "--logging_steps"
+  - 40
+  - "--eval_steps"
+  - 800
+  - "--output_dir"
+  - "./output"
+  - "--overwrite_output_dir"
+  - "--max_train_samples"
+  - 10000000
   - ${args}
