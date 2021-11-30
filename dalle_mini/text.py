@@ -2,13 +2,15 @@
 Utilities for processing text.
 """
 
+import html
+import math
+import random
+import re
 from pathlib import Path
-from unidecode import unidecode
 
-import re, math, random, html
 import ftfy
-
 from huggingface_hub import hf_hub_download
+from unidecode import unidecode
 
 # based on wiki word occurence
 person_token = [("a person", 282265), ("someone", 121194), ("somebody", 12219)]

@@ -7,26 +7,18 @@
 
 import random
 
+import gradio as gr
 import jax
-import flax.linen as nn
-from flax.training.common_utils import shard
-from flax.jax_utils import replicate
-
-from transformers import BartTokenizer
-
-from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-
-from vqgan_jax.modeling_flax_vqgan import VQModel
-from dalle_mini.model import CustomFlaxBartForConditionalGeneration
+from flax.jax_utils import replicate
+from flax.training.common_utils import shard
+from PIL import Image, ImageDraw, ImageFont
 
 # ## CLIP Scoring
-from transformers import CLIPProcessor, FlaxCLIPModel
+from transformers import BartTokenizer, CLIPProcessor, FlaxCLIPModel
+from vqgan_jax.modeling_flax_vqgan import VQModel
 
-import gradio as gr
-
-from PIL import Image, ImageDraw, ImageFont
-
+from dalle_mini.model import CustomFlaxBartForConditionalGeneration
 
 DALLE_REPO = "flax-community/dalle-mini"
 DALLE_COMMIT_ID = "4d34126d0df8bc4a692ae933e3b902a1fa8b6114"

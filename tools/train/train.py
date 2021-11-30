@@ -18,36 +18,30 @@ Fine-tuning the library models for seq2seq, text to image.
 Script adapted from run_summarization_flax.py
 """
 
-import os
+import json
 import logging
+import os
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
-import json
 
 import datasets
-from datasets import Dataset
-from tqdm import tqdm
-from dataclasses import asdict
-
 import jax
 import jax.numpy as jnp
 import optax
 import transformers
+import wandb
+from datasets import Dataset
 from flax import jax_utils, traverse_util
-from flax.serialization import from_bytes, to_bytes
 from flax.jax_utils import unreplicate
+from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard_prng_key
-from transformers import (
-    AutoTokenizer,
-    HfArgumentParser,
-)
+from tqdm import tqdm
+from transformers import AutoTokenizer, HfArgumentParser
 from transformers.models.bart.modeling_flax_bart import BartConfig
-
-import wandb
 
 from dalle_mini.data import Dataset
 from dalle_mini.model import CustomFlaxBartForConditionalGeneration

@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-from .backend import ServiceError, get_images_from_backend
 import streamlit as st
+
+from .backend import ServiceError, get_images_from_backend
 
 st.sidebar.markdown(
     """

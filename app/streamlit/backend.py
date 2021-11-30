@@ -1,6 +1,7 @@
-import requests
-from io import BytesIO
 import base64
+from io import BytesIO
+
+import requests
 from PIL import Image
 
 

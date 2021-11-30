@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
-from datasets import load_dataset, Dataset
 from functools import partial
-import numpy as np
+
 import jax
 import jax.numpy as jnp
+import numpy as np
+from datasets import Dataset, load_dataset
 from flax.training.common_utils import shard
+
 from .text import TextNormalizer
 
 

@@ -1,15 +1,13 @@
-import jax
 import flax.linen as nn
-
-from transformers.models.bart.modeling_flax_bart import (
-    FlaxBartModule,
-    FlaxBartForConditionalGenerationModule,
-    FlaxBartForConditionalGeneration,
-    FlaxBartEncoder,
-    FlaxBartDecoder,
-)
-
+import jax
 from transformers import BartConfig
+from transformers.models.bart.modeling_flax_bart import (
+    FlaxBartDecoder,
+    FlaxBartEncoder,
+    FlaxBartForConditionalGeneration,
+    FlaxBartForConditionalGenerationModule,
+    FlaxBartModule,
+)
 
 
 class CustomFlaxBartModule(FlaxBartModule):
