@@ -1,0 +1,44 @@
+# YAML 1.2
+---
+abstract: "DALL·E mini is a JAX/Flax reimplementation of OpenAI's DALL·E that requires much smaller hardware resources. By simplifying the architecture and model memory requirements, as well as leveraging open-source code and pre-trained models, we were able to create a model that is 27 times smaller than the original DALL·E and train it on a single TPU v3-8 for only 3 days. DALL·E mini achieves impressive results, albeit of a lower quality than the original system. It can be used for exploration and further experimentation on commodity hardware."
+authors: 
+  -
+    family-names: Dayma
+    given-names: Boris
+  -
+    family-names: Patil
+    given-names: Suraj
+  -
+    family-names: Cuenca
+    given-names: Pedro
+  -
+    family-names: Saifullah
+    given-names: Khalid
+  -
+    family-names: Abraham
+    given-names: Tanishq
+  -
+    family-names: "Lê Khắc"
+    given-names: "Phúc"
+  -
+    family-names: Melas
+    given-names: Luke
+  -
+    family-names: Ghosh
+    given-names: Ritobrata
+cff-version: "1.1.0"
+date-released: 2021-07-29
+identifiers: 
+keywords: 
+  - dalle
+  - "text-to-image generation"
+  - transformer
+  - "zero-shot"
+  - JAX
+license: "Apache-2.0"
+doi: 10.5281/zenodo.5146400
+message: "If you use this project, please cite it using these metadata."
+repository-code: "https://github.com/borisdayma/dalle-mini"
+title: "DALL·E Mini"
+version: "v0.1-alpha"
+...

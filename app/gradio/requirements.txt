@@ -1,0 +1,4 @@
+# Requirements for huggingface spaces
+gradio>=2.2.3
+flax
+transformers
