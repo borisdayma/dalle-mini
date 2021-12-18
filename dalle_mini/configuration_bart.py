@@ -21,16 +21,11 @@ from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
 
-BART_PRETRAINED_CONFIG_ARCHIVE_MAP = {
-    "facebook/bart-large": "https://huggingface.co/facebook/bart-large/resolve/main/config.json",
-    # See all BART models at https://huggingface.co/models?filter=bart
-}
 
-
-class BartConfig(PretrainedConfig):
+class DalleBartConfig(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a :class:`~transformers.BartModel`. It is used to
-    instantiate a BART model according to the specified arguments, defining the model architecture. Instantiating a
+    This is the configuration class to store the configuration of a `DalleBartModel`. It is used to
+    instantiate a DalleBart model according to the specified arguments, defining the model architecture. Instantiating a
     configuration with the defaults will yield a similar configuration to that of the BART `facebook/bart-large
     <https://huggingface.co/facebook/bart-large>`__ architecture.
 
@@ -39,7 +34,7 @@ class BartConfig(PretrainedConfig):
 
 
     Args:
-        vocab_size (:obj:`int`, `optional`, defaults to 50265):
+        encoder_vocab_size (:obj:`int`, `optional`, defaults to 50265):
             Vocabulary size of the BART model. Defines the number of different tokens that can be represented by the
             :obj:`inputs_ids` passed when calling :class:`~transformers.BartModel` or
             :class:`~transformers.TFBartModel`.
@@ -90,30 +85,18 @@ class BartConfig(PretrainedConfig):
         forced_eos_token_id (:obj:`int`, `optional`, defaults to 2):
             The id of the token to force as the last generated token when :obj:`max_length` is reached. Usually set to
             :obj:`eos_token_id`.
-
-    Example::
-
-        >>> from transformers import BartModel, BartConfig
-
-        >>> # Initializing a BART facebook/bart-large style configuration
-        >>> configuration = BartConfig()
-
-        >>> # Initializing a model from the facebook/bart-large style configuration
-        >>> model = BartModel(configuration)
-
-        >>> # Accessing the model configuration
-        >>> configuration = model.config
     """
-    model_type = "bart"
+    model_type = "dallebart"
     keys_to_ignore_at_inference = ["past_key_values"]
     attribute_map = {"num_attention_heads": "encoder_attention_heads", "hidden_size": "d_model"}
 
     def __init__(
         self,
-        vocab_size=50265,
-        decoder_vocab_size=16384 + 1,  # encoded image token space + 1 for bos
-        max_position_embeddings=1024,
-        decoder_max_position_embeddings=256 + 1,  # number of encoded tokens + 1 for bos,
+        normalize_text=False,
+        encoder_vocab_size=50264,
+        image_vocab_size=16384,  # encoded image token space
+        image_length=256,  # number of encoded tokens
+        max_text_length=64,  # max number of text tokens
         encoder_layers=12,
         encoder_ffn_dim=4096,
         encoder_attention_heads=16,
@@ -133,19 +116,16 @@ class BartConfig(PretrainedConfig):
         gradient_checkpointing=False,
         use_cache=True,
         num_labels=3,
-        pad_token_id=1,
-        bos_token_id=0,
-        eos_token_id=2,
         is_encoder_decoder=True,
-        decoder_start_token_id=16384,
-        forced_eos_token_id=2,
-        tie_word_embeddings=False, # don't tie for scaling reasons
+        forced_eos_token_id=None,
+        tie_word_embeddings=False, # don't tie for scaling reasons and due to different modalities and sizes
         **kwargs,
     ):
-        self.vocab_size = vocab_size
-        self.decoder_vocab_size = decoder_vocab_size
-        self.max_position_embeddings = max_position_embeddings
-        self.decoder_max_position_embeddings = decoder_max_position_embeddings
+        self.normalize_text = normalize_text
+        self.encoder_vocab_size = encoder_vocab_size
+        self.decoder_vocab_size = image_vocab_size
+        self.image_length = image_length
+        self.max_text_length = max_text_length
         self.d_model = d_model
         self.encoder_ffn_dim = encoder_ffn_dim
         self.encoder_layers = encoder_layers
@@ -165,12 +145,15 @@ class BartConfig(PretrainedConfig):
         self.num_hidden_layers = encoder_layers
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
+        self.decoder_start_token_id = image_vocab_size,  # BOS appended to vocab
+        self.min_length = image_length + 1
+        self.max_length = image_length + 1
 
         super().__init__(
             num_labels=num_labels,
-            pad_token_id=pad_token_id,
-            bos_token_id=bos_token_id,
-            eos_token_id=eos_token_id,
+            pad_token_id=image_vocab_size + 1,  # needed to avoid errors during generation (converted to jnp.array)
+            bos_token_id=image_vocab_size + 1,  # set to unreachable values
+            eos_token_id=image_vocab_size + 1,
             is_encoder_decoder=is_encoder_decoder,
             decoder_start_token_id=decoder_start_token_id,
             forced_eos_token_id=forced_eos_token_id,

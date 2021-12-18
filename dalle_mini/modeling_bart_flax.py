@@ -93,7 +93,7 @@ class FlaxBartAttention(nn.Module):
 
         if self.causal:
             self.causal_mask = make_causal_mask(
-                jnp.ones((1, self.config.max_position_embeddings), dtype="bool"), dtype="bool"
+                jnp.ones((1, embed_dim), dtype="bool"), dtype="bool"
             )
 
     def _split_heads(self, hidden_states):
@@ -431,11 +431,10 @@ class FlaxBartEncoder(nn.Module):
 
         embed_dim = self.config.d_model
         self.padding_idx = self.config.pad_token_id
-        self.max_source_positions = self.config.max_position_embeddings
         self.embed_scale = math.sqrt(embed_dim) if self.config.scale_embedding else 1.0
 
         self.embed_tokens = nn.Embed(
-            self.config.vocab_size,
+            self.config.encoder_vocab_size,
             embed_dim,
             embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
@@ -444,7 +443,7 @@ class FlaxBartEncoder(nn.Module):
         # and adjust num_embeddings appropriately. Other models don't have this hack
         self.offset = 0
         self.embed_positions = nn.Embed(
-            self.config.max_position_embeddings + self.offset,
+            self.config.max_text_length + self.offset,
             embed_dim,
             embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
@@ -489,11 +488,10 @@ class FlaxBartDecoder(nn.Module):
 
         embed_dim = self.config.d_model
         self.padding_idx = self.config.pad_token_id
-        self.max_target_positions = self.config.max_position_embeddings
         self.embed_scale = math.sqrt(self.config.d_model) if self.config.scale_embedding else 1.0
 
         self.embed_tokens = nn.Embed(
-            self.config.decoder_vocab_size,
+            self.config.image_vocab_size + 1,  # image vocab size + 1 for BOS
             embed_dim,
             embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
@@ -502,7 +500,7 @@ class FlaxBartDecoder(nn.Module):
         # and adjust num_embeddings appropriately. Other models don't have this hack
         self.offset = 0
         self.embed_positions = nn.Embed(
-            self.config.decoder_max_position_embeddings + self.offset,
+            self.config.image_length + 1 + self.offset,  # image length + 1 for BOS
             embed_dim,
             embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
@@ -802,10 +800,13 @@ class FlaxBartForConditionalGenerationModule(nn.Module):
     def setup(self):
         self.model = FlaxBartModule(config=self.config, dtype=self.dtype)
         self.lm_head = nn.Dense(
-            self.config.decoder_vocab_size,
+            self.config.image_vocab_size + 1,  # image vocab size + 1 for BOS
             use_bias=False,
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )
+        self.final_logits_bias = self.param(
+            "final_logits_bias", self.bias_init, (1, self.config.image_vocab_size + 1)
         )
 
     def _get_encoder_module(self):
