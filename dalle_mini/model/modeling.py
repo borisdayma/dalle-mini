@@ -45,7 +45,7 @@ from transformers.modeling_flax_utils import (
 from transformers.utils import logging
 
 
-from .configuration_bart import BartConfig
+from .configuration import DalleBartConfig
 
 
 logger = logging.get_logger(__name__)
@@ -64,7 +64,7 @@ def shift_tokens_right(input_ids: np.array, pad_token_id: int, decoder_start_tok
 
 
 class FlaxBartAttention(nn.Module):
-    config: BartConfig
+    config: DalleBartConfig
     embed_dim: int
     num_heads: int
     dropout: float = 0.0
@@ -93,7 +93,7 @@ class FlaxBartAttention(nn.Module):
 
         if self.causal:
             self.causal_mask = make_causal_mask(
-                jnp.ones((1, embed_dim), dtype="bool"), dtype="bool"
+                jnp.ones((1, self.embed_dim), dtype="bool"), dtype="bool"
             )
 
     def _split_heads(self, hidden_states):
@@ -224,7 +224,7 @@ class FlaxBartAttention(nn.Module):
 
 
 class FlaxBartEncoderLayer(nn.Module):
-    config: BartConfig
+    config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self) -> None:
@@ -279,7 +279,7 @@ class FlaxBartEncoderLayer(nn.Module):
 
 
 class FlaxBartEncoderLayerCollection(nn.Module):
-    config: BartConfig
+    config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
 
     def setup(self):
@@ -306,7 +306,7 @@ class FlaxBartEncoderLayerCollection(nn.Module):
 
 
 class FlaxBartDecoderLayer(nn.Module):
-    config: BartConfig
+    config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self) -> None:
@@ -390,7 +390,7 @@ class FlaxBartDecoderLayer(nn.Module):
 
 
 class FlaxBartDecoderLayerCollection(nn.Module):
-    config: BartConfig
+    config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
 
     def setup(self):
@@ -422,8 +422,8 @@ class FlaxBartDecoderLayerCollection(nn.Module):
         return FlaxBaseModelOutputWithPastAndCrossAttentions(last_hidden_state=hidden_states)
 
 
-class FlaxBartEncoder(nn.Module):
-    config: BartConfig
+class DalleBartEncoder(nn.Module):
+    config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
 
     def setup(self):
@@ -479,8 +479,8 @@ class FlaxBartEncoder(nn.Module):
         )
 
 
-class FlaxBartDecoder(nn.Module):
-    config: BartConfig
+class DalleBartDecoder(nn.Module):
+    config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
 
     def setup(self):
@@ -550,13 +550,13 @@ class FlaxBartDecoder(nn.Module):
         )
 
 
-class FlaxBartModule(nn.Module):
-    config: BartConfig
+class DalleBartModule(nn.Module):
+    config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
 
     def setup(self):
-        self.encoder = FlaxBartEncoder(self.config, dtype=self.dtype)
-        self.decoder = FlaxBartDecoder(self.config, dtype=self.dtype)
+        self.encoder = DalleBartEncoder(self.config, dtype=self.dtype)
+        self.decoder = DalleBartDecoder(self.config, dtype=self.dtype)
 
     def _get_encoder_module(self):
         return self.encoder
@@ -605,14 +605,14 @@ class FlaxBartModule(nn.Module):
         )
 
 
-class FlaxBartPreTrainedModel(FlaxPreTrainedModel):
-    config_class = BartConfig
-    base_model_prefix: str = "model"
+class DalleBartPreTrainedModel(FlaxPreTrainedModel):
+    config_class = DalleBartConfig
+    base_model_prefix: str = "dallebart"
     module_class: nn.Module = None
 
     def __init__(
         self,
-        config: BartConfig,
+        config: DalleBartConfig,
         input_shape: Tuple[int] = (1, 1),
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
@@ -792,13 +792,13 @@ class FlaxBartPreTrainedModel(FlaxPreTrainedModel):
         )
 
 
-class FlaxBartForConditionalGenerationModule(nn.Module):
-    config: BartConfig
+class DalleBartForConditionalGenerationModule(nn.Module):
+    config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32
     bias_init: Callable[..., jnp.ndarray] = jax.nn.initializers.zeros
 
     def setup(self):
-        self.model = FlaxBartModule(config=self.config, dtype=self.dtype)
+        self.model = DalleBartModule(config=self.config, dtype=self.dtype)
         self.lm_head = nn.Dense(
             self.config.image_vocab_size + 1,  # image vocab size + 1 for BOS
             use_bias=False,
@@ -854,8 +854,8 @@ class FlaxBartForConditionalGenerationModule(nn.Module):
         )
 
 
-class FlaxBartForConditionalGeneration(FlaxBartPreTrainedModel):
-    module_class = FlaxBartForConditionalGenerationModule
+class DalleBartForConditionalGeneration(DalleBartPreTrainedModel):
+    module_class = DalleBartForConditionalGenerationModule
     dtype: jnp.dtype = jnp.float32
 
     def decode(

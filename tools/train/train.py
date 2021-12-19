@@ -44,7 +44,7 @@ from transformers import AutoTokenizer, HfArgumentParser
 from transformers.models.bart.modeling_flax_bart import BartConfig
 
 from dalle_mini.data import Dataset
-from dalle_mini.model import CustomFlaxBartForConditionalGeneration
+from dalle_mini.model import DalleBartConfig, DalleBartForConditionalGeneration
 
 logger = logging.getLogger(__name__)
 
@@ -68,24 +68,10 @@ class ModelArguments:
             "help": "Pretrained config name or path if not the same as model_name"
         },
     )
-    image_vocab_size: Optional[int] = field(
-        default=None,
-        metadata={"help": "Vocab size of image encoder"},
-    )
-    image_length: Optional[int] = field(
-        default=None,
-        metadata={"help": "Number of tokens per image"},
-    )
     tokenizer_name: Optional[str] = field(
         default=None,
         metadata={
             "help": "Pretrained tokenizer name or path if not the same as model_name_or_path"
-        },
-    )
-    normalize_text: Optional[bool] = field(
-        default=None,
-        metadata={
-            "help": "Whether to normalize text or not. By default, we refer to base model or don't normalize for new models."
         },
     )
     dtype: Optional[str] = field(
@@ -126,10 +112,6 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "An optional input evaluation data file (glob acceptable)."},
     )
-    dataset_type: str = field(
-        default="datasets",
-        metadata={"help": "Either 🤗 'dataset' (default) or 'webdataset'."},
-    )
     # data loading should not be a bottleneck so we use "streaming" mode by default
     streaming: bool = field(
         default=True,
@@ -139,13 +121,6 @@ class DataTrainingArguments:
         default=False,
         metadata={
             "help": "Whether to use the authentication token for private datasets."
-        },
-    )
-    max_source_length: Optional[int] = field(
-        default=128,
-        metadata={
-            "help": "The maximum total input sequence length after tokenization. Sequences longer "
-            "than this will be truncated, sequences shorter will be padded."
         },
     )
     max_train_samples: Optional[int] = field(
@@ -436,47 +411,14 @@ def main():
 
     else:
         # Set up our new model config
-        # TODO: simplify with custom config class
         if model_args.config_name:
-            config = BartConfig.from_pretrained(model_args.config_name)
+            config = DalleBartConfig.from_pretrained(model_args.config_name)
         else:
-            config = BartConfig.from_pretrained(model_args.model_name_or_path)
-        if model_args.image_vocab_size:
-            config.image_vocab_size = model_args.image_vocab_size
-        assert (
-            getattr(config, "image_vocab_size") is not None
-        ), "image_vocab_size must be specified when not present in base model/config"
-        if model_args.image_length:
-            config.image_length = model_args.image_length
-        assert (
-            getattr(config, "image_length") is not None
-        ), "image_length must be specified when not present in base model/config"
-        # we append decoder bos to image vocab
-        config.decoder_start_token_id = config.image_vocab_size
-        # ensure we don't generate bos (in addition to decoder start token)
-        config.force_bos_token_to_be_generated = False
-        config.forced_bos_token_id = None  # we don't need this token
-        config.forced_eos_token_id = None  # we don't need this token
-
-        config.tie_word_embeddings = False
-        config.min_length = config.image_length + 1
-        config.max_length = config.image_length + 1
-
-        # below tokens need to be set to avoid error during generation (converted to jnp.array)
-        # they are not expected to be used and are set to unreachable token id
-        config.bos_token_id = config.image_vocab_size + 1
-        config.pos_token_id = config.image_vocab_size + 1
-        config.eos_token_id = config.image_vocab_size + 1
-
-        # save whether we normalize the text
-        if model_args.normalize_text is not None:
-            config.normalize_text = model_args.normalize_text
-        else:
-            config.normalize_text = getattr(config, "normalize_text", False)
+            config = DalleBartConfig.from_pretrained(model_args.model_name_or_path)
 
         # Load or create new model
         if model_args.model_name_or_path:
-            model = CustomFlaxBartForConditionalGeneration.from_pretrained(
+            model = DalleBartForConditionalGeneration.from_pretrained(
                 model_args.model_name_or_path,
                 config=config,
                 seed=training_args.seed_model,
@@ -485,7 +427,7 @@ def main():
             # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
             print(model.params)
         else:
-            model = CustomFlaxBartForConditionalGeneration(
+            model = DalleBartForConditionalGeneration(
                 config,
                 seed=training_args.seed_model,
                 dtype=getattr(jnp, model_args.dtype),
@@ -512,6 +454,7 @@ def main():
         tokenizer=tokenizer,
         decoder_start_token_id=model.config.decoder_start_token_id,
         normalize_text=model.config.normalize_text,
+        max_length=model.config.max_text_length,
     )
 
     # Initialize our training

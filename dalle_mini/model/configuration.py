@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" BART model configuration """
+""" DalleBart model configuration """
 import warnings
 
 from transformers.configuration_utils import PretrainedConfig
@@ -123,7 +123,7 @@ class DalleBartConfig(PretrainedConfig):
     ):
         self.normalize_text = normalize_text
         self.encoder_vocab_size = encoder_vocab_size
-        self.decoder_vocab_size = image_vocab_size
+        self.image_vocab_size = image_vocab_size
         self.image_length = image_length
         self.max_text_length = max_text_length
         self.d_model = d_model
@@ -145,9 +145,13 @@ class DalleBartConfig(PretrainedConfig):
         self.num_hidden_layers = encoder_layers
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
-        self.decoder_start_token_id = image_vocab_size,  # BOS appended to vocab
+        self.decoder_start_token_id = image_vocab_size  # BOS appended to vocab
         self.min_length = image_length + 1
         self.max_length = image_length + 1
+
+        # remove keys we are about to set to prevent errors
+        for k in ['bos_token_id', 'eos_token_id', 'pad_token_id', 'decoder_start_token_id', 'forced_eos_token_id']:
+            kwargs.pop(k, None)
 
         super().__init__(
             num_labels=num_labels,
@@ -155,7 +159,7 @@ class DalleBartConfig(PretrainedConfig):
             bos_token_id=image_vocab_size + 1,  # set to unreachable values
             eos_token_id=image_vocab_size + 1,
             is_encoder_decoder=is_encoder_decoder,
-            decoder_start_token_id=decoder_start_token_id,
+            decoder_start_token_id=self.decoder_start_token_id,
             forced_eos_token_id=forced_eos_token_id,
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,

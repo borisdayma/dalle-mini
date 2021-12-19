@@ -15,12 +15,10 @@ class Dataset:
     dataset_repo_or_path: str
     train_file: str = None
     validation_file: str = None
-    dataset_type: str = "dataset"
     streaming: bool = True
     use_auth_token: bool = False
     text_column: str = "caption"
     encoding_column: str = "encoding"
-    max_source_length: int = 128
     max_train_samples: int = None
     max_eval_samples: int = None
     preprocessing_num_workers: int = None
@@ -70,7 +68,7 @@ class Dataset:
                     else self.eval_dataset.select(range(self.max_eval_samples))
                 )
 
-    def preprocess(self, tokenizer, decoder_start_token_id, normalize_text):
+    def preprocess(self, tokenizer, decoder_start_token_id, normalize_text, max_length):
         if self.streaming:
             # we need to shuffle early in streaming mode
             if hasattr(self, "train_dataset"):
@@ -112,7 +110,7 @@ class Dataset:
             tokenizer=tokenizer,
             text_column=self.text_column,
             encoding_column=self.encoding_column,
-            max_source_length=self.max_source_length,
+            max_length=max_length,
             decoder_start_token_id=decoder_start_token_id,
         )
         for ds in ["train_dataset", "eval_dataset"]:
@@ -232,14 +230,14 @@ def preprocess_function(
     tokenizer,
     text_column,
     encoding_column,
-    max_source_length,
+    max_length,
     decoder_start_token_id,
 ):
     inputs = examples[text_column]
     # Setting padding="max_length" as we need fixed length inputs for jitted functions
     model_inputs = tokenizer(
         inputs,
-        max_length=max_source_length,
+        max_length=max_length,
         padding="max_length",
         truncation=True,
         return_tensors="np",
