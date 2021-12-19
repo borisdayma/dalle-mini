@@ -18,7 +18,6 @@ import warnings
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
-
 logger = logging.get_logger(__name__)
 
 
@@ -88,7 +87,10 @@ class DalleBartConfig(PretrainedConfig):
     """
     model_type = "dallebart"
     keys_to_ignore_at_inference = ["past_key_values"]
-    attribute_map = {"num_attention_heads": "encoder_attention_heads", "hidden_size": "d_model"}
+    attribute_map = {
+        "num_attention_heads": "encoder_attention_heads",
+        "hidden_size": "d_model",
+    }
 
     def __init__(
         self,
@@ -118,7 +120,7 @@ class DalleBartConfig(PretrainedConfig):
         num_labels=3,
         is_encoder_decoder=True,
         forced_eos_token_id=None,
-        tie_word_embeddings=False, # don't tie for scaling reasons and due to different modalities and sizes
+        tie_word_embeddings=False,  # don't tie for scaling reasons and due to different modalities and sizes
         **kwargs,
     ):
         self.normalize_text = normalize_text
@@ -144,18 +146,27 @@ class DalleBartConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.num_hidden_layers = encoder_layers
         self.gradient_checkpointing = gradient_checkpointing
-        self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
+        self.scale_embedding = (
+            scale_embedding  # scale factor will be sqrt(d_model) if True
+        )
         self.decoder_start_token_id = image_vocab_size  # BOS appended to vocab
         self.min_length = image_length + 1
         self.max_length = image_length + 1
 
         # remove keys we are about to set to prevent errors
-        for k in ['bos_token_id', 'eos_token_id', 'pad_token_id', 'decoder_start_token_id', 'forced_eos_token_id']:
+        for k in [
+            "bos_token_id",
+            "eos_token_id",
+            "pad_token_id",
+            "decoder_start_token_id",
+            "forced_eos_token_id",
+        ]:
             kwargs.pop(k, None)
 
         super().__init__(
             num_labels=num_labels,
-            pad_token_id=image_vocab_size + 1,  # needed to avoid errors during generation (converted to jnp.array)
+            pad_token_id=image_vocab_size
+            + 1,  # needed to avoid errors during generation (converted to jnp.array)
             bos_token_id=image_vocab_size + 1,  # set to unreachable values
             eos_token_id=image_vocab_size + 1,
             is_encoder_decoder=is_encoder_decoder,
@@ -166,7 +177,9 @@ class DalleBartConfig(PretrainedConfig):
         )
 
         # ensure backward compatibility for BART CNN models
-        if self.forced_bos_token_id is None and kwargs.get("force_bos_token_to_be_generated", False):
+        if self.forced_bos_token_id is None and kwargs.get(
+            "force_bos_token_to_be_generated", False
+        ):
             self.forced_bos_token_id = self.bos_token_id
             warnings.warn(
                 f"Please make sure the config includes `forced_bos_token_id={self.bos_token_id}` in future versions."

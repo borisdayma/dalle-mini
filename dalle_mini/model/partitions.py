@@ -4,7 +4,6 @@ from flax.core.frozen_dict import freeze
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jax.experimental import PartitionSpec as P
 
-
 # utils adapted from https://github.com/google-research/google-research/blob/master/flax_models/t5x/partitions.py
 # Sentinels
 _unmatched = object()
