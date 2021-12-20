@@ -52,7 +52,7 @@ logger = logging.get_logger(__name__)
 class FlaxBartAttention(FlaxBartAttention):
     """
     Edits:
-    - causal mask considers embed_dim instead of max_position_embeddings
+    - causal mask is used only in decoder and considers image_length + 1 (for BOS)
     """
 
     def setup(self) -> None:
@@ -77,8 +77,9 @@ class FlaxBartAttention(FlaxBartAttention):
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
         if self.causal:
+            # used only in decoder
             self.causal_mask = make_causal_mask(
-                jnp.ones((1, self.embed_dim), dtype="bool"), dtype="bool"
+                jnp.ones((1, self.config.image_length + 1), dtype="bool"), dtype="bool"
             )
 
 
