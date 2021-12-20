@@ -398,7 +398,7 @@ def main():
         artifact_dir = artifact.download()
 
         # load model
-        model = CustomFlaxBartForConditionalGeneration.from_pretrained(artifact_dir)
+        model = DalleBart.from_pretrained(artifact_dir)
         # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
         print(model.params)
 
