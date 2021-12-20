@@ -1,2 +1,2 @@
 from .configuration import DalleBartConfig
-from .modeling import DalleBartForConditionalGeneration
+from .modeling import DalleBart
