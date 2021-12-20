@@ -617,6 +617,7 @@ def main():
             "len_train_dataset": len_train_dataset,
             "len_eval_dataset": len_eval_dataset,
             "batch_size_per_update": batch_size_per_update,
+            "num_params": model.num_params,
         }
     )
 
@@ -693,6 +694,7 @@ def main():
                 c.cleanup(wandb.util.from_human_size("10GB"))
 
                 metadata = dict(state_dict)
+                metadata["num_params"] = model.num_params
                 if eval_metrics is not None:
                     metadata["eval"] = eval_metrics
                 artifact = wandb.Artifact(
