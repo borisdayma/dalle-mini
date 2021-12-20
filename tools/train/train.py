@@ -41,10 +41,9 @@ from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard_prng_key
 from tqdm import tqdm
 from transformers import AutoTokenizer, HfArgumentParser
-from transformers.models.bart.modeling_flax_bart import BartConfig
 
 from dalle_mini.data import Dataset
-from dalle_mini.model import DalleBartConfig, DalleBartForConditionalGeneration
+from dalle_mini.model import DalleBartConfig, DalleBart
 
 logger = logging.getLogger(__name__)
 
@@ -418,7 +417,7 @@ def main():
 
         # Load or create new model
         if model_args.model_name_or_path:
-            model = DalleBartForConditionalGeneration.from_pretrained(
+            model = DalleBart.from_pretrained(
                 model_args.model_name_or_path,
                 config=config,
                 seed=training_args.seed_model,
@@ -427,7 +426,7 @@ def main():
             # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
             print(model.params)
         else:
-            model = DalleBartForConditionalGeneration(
+            model = DalleBart(
                 config,
                 seed=training_args.seed_model,
                 dtype=getattr(jnp, model_args.dtype),
