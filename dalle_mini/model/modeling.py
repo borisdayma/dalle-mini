@@ -46,6 +46,8 @@ from transformers.models.bart.modeling_flax_bart import (
     FlaxBartForConditionalGeneration,
 )
 
+from .configuration import DalleBartConfig
+
 logger = logging.get_logger(__name__)
 
 
@@ -296,7 +298,10 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
     """
     Edits:
     - added num_params property
+    - config_class replaced to DalleBartConfig
     """
+
+    config_class = DalleBartConfig
 
     @property
     def num_params(self):

@@ -85,8 +85,6 @@ class DalleBartConfig(PretrainedConfig):
         self.scale_embedding = (
             scale_embedding  # scale factor will be sqrt(d_model) if True
         )
-        self.min_length = image_length + 1
-        self.max_length = image_length + 1
 
         # remove inferred keys to prevent errors when loading config (passed as kwargs)
         for k in [
@@ -94,6 +92,8 @@ class DalleBartConfig(PretrainedConfig):
             "bos_token_id",
             "eos_token_id",
             "decoder_start_token_id",
+            "min_length",
+            "max_length",
         ]:
             kwargs.pop(k, None)
 
@@ -106,6 +106,8 @@ class DalleBartConfig(PretrainedConfig):
             decoder_start_token_id=image_vocab_size,  # BOS appended to vocab
             forced_eos_token_id=forced_eos_token_id,
             tie_word_embeddings=tie_word_embeddings,
+            min_length=image_length + 1,
+            max_length=image_length + 1,
             **kwargs,
         )
 
