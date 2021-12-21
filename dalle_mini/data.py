@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 from datasets import Dataset, load_dataset
 from flax.training.common_utils import shard
+from braceexpand import braceexpand
 
 from .text import TextNormalizer
 
@@ -33,6 +34,11 @@ class Dataset:
     def __post_init__(self):
         # define data_files
         if self.train_file is not None or self.validation_file is not None:
+            # accept braceexpand notation
+            for k in ["train_file", "validation_file"]:
+                f = getattr(self, k)
+                if isinstance(f, str):
+                    setattr(self, k, list(braceexpand(f)))
             data_files = {
                 "train": self.train_file,
                 "validation": self.validation_file,
