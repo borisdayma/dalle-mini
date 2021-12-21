@@ -375,6 +375,9 @@ def main():
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
+    logger.info(f"TPUs: {jax.device_count()}")
+    assert jax.device_count() == 8, "TPUs in use, please check running processes"
+
     # Set the verbosity to info of the Transformers logger (on main process only):
     logger.info(f"Training/evaluation parameters {training_args}")
 
@@ -443,9 +446,6 @@ def main():
                 use_fast=True,
             )
 
-    logger.info(f"TPUs: {jax.device_count()}")
-    assert jax.device_count() == 8, "TPUs in use, please check running processes"
-
     # Preprocessing the datasets.
     # We need to normalize and tokenize inputs and targets.
 
@@ -474,6 +474,7 @@ def main():
     num_train_steps = (
         steps_per_epoch * num_epochs if steps_per_epoch is not None else None
     )
+    num_params = model.num_params
 
     # Create learning rate schedule
     learning_rate_fn = create_learning_rate_fn(
@@ -602,6 +603,7 @@ def main():
     logger.info(
         f"  Total train batch size (w. parallel, distributed & gradient accumulation) = {batch_size_per_update}"
     )
+    logger.info(f"  Model parameters = {num_params:,}")
     epochs = tqdm(
         range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
     )
@@ -616,7 +618,7 @@ def main():
             "len_train_dataset": len_train_dataset,
             "len_eval_dataset": len_eval_dataset,
             "batch_size_per_update": batch_size_per_update,
-            "num_params": model.num_params,
+            "num_params": num_params,
         }
     )
 
@@ -693,7 +695,7 @@ def main():
                 c.cleanup(wandb.util.from_human_size("10GB"))
 
                 metadata = dict(state_dict)
-                metadata["num_params"] = model.num_params
+                metadata["num_params"] = num_params
                 if eval_metrics is not None:
                     metadata["eval"] = eval_metrics
                 artifact = wandb.Artifact(

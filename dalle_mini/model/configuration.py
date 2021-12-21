@@ -80,7 +80,6 @@ class DalleBartConfig(PretrainedConfig):
         self.decoder_layerdrop = decoder_layerdrop
         self.classifier_dropout = classifier_dropout
         self.use_cache = use_cache
-        self.num_hidden_layers = encoder_layers
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = (
             scale_embedding  # scale factor will be sqrt(d_model) if True
