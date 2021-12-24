@@ -43,7 +43,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, HfArgumentParser
 
 from dalle_mini.data import Dataset
-from dalle_mini.model import DalleBartConfig, DalleBart
+from dalle_mini.model import DalleBart, DalleBartConfig
 
 logger = logging.getLogger(__name__)
 

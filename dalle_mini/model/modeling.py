@@ -30,21 +30,20 @@ from transformers.modeling_flax_outputs import (
     FlaxSeq2SeqLMOutput,
 )
 from transformers.modeling_flax_utils import ACT2FN
-from transformers.utils import logging
-
 from transformers.models.bart.modeling_flax_bart import (
     FlaxBartAttention,
-    FlaxBartEncoderLayer,
+    FlaxBartDecoder,
     FlaxBartDecoderLayer,
-    FlaxBartEncoderLayerCollection,
     FlaxBartDecoderLayerCollection,
     FlaxBartEncoder,
-    FlaxBartDecoder,
-    FlaxBartModule,
-    FlaxBartForConditionalGenerationModule,
-    FlaxBartPreTrainedModel,
+    FlaxBartEncoderLayer,
+    FlaxBartEncoderLayerCollection,
     FlaxBartForConditionalGeneration,
+    FlaxBartForConditionalGenerationModule,
+    FlaxBartModule,
+    FlaxBartPreTrainedModel,
 )
+from transformers.utils import logging
 
 from .configuration import DalleBartConfig
 
