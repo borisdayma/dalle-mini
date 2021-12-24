@@ -4,9 +4,9 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
+from braceexpand import braceexpand
 from datasets import Dataset, load_dataset
 from flax.training.common_utils import shard
-from braceexpand import braceexpand
 
 from .text import TextNormalizer
 
@@ -30,8 +30,10 @@ class Dataset:
     train_dataset: Dataset = field(init=False)
     eval_dataset: Dataset = field(init=False)
     rng_dataset: jnp.ndarray = field(init=False)
+    multi_hosts: bool = field(init=False)
 
     def __post_init__(self):
+        self.multi_hosts = jax.process_count > 1
         # define data_files
         if self.train_file is not None or self.validation_file is not None:
             # accept braceexpand notation
@@ -39,6 +41,11 @@ class Dataset:
                 f = getattr(self, k)
                 if isinstance(f, str):
                     setattr(self, k, list(braceexpand(f)))
+            # for list of files, split training data shards by host
+            if isinstance(self.train_file, list) and self.multi_hosts:
+                self.train_file = self.train_file[
+                    jax.process_index() :: jax.process_count()
+                ]
             data_files = {
                 "train": self.train_file,
                 "validation": self.validation_file,
@@ -169,17 +176,29 @@ class Dataset:
                 batch = shard(batch)
                 yield batch
 
-        def _dataloader_datasets_streaming(dataset: Dataset, batch_size: int):
+        def _dataloader_datasets_streaming(
+            dataset: Dataset, batch_size: int, epoch: int
+        ):
+            # epoch is only use for multi-host
             keys = ["input_ids", "attention_mask", "labels", "decoder_input_ids"]
             batch = {k: [] for k in keys}
-            for item in dataset:
-                for k, v in item.items():
-                    batch[k].append(v)
-                if len(batch[keys[0]]) == batch_size:
-                    batch = {k: jnp.array(v) for k, v in batch.items()}
-                    batch = shard(batch)
-                    yield batch
-                    batch = {k: [] for k in keys}
+            first_loop = True
+            while self.multi_hosts or first_loop:
+                # in multi-host, we run forever (no epoch) as hosts need to stop
+                # at same the time and we don't know how much data is on each host
+                if not first_loop:
+                    # multi-host setting, we reshuffle shards
+                    epoch += 1
+                    dataset.set_epoch(epoch)
+                for item in dataset:
+                    for k, v in item.items():
+                        batch[k].append(v)
+                    if len(batch[keys[0]]) == batch_size:
+                        batch = {k: jnp.array(v) for k, v in batch.items()}
+                        batch = shard(batch)
+                        yield batch
+                        batch = {k: [] for k in keys}
+                first_loop = False
 
         if split == "train":
             ds = self.train_dataset
@@ -191,7 +210,7 @@ class Dataset:
         if self.streaming:
             if split == "train":
                 ds.set_epoch(epoch)
-            return _dataloader_datasets_streaming(ds, batch_size)
+            return _dataloader_datasets_streaming(ds, batch_size, epoch)
         else:
             if split == "train":
                 self.rng_dataset, input_rng = jax.random.split(self.rng_dataset)
