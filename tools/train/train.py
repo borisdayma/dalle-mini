@@ -389,15 +389,19 @@ def main():
     )
 
     # Set up wandb run
-    wandb.init(
-        entity="dalle-mini",
-        project="dalle-mini",
-        job_type="Seq2Seq",
-        config=parser.parse_args(),
-    )
+    if jax.process_index() == 0:
+        wandb.init(
+            entity="dalle-mini",
+            project="dalle-mini",
+            job_type="Seq2Seq",
+            config=parser.parse_args(),
+        )
 
     if training_args.resume_from_checkpoint is not None:
-        artifact = wandb.run.use_artifact(training_args.resume_from_checkpoint)
+        if jax.process_index() == 0:
+            artifact = wandb.run.use_artifact(training_args.resume_from_checkpoint)
+        else:
+            artifact = wandb.Api().artifact(training_args.resume_from_checkpoint)
         artifact_dir = artifact.download()
 
         # load model
@@ -462,14 +466,23 @@ def main():
 
     # Store some constant
     num_epochs = int(training_args.num_train_epochs)
+    # batch size per node
     train_batch_size = (
-        int(training_args.per_device_train_batch_size) * jax.device_count()
+        int(training_args.per_device_train_batch_size) * jax.local_device_count()
     )
-    batch_size_per_update = train_batch_size * training_args.gradient_accumulation_steps
-    eval_batch_size = int(training_args.per_device_eval_batch_size) * jax.device_count()
+    batch_size_per_update = (
+        train_batch_size
+        * training_args.gradient_accumulation_steps
+        * jax.process_count()
+    )
+    eval_batch_size = (
+        int(training_args.per_device_eval_batch_size) * jax.local_device_count()
+    )
     len_train_dataset, len_eval_dataset = dataset.length
     steps_per_epoch = (
-        len_train_dataset // train_batch_size if len_train_dataset is not None else None
+        len_train_dataset // (train_batch_size * jax.process_count())
+        if len_train_dataset is not None
+        else None
     )
     num_train_steps = (
         steps_per_epoch * num_epochs if steps_per_epoch is not None else None
@@ -568,7 +581,7 @@ def main():
             grads=grads,
             dropout_rng=new_dropout_rng,
             train_time=state.train_time + delta_time,
-            train_samples=state.train_samples + train_batch_size,
+            train_samples=state.train_samples + train_batch_size * jax.process_count(),
         )
 
         metrics = {
@@ -600,6 +613,7 @@ def main():
     logger.info(
         f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}"
     )
+    logger.info(f"  Number of devices = {jax.device_count()}")
     logger.info(
         f"  Total train batch size (w. parallel, distributed & gradient accumulation) = {batch_size_per_update}"
     )
@@ -608,19 +622,20 @@ def main():
         range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
     )
 
-    # set default x-axis as 'train/step'
-    wandb_log({}, step=state.step)
-    wandb.define_metric("*", step_metric="train/step")
+    if jax.process_index() == 0:
+        # set default x-axis as 'train/step'
+        wandb_log({}, step=state.step)
+        wandb.define_metric("*", step_metric="train/step")
 
-    # add interesting config parameters
-    wandb.config.update(
-        {
-            "len_train_dataset": len_train_dataset,
-            "len_eval_dataset": len_eval_dataset,
-            "batch_size_per_update": batch_size_per_update,
-            "num_params": num_params,
-        }
-    )
+        # add interesting config parameters
+        wandb.config.update(
+            {
+                "len_train_dataset": len_train_dataset,
+                "len_eval_dataset": len_eval_dataset,
+                "batch_size_per_update": batch_size_per_update,
+                "num_params": num_params,
+            }
+        )
 
     # replicate state on each device
     state = state.replicate()
@@ -688,52 +703,61 @@ def main():
                     f,
                 )
 
-            # save to W&B
-            if training_args.log_model:
-                # save some space
-                c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
-                c.cleanup(wandb.util.from_human_size("10GB"))
+            if jax.process_index() == 0:
+                # save to W&B
+                if training_args.log_model:
+                    # save some space
+                    c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
+                    c.cleanup(wandb.util.from_human_size("10GB"))
 
-                metadata = dict(state_dict)
-                metadata["num_params"] = num_params
-                if eval_metrics is not None:
-                    metadata["eval"] = eval_metrics
-                artifact = wandb.Artifact(
-                    name=f"model-{wandb.run.id}", type="bart_model", metadata=metadata
-                )
-                artifact.add_file(
-                    str(Path(training_args.output_dir) / "flax_model.msgpack")
-                )
-                artifact.add_file(str(Path(training_args.output_dir) / "config.json"))
-                artifact.add_file(
-                    str(Path(training_args.output_dir) / "tokenizer.json")
-                )
-                artifact.add_file(
-                    str(Path(training_args.output_dir) / "tokenizer_config.json")
-                )
-                artifact.add_file(str(Path(training_args.output_dir) / "vocab.json"))
-                artifact.add_file(str(Path(training_args.output_dir) / "merges.txt"))
-                artifact.add_file(
-                    str(Path(training_args.output_dir) / "special_tokens_map.json")
-                )
-                artifact.add_file(
-                    str(Path(training_args.output_dir) / "opt_state.msgpack")
-                )
-                artifact.add_file(
-                    str(Path(training_args.output_dir) / "training_state.json")
-                )
+                    metadata = dict(state_dict)
+                    metadata["num_params"] = num_params
+                    if eval_metrics is not None:
+                        metadata["eval"] = eval_metrics
+                    artifact = wandb.Artifact(
+                        name=f"model-{wandb.run.id}",
+                        type="bart_model",
+                        metadata=metadata,
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "flax_model.msgpack")
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "config.json")
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "tokenizer.json")
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "tokenizer_config.json")
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "vocab.json")
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "merges.txt")
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "special_tokens_map.json")
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "opt_state.msgpack")
+                    )
+                    artifact.add_file(
+                        str(Path(training_args.output_dir) / "training_state.json")
+                    )
 
-                wandb.run.log_artifact(artifact)
+                    wandb.run.log_artifact(artifact)
 
-            # save to the hub
-            if training_args.push_to_hub:
-                model.save_pretrained(
-                    training_args.output_dir,
-                    params=params,
-                    push_to_hub=training_args.push_to_hub,
-                    commit_message=f"Saving weights and logs at step {unreplicate(state.step)+1}",
-                    temp_dir=True,  # avoid issues with being in a repository
-                )
+                # save to the hub
+                if training_args.push_to_hub:
+                    model.save_pretrained(
+                        training_args.output_dir,
+                        params=params,
+                        push_to_hub=training_args.push_to_hub,
+                        commit_message=f"Saving weights and logs at step {unreplicate(state.step)+1}",
+                        temp_dir=True,  # avoid issues with being in a repository
+                    )
 
     # init variables
     last_time = time.perf_counter()
