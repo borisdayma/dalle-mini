@@ -33,7 +33,7 @@ class Dataset:
     multi_hosts: bool = field(init=False)
 
     def __post_init__(self):
-        self.multi_hosts = jax.process_count > 1
+        self.multi_hosts = jax.process_count() > 1
         # define data_files
         if self.train_file is not None or self.validation_file is not None:
             # accept braceexpand notation
