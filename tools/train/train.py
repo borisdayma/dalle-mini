@@ -375,7 +375,7 @@ def main():
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
-    logger.info(f"TPUs: {jax.device_count()}")
+    logger.info(f"Local TPUs: {jax.local_device_count()}")
     assert jax.local_device_count() == 8, "TPUs in use, please check running processes"
 
     # Set the verbosity to info of the Transformers logger (on main process only):
