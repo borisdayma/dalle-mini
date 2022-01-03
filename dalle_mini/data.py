@@ -27,6 +27,7 @@ class Dataset:
     do_train: bool = False
     do_eval: bool = True
     seed_dataset: int = None
+    shard_by_host: bool = False
     train_dataset: Dataset = field(init=False)
     eval_dataset: Dataset = field(init=False)
     rng_dataset: jnp.ndarray = field(init=False)
@@ -42,7 +43,11 @@ class Dataset:
                 if isinstance(f, str):
                     setattr(self, k, list(braceexpand(f)))
             # for list of files, split training data shards by host
-            if isinstance(self.train_file, list) and self.multi_hosts:
+            if (
+                isinstance(self.train_file, list)
+                and self.multi_hosts
+                and self.shard_by_host
+            ):
                 self.train_file = self.train_file[
                     jax.process_index() :: jax.process_count()
                 ]
@@ -185,7 +190,7 @@ class Dataset:
             first_loop = True
             while self.multi_hosts or first_loop:
                 # in multi-host, we run forever (no epoch) as hosts need to stop
-                # at same the time and we don't know how much data is on each host
+                # at the same time and we don't know how much data is on each host
                 if not first_loop:
                     # multi-host setting, we reshuffle shards
                     epoch += 1

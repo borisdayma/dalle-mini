@@ -112,14 +112,20 @@ class DataTrainingArguments:
         metadata={"help": "An optional input evaluation data file (glob acceptable)."},
     )
     # data loading should not be a bottleneck so we use "streaming" mode by default
-    streaming: bool = field(
+    streaming: Optional[bool] = field(
         default=True,
         metadata={"help": "Whether to stream the dataset."},
     )
-    use_auth_token: bool = field(
+    use_auth_token: Optional[bool] = field(
         default=False,
         metadata={
             "help": "Whether to use the authentication token for private datasets."
+        },
+    )
+    shard_by_host: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "Whether to shard data files by host in multi-host environments."
         },
     )
     max_train_samples: Optional[int] = field(
