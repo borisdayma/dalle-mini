@@ -331,14 +331,37 @@ def create_learning_rate_fn(
     return schedule_fn
 
 
-def wandb_log(metrics, step=None, prefix=None):
-    if jax.process_index() == 0:
-        log_metrics = {
-            f"{prefix}/{k}" if prefix is not None else k: v for k, v in metrics.items()
+class MetricsLogger:
+    def __init__(self, state):
+        self.step = state.step
+        self.time = time.perf_counter()
+
+    def get_all_train_metrics(self, train_metrics, state):
+        """Make a dict of training metrics to be logged"""
+        metrics = unreplicate(train_metrics)
+        # get state parameters
+        state_dict = {
+            k.split("_")[-1]: unreplicate(getattr(state, k))
+            for k in ["epoch", "train_time", "train_samples"]
         }
-        if step is not None:
-            log_metrics["train/step"] = step
-        wandb.log(log_metrics)
+        # timing metrics
+        new_step = int(unreplicate(state.step))
+        new_time = time.perf_counter()
+        time_per_step = (new_time - self.time) / (new_step - self.step)
+        self.step = new_step
+        self.time = new_time
+        return {**metrics, **state_dict, "time_per_step": time_per_step}
+
+    @staticmethod
+    def log(metrics, step=None, prefix=None):
+        if jax.process_index() == 0:
+            log_metrics = {
+                f"{prefix}/{k}" if prefix is not None else k: v
+                for k, v in metrics.items()
+            }
+            if step is not None:
+                log_metrics["train/step"] = step
+            wandb.log(log_metrics)
 
 
 def main():
@@ -628,9 +651,10 @@ def main():
         range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
     )
 
+    metrics_logger = MetricsLogger(state)
     if jax.process_index() == 0:
         # set default x-axis as 'train/step'
-        wandb_log({}, step=state.step)
+        metrics_logger.log({}, step=state.step)
         wandb.define_metric("*", step_metric="train/step")
 
         # add interesting config parameters
@@ -672,7 +696,9 @@ def main():
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
             # log metrics
-            wandb_log(eval_metrics, step=unreplicate(state.step), prefix="eval")
+            metrics_logger.log(
+                eval_metrics, step=unreplicate(state.step), prefix="eval"
+            )
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -772,7 +798,7 @@ def main():
     for epoch in epochs:
         state.replace(epoch=jax_utils.replicate(epoch))
         # ======================== Training ================================
-        wandb_log({"train/epoch": epoch}, step=unreplicate(state.step))
+        metrics_logger.log({"train/epoch": epoch}, step=unreplicate(state.step))
 
         # Generate an epoch by shuffling sampling indices from the train dataset
         train_loader = dataset.dataloader("train", train_batch_size)
@@ -797,17 +823,12 @@ def main():
             step = unreplicate(state.step)
 
             if step % training_args.logging_steps == 0 and jax.process_index() == 0:
-                # log metrics
-                metrics = unreplicate(train_metrics)
-                # log state parameters
-                state_dict = {
-                    k.split("_")[-1]: unreplicate(getattr(state, k))
-                    for k in ["epoch", "train_time", "train_samples"]
-                }
-                wandb_log({**metrics, **state_dict}, step=step, prefix="train")
+                all_metrics = metrics_logger.get_all_train_metrics(train_metrics, state)
+                metrics_logger.log(all_metrics, step=step, prefix="train")
 
             eval_metrics = None
             if training_args.eval_steps and step % training_args.eval_steps == 0:
+                return
                 eval_metrics = run_evaluation()
 
             if step % training_args.save_steps == 0:
@@ -815,8 +836,8 @@ def main():
 
         # log final train metrics
         if train_metrics is not None:
-            train_metrics = unreplicate(train_metrics)
-            wandb_log(train_metrics, step=step, prefix="train")
+            all_metrics = metrics_logger.get_all_train_metrics(train_metrics, state)
+            metrics_logger.log(all_metrics, step=step, prefix="train")
 
             epochs.write(
                 f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
