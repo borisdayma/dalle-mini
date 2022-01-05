@@ -434,7 +434,9 @@ def main():
         artifact_dir = artifact.download()
 
         # load model
-        model = DalleBart.from_pretrained(artifact_dir)
+        model = DalleBart.from_pretrained(
+            artifact_dir, dtype=getattr(jnp, model_args.dtype), abstract_init=True
+        )
         # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
         print(model.params)
 
@@ -458,6 +460,7 @@ def main():
                 config=config,
                 seed=training_args.seed_model,
                 dtype=getattr(jnp, model_args.dtype),
+                abstract_init=True,
             )
             # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
             print(model.params)

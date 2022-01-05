@@ -16,7 +16,7 @@
 
 import math
 from functools import partial
-from typing import Optional
+from typing import Optional, Tuple
 
 import flax.linen as nn
 import jax
@@ -298,9 +298,50 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
     Edits:
     - added num_params property
     - config_class replaced to DalleBartConfig
+    - __init__ accepts abstract_init which does uses parameter shape to initialize the model
     """
 
     config_class = DalleBartConfig
+
+    def __init__(
+        self,
+        config: DalleBartConfig,
+        input_shape: Tuple[int] = (1, 1),
+        seed: int = 0,
+        dtype: jnp.dtype = jnp.float32,
+        abstract_init: bool = False,
+        **kwargs,
+    ):
+        module = self.module_class(config=config, dtype=dtype, **kwargs)
+
+        # adapted from HuggingFace FlaxPreTrainedModel
+        if config is None:
+            raise ValueError("config cannot be None")
+
+        if module is None:
+            raise ValueError("module cannot be None")
+
+        # Those are private to be exposed as typed property on derived classes.
+        self._config = config
+        self._module = module
+
+        # Those are public as their type is generic to every derived classes.
+        self.key = PRNGKey(seed)
+        self.dtype = dtype
+
+        # randomly initialized parameters
+        if abstract_init:
+            # init the model weights only abstractly, eval_shape will return a pytree
+            # with the structure as weights but without any actual values, this will just contain
+            # the shape information. Weights need to be loaded later.
+            init_fn = partial(self.init_weights, input_shape=input_shape)
+            random_params = jax.eval_shape(init_fn, self.key)
+        else:
+            random_params = self.init_weights(self.key, input_shape)
+
+        # save required_params as set
+        self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
+        self.params = random_params
 
     @property
     def num_params(self):
