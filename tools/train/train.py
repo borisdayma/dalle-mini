@@ -828,7 +828,6 @@ def main():
 
             eval_metrics = None
             if training_args.eval_steps and step % training_args.eval_steps == 0:
-                return
                 eval_metrics = run_evaluation()
 
             if step % training_args.save_steps == 0:
