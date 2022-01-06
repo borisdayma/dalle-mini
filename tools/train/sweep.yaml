@@ -11,44 +11,39 @@ parameters:
     # from exp(min) to exp(max)
     min: -6.9
     max: -3.5
+  tokenizer_name:
+    value: boris/dalle-mini-tokenizer
+  config_name:
+    value: ./config/mini
+  dtype:
+    value: bfloat16
+  dataset_repo_or_path:
+    value: ./data
+  per_device_train_batch_size:
+    value: 64
+  per_device_eval_batch_size:
+    value: 64
   gradient_accumulation_steps:
-    value: 8
+    value: 1
   warmup_steps:
     value: 4000
-#TODO: outdated command
+  num_train_epochs:
+    value: 1
+  logging_steps:
+    value: 32
+  eval_steps:
+    value: 800
+  max_train_samples:
+    value: 1000000
+
 command:
   - python3
   - ${program}
-  - "--tokenizer_name"
-  - "boris/dalle-mini-tokenizer"
-  - "--config_name"
-  - "facebook/bart-large-cnn"
-  - "--dataset_repo_or_path"
-  - "boris/gis_vqgan_f16_16384"
   - "--streaming"
-  - "--use_auth_token"
-  - "--image_vocab_size"
-  - 16384
-  - "--image_length"
-  - 256
-  - "--normalize_text"
-  - True
-  - "--per_device_train_batch_size"
-  - 56
-  - "--per_device_eval_batch_size"
-  - 56
-  - "--adafactor"
-  - "--do_train"
-  - "--do_eval"
-  - "--num_train_epochs"
-  - 1
-  - "--logging_steps"
-  - 40
-  - "--eval_steps"
-  - 800
   - "--output_dir"
   - "./output"
   - "--overwrite_output_dir"
-  - "--max_train_samples"
-  - 10000000
+  - "--adafactor"
+  - "--do_train"
+  - "--do_eval"
   - ${args}
