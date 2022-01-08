@@ -45,6 +45,8 @@ from transformers import AutoTokenizer, HfArgumentParser
 from dalle_mini.data import Dataset
 from dalle_mini.model import DalleBart, DalleBartConfig
 
+from distributed_shampoo import distributed_shampoo, GraftingType
+
 logger = logging.getLogger(__name__)
 
 
@@ -211,6 +213,10 @@ class TrainingArguments:
         default=5e-5, metadata={"help": "The initial learning rate."}
     )
     adafactor: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to replace AdamW by Adafactor."},
+    )
+    shampoo: bool = field(
         default=False,
         metadata={"help": "Whether or not to replace AdamW by Adafactor."},
     )
@@ -560,6 +566,33 @@ def main():
             weight_decay_mask=decay_mask_fn,
             clipping_threshold=training_args.max_grad_norm,
         )
+    elif training_args.shampoo:
+        # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
+        # Notes:
+        # - mask for weight decay is not implemented so we don't use it
+        optimizer = distributed_shampoo(
+            learning_rate_fn,
+            block_size=1024,  # recommended default for large LM is 1536
+            beta1=0.9,
+            beta2=0.999,
+            diagonal_epsilon=1e-10,
+            matrix_epsilon=1e-8,
+            weight_decay=0.0,
+            start_preconditioning_step=51,
+            preconditioning_compute_steps=50,
+            statistics_compute_steps=1,
+            best_effort_shape_interpretation=True,
+            graft_type=GraftingType.RMSPROP_NORMALIZED,
+            nesterov=False,
+            exponent_override=0,
+            batch_axis_name="batch",
+            inverse_failure_threshold=0.1,
+            moving_average_for_momentum=True,
+            skip_preconditioning_dim_size_gt=4096,
+            clip_by_scaled_gradient_norm=None,
+            precision=jax.lax.Precision.HIGHEST,
+        )
+
     else:
         optimizer = optax.adamw(
             learning_rate=learning_rate_fn,
