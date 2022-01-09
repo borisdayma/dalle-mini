@@ -214,11 +214,11 @@ class TrainingArguments:
     )
     adafactor: bool = field(
         default=False,
-        metadata={"help": "Whether or not to replace AdamW by Adafactor."},
+        metadata={"help": "Use Adafactor instead of AdamW."},
     )
-    shampoo: bool = field(
+    distributed_shampoo: bool = field(
         default=False,
-        metadata={"help": "Whether or not to replace AdamW by Adafactor."},
+        metadata={"help": "Use Distributed Shampoo optimizer instead of AdamW."},
     )
     weight_decay: float = field(
         default=None, metadata={"help": "Weight decay if we apply some."}
@@ -566,7 +566,7 @@ def main():
             weight_decay_mask=decay_mask_fn,
             clipping_threshold=training_args.max_grad_norm,
         )
-    elif training_args.shampoo:
+    elif training_args.distributed_shampoo:
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         # Notes:
         # - mask for weight decay is not implemented but we don't use it anyway
