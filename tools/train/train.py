@@ -569,7 +569,7 @@ def main():
     elif training_args.shampoo:
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         # Notes:
-        # - mask for weight decay is not implemented so we don't use it
+        # - mask for weight decay is not implemented but we don't use it anyway
         optimizer = distributed_shampoo(
             learning_rate_fn,
             block_size=1024,  # recommended default for large LM is 1536
@@ -578,8 +578,8 @@ def main():
             diagonal_epsilon=1e-10,
             matrix_epsilon=1e-8,
             weight_decay=0.0,
-            start_preconditioning_step=51,
-            preconditioning_compute_steps=50,
+            start_preconditioning_step=1001,
+            preconditioning_compute_steps=10,
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
             graft_type=GraftingType.RMSPROP_NORMALIZED,
