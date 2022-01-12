@@ -353,10 +353,12 @@ class MetricsLogger:
         # timing metrics
         new_step = int(unreplicate(state.step))
         new_time = time.perf_counter()
-        time_per_step = (new_time - self.time) / (new_step - self.step)
-        self.step = new_step
-        self.time = new_time
-        return {**metrics, **state_dict, "time_per_step": time_per_step}
+        if new_step > self.step:
+            time_per_step = (new_time - self.time) / (new_step - self.step)
+            self.step = new_step
+            self.time = new_time
+            state_dict["time_per_step"] = time_per_step
+        return {**metrics, **state_dict}
 
     @staticmethod
     def log(metrics, step=None, prefix=None):
@@ -599,7 +601,9 @@ def main():
             b1=training_args.adam_beta1,
             b2=training_args.adam_beta2,
             eps=training_args.adam_epsilon,
-            weight_decay=training_args.weight_decay,
+            weight_decay=training_args.weight_decay
+            if training_args.weight_decay is not None
+            else 0.0,
             mask=decay_mask_fn,
         )
 
