@@ -36,13 +36,13 @@ import itertools
 from typing import Any, List, NamedTuple
 
 import chex
-from flax import struct
 import jax
-from jax import lax
 import jax.experimental.pjit as pjit
 import jax.numpy as jnp
 import numpy as np
 import optax
+from flax import struct
+from jax import lax
 
 
 # pylint:disable=no-value-for-parameter

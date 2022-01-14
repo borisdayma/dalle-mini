@@ -34,6 +34,7 @@ import optax
 import transformers
 import wandb
 from datasets import Dataset
+from distributed_shampoo import GraftingType, distributed_shampoo
 from flax import jax_utils, traverse_util
 from flax.jax_utils import unreplicate
 from flax.serialization import from_bytes, to_bytes
@@ -44,8 +45,6 @@ from transformers import AutoTokenizer, HfArgumentParser
 
 from dalle_mini.data import Dataset
 from dalle_mini.model import DalleBart, DalleBartConfig
-
-from distributed_shampoo import distributed_shampoo, GraftingType
 
 logger = logging.getLogger(__name__)
 
