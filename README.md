@@ -154,3 +154,14 @@ year = {2021}
       primaryClass={cs.CV}
 }
 ```
+
+```
+@misc{anil2021scalable,
+      title={Scalable Second Order Optimization for Deep Learning},
+      author={Rohan Anil and Vineet Gupta and Tomer Koren and Kevin Regan and Yoram Singer},
+      year={2021},
+      eprint={2002.09018},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+```
