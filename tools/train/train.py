@@ -593,6 +593,7 @@ def main():
             skip_preconditioning_dim_size_gt=4096,
             clip_by_scaled_gradient_norm=None,
             precision=jax.lax.Precision.HIGHEST,
+            best_effort_memory_usage_reduction=False,
         )
 
     else:
