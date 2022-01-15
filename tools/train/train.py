@@ -267,13 +267,6 @@ class TrainingArguments:
         },
     )
 
-    push_to_hub: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether or not to upload the trained model to the model hub after training."
-        },
-    )
-
     resume_from_checkpoint: Optional[str] = field(
         default=None,
         metadata={"help": "Reference to a wandb artifact for resuming training."},
@@ -820,16 +813,6 @@ def main():
                     )
 
                     wandb.run.log_artifact(artifact)
-
-                # save to the hub
-                if training_args.push_to_hub:
-                    model.save_pretrained(
-                        training_args.output_dir,
-                        params=params,
-                        push_to_hub=training_args.push_to_hub,
-                        commit_message=f"Saving weights and logs at step {unreplicate(state.step)+1}",
-                        temp_dir=True,  # avoid issues with being in a repository
-                    )
 
     # init variables
     last_time = time.perf_counter()
