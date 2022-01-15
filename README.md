@@ -30,7 +30,7 @@ Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini
 
 For inference only, use `pip install git+https://github.com/borisdayma/dalle-mini.git`.
 
-For development, clone the repo and use `pip install -e ".[dev]"`.
+For development, clone the repo and use `pip install -e ".[dev]"`. Check style with `make style`.
 
 ### Training of VQGAN
 
@@ -67,32 +67,34 @@ Trained models are on 🤗 Model Hub:
 
 The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone to us.
 
+## Acknowledgements
+
+- 🤗 Hugging Face for organizing [the FLAX/JAX community week](https://github.com/huggingface/transformers/tree/master/examples/research_projects/jax-projects)
+- Google [TPU Research Cloud (TRC) program](https://sites.research.google/trc/) for providing computing resources
+- [Weights & Biases](https://wandb.com/) for providing the infrastructure for experiment tracking and model management
+
 ## Authors & Contributors
 
-### Main Authors
+DALL·E mini was initially developed by:
 
 - [Boris Dayma](https://github.com/borisdayma)
 - [Suraj Patil](https://github.com/patil-suraj)
 - [Pedro Cuenca](https://github.com/pcuenca)
-
-### Other Members of dalle-mini team during FLAX/JAX community week
-
 - [Khalid Saifullah](https://github.com/khalidsaifullaah)
 - [Tanishq Abraham](https://github.com/tmabraham)
 - [Phúc Lê Khắc](https://github.com/lkhphuc)
 - [Luke Melas](https://github.com/lukemelas)
 - [Ritobrata Ghosh](https://github.com/ghosh-r)
 
+Many thanks to the people who helped make it better:
+
+- the [DALLE-Pytorch](https://discord.gg/xBPBXfcFHd) and [EleutherAI](https://www.eleuther.ai/) communities for testing and exchanging cool ideas
+- [Rohan Anil](https://github.com/rohan-anil) for adding Distributed Shampoo optimizer
+
 ### Contributing
 
 Join the community on the [DALLE-Pytorch Discord](https://discord.gg/xBPBXfcFHd).
-Any contribution is welcome, from reporting issues to proposing fixes/improvements or testing the model on cool prompts!
-
-## Acknowledgements
-
-- 🤗 Hugging Face for organizing [the FLAX/JAX community week](https://github.com/huggingface/transformers/tree/master/examples/research_projects/jax-projects)
-- Google [TPU Research Cloud (TRC) program](https://sites.research.google/trc/) for providing computing resources
-- [Weights & Biases](https://wandb.com/) for providing the infrastructure for experiment tracking and model management
+Any contribution is welcome, from reporting issues to proposing fixes/improvements or testing the model with cool prompts!
 
 ## Citing DALL·E mini
 
