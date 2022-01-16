@@ -434,22 +434,16 @@ def main():
         )
 
     if training_args.resume_from_checkpoint is not None:
-        if jax.process_index() == 0:
-            artifact = wandb.run.use_artifact(training_args.resume_from_checkpoint)
-        else:
-            artifact = wandb.Api().artifact(training_args.resume_from_checkpoint)
-        artifact_dir = artifact.download()
-
         # load model
         model = DalleBart.from_pretrained(
-            artifact_dir, dtype=getattr(jnp, model_args.dtype), abstract_init=True
+            training_args.resume_from_checkpoint, dtype=getattr(jnp, model_args.dtype), abstract_init=True
         )
         # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
         print(model.params)
 
         # load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
-            artifact_dir,
+            model.config.resolved_name_or_path,
             use_fast=True,
         )
 
@@ -624,7 +618,7 @@ def main():
     if training_args.resume_from_checkpoint is not None:
         # restore optimizer state and other parameters
         # we currently ignore partial epoch training: see https://github.com/borisdayma/dalle-mini/issues/105
-        state = state.restore_state(artifact_dir)
+        state = state.restore_state(model.config.resolved_name_or_path)
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
