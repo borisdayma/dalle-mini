@@ -458,7 +458,7 @@ def main():
         if model_args.config_name:
             config = DalleBartConfig.from_pretrained(model_args.config_name)
         else:
-            config = DalleBartConfig.from_pretrained(model_args.model_name_or_path)
+            config = None
 
         # Load or create new model
         if model_args.model_name_or_path:
