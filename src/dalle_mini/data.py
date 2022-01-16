@@ -161,7 +161,7 @@ class Dataset:
         ):
             """
             Returns batches of size `batch_size` from truncated `dataset`, sharded over all local devices.
-            Shuffle batches if `shuffle` is `True`.
+            Shuffle batches if rng is set.
             """
             steps_per_epoch = len(dataset) // batch_size
 
@@ -184,17 +184,13 @@ class Dataset:
         def _dataloader_datasets_streaming(
             dataset: Dataset, batch_size: int, epoch: int
         ):
-            # epoch is only use for multi-host
             keys = ["input_ids", "attention_mask", "labels", "decoder_input_ids"]
             batch = {k: [] for k in keys}
             first_loop = True
             while self.multi_hosts or first_loop:
                 # in multi-host, we run forever (no epoch) as hosts need to stop
                 # at the same time and we don't know how much data is on each host
-                if not first_loop:
-                    # multi-host setting, we reshuffle shards
-                    epoch += 1
-                    dataset.set_epoch(epoch)
+                dataset.set_epoch(epoch)  # reshuffle data at each epoch
                 for item in dataset:
                     for k, v in item.items():
                         batch[k].append(v)
@@ -203,6 +199,7 @@ class Dataset:
                         batch = shard(batch)
                         yield batch
                         batch = {k: [] for k in keys}
+                epoch += 1
                 first_loop = False
 
         if split == "train":
@@ -213,8 +210,6 @@ class Dataset:
             raise ValueError(f'split must be "train" or "eval", got {split}')
 
         if self.streaming:
-            if split == "train":
-                ds.set_epoch(epoch)
             return _dataloader_datasets_streaming(ds, batch_size, epoch)
         else:
             if split == "train":

@@ -241,7 +241,7 @@ class TrainingArguments:
     )
     optim_quantized: bool = field(
         default=False,
-        metadat={
+        metadata={
             "help": "Whether to quantize optimizer (only supported with distributed_shampoo)."
         },
     )
@@ -845,7 +845,7 @@ def main():
         metrics_logger.log({"train/epoch": epoch}, step=unreplicate(state.step))
 
         # Generate an epoch by shuffling sampling indices from the train dataset
-        train_loader = dataset.dataloader("train", train_batch_size)
+        train_loader = dataset.dataloader("train", train_batch_size, epoch)
         # train
         for batch in tqdm(
             train_loader,
