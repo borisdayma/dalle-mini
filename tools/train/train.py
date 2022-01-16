@@ -246,9 +246,29 @@ class TrainingArguments:
         },
     )
 
-    use_decay: bool = field(
+    lr_decay: str = field(
+        default=None,
+        metadata={
+            "help": "Decay to be used in the learning rate scheduler. Can be None (default), linear or exponential."
+        },
+    )
+    lr_transition_steps: int = field(
+        default=None,
+        metadata={
+            "help": "Number of transition steps associated with learning rate decay when using exponential decay."
+        },
+    )
+    lr_decay_rate: float = field(
+        default=None,
+        metadata={
+            "help": "Decay rate associated with learning rate when using exponential decay."
+        },
+    )
+    lr_staircase: bool = field(
         default=False,
-        metadata={"help": "Whether to use decay in the learning rate scheduler."},
+        metadata={
+            "help": "Whether to use staircase or continuous learning rate when using exponential decay."
+        },
     )
 
     num_train_epochs: float = field(
@@ -319,33 +339,6 @@ class TrainState(train_state.TrainState):
             train_time=training_state["train_time"],
             train_samples=training_state["train_samples"],
         )
-
-
-def create_learning_rate_fn(
-    num_warmup_steps: int,
-    learning_rate: float,
-    use_decay: bool,
-    num_train_steps: int = None,  # used only with `use_decay`, typically train_size // batch_size * num_epochs
-) -> Callable[[int], jnp.array]:
-    """Returns a linear warmup, linear_decay learning rate function."""
-    if use_decay:
-        assert (
-            num_train_steps is not None
-        ), "Learning rate with decay requires number of training steps"
-    warmup_fn = optax.linear_schedule(
-        init_value=0.0, end_value=learning_rate, transition_steps=num_warmup_steps
-    )
-    if not use_decay:
-        return warmup_fn
-    decay_fn = optax.linear_schedule(
-        init_value=learning_rate,
-        end_value=0,
-        transition_steps=num_train_steps - num_warmup_steps,
-    )
-    schedule_fn = optax.join_schedules(
-        schedules=[warmup_fn, decay_fn], boundaries=[num_warmup_steps]
-    )
-    return schedule_fn
 
 
 class MetricsLogger:
@@ -541,12 +534,37 @@ def main():
     num_params = model.num_params
 
     # Create learning rate schedule
-    learning_rate_fn = create_learning_rate_fn(
-        training_args.warmup_steps,
-        training_args.learning_rate,
-        training_args.use_decay,
-        num_train_steps,
-    )
+    def create_learning_rate_fn() -> Callable[[int], jnp.array]:
+        """Create the learning rate function."""
+        warmup_fn = optax.linear_schedule(
+            init_value=0.0,
+            end_value=training_args.learning_rate,
+            transition_steps=training_args.warmup_steps,
+        )
+        if training_args.lr_decay is None:
+            return warmup_fn
+        elif training_args.lr_decay == "linear":
+            assert (
+                num_train_steps is not None
+            ), "linear decay requires knowing the dataset length"
+            decay_fn = optax.linear_schedule(
+                init_value=training_args.learning_rate,
+                end_value=0,
+                transition_steps=num_train_steps - training_args.warmup_steps,
+            )
+        elif training_args.lr_decay == "exponential":
+            decay_fn = optax.exponential_decay(
+                init_value=training_args.learning_rate,
+                transition_steps=training_args.lr_transition_steps,
+                decay_rate=training_args.lr_decay_rate,
+                staircase=training_args.lr_staircase,
+            )
+        schedule_fn = optax.join_schedules(
+            schedules=[warmup_fn, decay_fn], boundaries=[training_args.warmup_steps]
+        )
+        return schedule_fn
+
+    learning_rate_fn = create_learning_rate_fn()
 
     # We use Optax's "masking" functionality to not apply weight decay
     # to bias and LayerNorm scale parameters. decay_mask_fn returns a
