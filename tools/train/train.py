@@ -647,7 +647,9 @@ def main():
 
     # add gradient accumulation
     if training_args.gradient_accumulation_steps > 1:
-        optimizer = optax.MultiSteps(optimizer, training_args.gradient_accumulation_steps)
+        optimizer = optax.MultiSteps(
+            optimizer, training_args.gradient_accumulation_steps
+        )
 
     # Setup train state
     state = TrainState.create(
@@ -691,7 +693,9 @@ def main():
 
         metrics = {
             "loss": loss,
-            "learning_rate": learning_rate_fn(state.step // training_args.gradient_accumulation_steps),
+            "learning_rate": learning_rate_fn(
+                state.step // training_args.gradient_accumulation_steps
+            ),
         }
         metrics = jax.lax.pmean(metrics, axis_name="batch")
 
