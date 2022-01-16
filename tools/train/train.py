@@ -437,7 +437,9 @@ def main():
     if training_args.resume_from_checkpoint is not None:
         # load model
         model = DalleBart.from_pretrained(
-            training_args.resume_from_checkpoint, dtype=getattr(jnp, model_args.dtype), abstract_init=True
+            training_args.resume_from_checkpoint,
+            dtype=getattr(jnp, model_args.dtype),
+            abstract_init=True,
         )
         # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
         print(model.params)
