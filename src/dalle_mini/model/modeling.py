@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import wandb
 from flax.core.frozen_dict import unfreeze
 from flax.linen import make_causal_mask
 from flax.traverse_util import flatten_dict
@@ -45,8 +46,6 @@ from transformers.models.bart.modeling_flax_bart import (
     FlaxBartPreTrainedModel,
 )
 from transformers.utils import logging
-
-import wandb
 
 from .configuration import DalleBartConfig
 
