@@ -220,15 +220,15 @@ class TrainingArguments:
         },
     )
     weight_decay: float = field(
-        default=None, metadata={"help": "Weight decay if we apply some."}
+        default=None, metadata={"help": "Weight decay."}
     )
     beta1: float = field(
         default=0.9,
-        metadata={"help": "Beta1 for adam & distributed_shampoo optimizers"},
+        metadata={"help": "Beta1 for Adam & Distributed Shampoo."},
     )
     beta2: float = field(
         default=0.999,
-        metadata={"help": "Beta2 for adam & distributed_shampoo optimizers"},
+        metadata={"help": "Beta2 for for Adam & Distributed Shampoo."},
     )
     adam_epsilon: float = field(
         default=1e-8, metadata={"help": "Epsilon for AdamW optimizer."}
@@ -236,13 +236,19 @@ class TrainingArguments:
     max_grad_norm: float = field(
         default=1.0, metadata={"help": "Max gradient norm for Adafactor."}
     )
+    block_size: int = field(
+        default=1024, metadata={"help": "Chunked size for large layers with Distributed Shampoo."}
+    )
     preconditioning_compute_steps: int = field(
         default=10, metadata={"help": "Number of steps to update preconditioner."}
+    )
+    skip_preconditioning_dim_size_gt: int = field(
+        default=4096, metadata={"help": "Max size for preconditioning with Distributed Shampoo."}
     )
     optim_quantized: bool = field(
         default=False,
         metadata={
-            "help": "Whether to quantize optimizer (only supported with distributed_shampoo)."
+            "help": "Whether to quantize optimizer (only supported with Distributed Shampoo)."
         },
     )
 
@@ -594,7 +600,7 @@ def main():
         # - mask for weight decay is not implemented
         optimizer = distributed_shampoo(
             learning_rate_fn,
-            block_size=1024,  # recommended default for large LM is 1536
+            block_size=training_args.block_size,
             beta1=training_args.beta1,
             beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
@@ -602,7 +608,7 @@ def main():
             weight_decay=training_args.weight_decay
             if training_args.weight_decay is not None
             else 0.0,
-            start_preconditioning_step=1001,
+            start_preconditioning_step=training_args.warmup_steps,
             preconditioning_compute_steps=training_args.preconditioning_compute_steps,
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
@@ -612,7 +618,7 @@ def main():
             batch_axis_name="batch",
             inverse_failure_threshold=0.1,
             moving_average_for_momentum=True,
-            skip_preconditioning_dim_size_gt=4096,
+            skip_preconditioning_dim_size_gt=training_args.skip_preconditioning_dim_size_gt,
             clip_by_scaled_gradient_norm=None,
             precision=jax.lax.Precision.HIGHEST,
             best_effort_memory_usage_reduction=training_args.optim_quantized,
