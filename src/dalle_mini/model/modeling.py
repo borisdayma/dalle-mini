@@ -17,6 +17,7 @@
 import math
 from functools import partial
 from typing import Optional, Tuple
+import os
 
 import flax.linen as nn
 import jax
@@ -568,7 +569,7 @@ class DalleBart(FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration):
         """
         Initializes from a wandb artifact, or delegates loading to the superclass.
         """
-        if ':' in pretrained_model_name_or_path:
+        if ':' in pretrained_model_name_or_path and not os.path.isdir(pretrained_model_name_or_path):
             # wandb artifact
             artifact = wandb.Api().artifact(pretrained_model_name_or_path)
             
