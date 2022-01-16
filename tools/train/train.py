@@ -484,8 +484,9 @@ def main():
                 model_args.tokenizer_name, use_fast=True
             )
         else:
+            # Use non-standard configuration property set by `DalleBart.from_pretrained`
             tokenizer = AutoTokenizer.from_pretrained(
-                model_args.model_name_or_path,
+                model.config.resolved_name_or_path,
                 use_fast=True,
             )
 
