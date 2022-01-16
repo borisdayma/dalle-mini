@@ -161,7 +161,7 @@ class Dataset:
         ):
             """
             Returns batches of size `batch_size` from truncated `dataset`, sharded over all local devices.
-            Shuffle batches if `shuffle` is `True`.
+            Shuffle batches if rng is set.
             """
             steps_per_epoch = len(dataset) // batch_size
 
@@ -182,19 +182,20 @@ class Dataset:
                 yield batch
 
         def _dataloader_datasets_streaming(
-            dataset: Dataset, batch_size: int, epoch: int
+            dataset: Dataset, split: str, batch_size: int, epoch: int
         ):
-            # epoch is only use for multi-host
             keys = ["input_ids", "attention_mask", "labels", "decoder_input_ids"]
             batch = {k: [] for k in keys}
-            first_loop = True
-            while self.multi_hosts or first_loop:
+            first_loop = True  # stop after one loop in some cases
+            while (self.multi_hosts and split == "train") or first_loop:
                 # in multi-host, we run forever (no epoch) as hosts need to stop
-                # at the same time and we don't know how much data is on each host
-                if not first_loop:
-                    # multi-host setting, we reshuffle shards
-                    epoch += 1
+                # at the same time and training data may not be split equally
+                # For validation data we put the entire set on each host as we could lose
+                # too many samples on pods
+                if epoch is not None:
+                    # reshuffle training data at each epoch (not applicable with validation set)
                     dataset.set_epoch(epoch)
+                    epoch += 1
                 for item in dataset:
                     for k, v in item.items():
                         batch[k].append(v)
@@ -213,9 +214,7 @@ class Dataset:
             raise ValueError(f'split must be "train" or "eval", got {split}')
 
         if self.streaming:
-            if split == "train":
-                ds.set_epoch(epoch)
-            return _dataloader_datasets_streaming(ds, batch_size, epoch)
+            return _dataloader_datasets_streaming(ds, split, batch_size, epoch)
         else:
             if split == "train":
                 self.rng_dataset, input_rng = jax.random.split(self.rng_dataset)

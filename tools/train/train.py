@@ -65,7 +65,7 @@ class ModelArguments:
     config_name: Optional[str] = field(
         default=None,
         metadata={
-            "help": "Pretrained config name or path if not the same as model_name"
+            "help": "Pretrained config name or path if not the same as model_name_or_path"
         },
     )
     tokenizer_name: Optional[str] = field(
@@ -77,7 +77,7 @@ class ModelArguments:
     dtype: Optional[str] = field(
         default="float32",
         metadata={
-            "help": "Floating-point format in which the model weights should be initialized and trained. Choose one of `[float32, float16, bfloat16]`."
+            "help": "Floating-point format in which the computations will be performed (not the model weights). Choose one of `[float32, float16, bfloat16]`."
         },
     )
 
@@ -106,11 +106,15 @@ class DataTrainingArguments:
     )
     train_file: Optional[str] = field(
         default=None,
-        metadata={"help": "The input training data file (glob acceptable)."},
+        metadata={
+            "help": "The input training data file (glob & braceexpand acceptable)."
+        },
     )
     validation_file: Optional[str] = field(
         default=None,
-        metadata={"help": "An optional input evaluation data file (glob acceptable)."},
+        metadata={
+            "help": "An optional input evaluation data file (glob & braceexpand acceptable)."
+        },
     )
     # data loading should not be a bottleneck so we use "streaming" mode by default
     streaming: Optional[bool] = field(
@@ -132,15 +136,13 @@ class DataTrainingArguments:
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
+            "help": "For debugging purposes or quicker training, truncate the number of training examples."
         },
     )
     max_eval_samples: Optional[int] = field(
         default=None,
         metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
-            "value if set."
+            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples."
         },
     )
     preprocessing_num_workers: Optional[int] = field(
@@ -191,42 +193,40 @@ class TrainingArguments:
 
     do_train: bool = field(default=False, metadata={"help": "Whether to run training."})
     do_eval: bool = field(
-        default=False, metadata={"help": "Whether to run eval on the dev set."}
+        default=False, metadata={"help": "Whether to run eval on the validation set."}
     )
 
     per_device_train_batch_size: int = field(
-        default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for training."}
+        default=8, metadata={"help": "Batch size per GPU/TPU/CPU for training."}
     )
     per_device_eval_batch_size: int = field(
-        default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation."}
+        default=8, metadata={"help": "Batch size per GPU/TPU/CPU for evaluation."}
     )
 
     gradient_accumulation_steps: int = field(
         default=1,
         metadata={
-            "help": "Number of updates steps to accumulate before performing a backward/update pass."
+            "help": "Number of updates steps to accumulate before performing an update pass."
         },
     )
 
     learning_rate: float = field(
         default=5e-5, metadata={"help": "The initial learning rate."}
     )
-    adafactor: bool = field(
-        default=False,
-        metadata={"help": "Use Adafactor instead of AdamW."},
+    optim: str = field(
+        default="distributed_shampoo",
+        metadata={
+            "help": 'The optimizer to use. Can be "distributed_shampoo" (default), "adam" or "adafactor"'
+        },
     )
-    distributed_shampoo: bool = field(
-        default=False,
-        metadata={"help": "Use Distributed Shampoo optimizer instead of AdamW."},
+    weight_decay: float = field(default=None, metadata={"help": "Weight decay."})
+    beta1: float = field(
+        default=0.9,
+        metadata={"help": "Beta1 for Adam & Distributed Shampoo."},
     )
-    weight_decay: float = field(
-        default=None, metadata={"help": "Weight decay if we apply some."}
-    )
-    adam_beta1: float = field(
-        default=0.9, metadata={"help": "Beta1 for AdamW optimizer"}
-    )
-    adam_beta2: float = field(
-        default=0.999, metadata={"help": "Beta2 for AdamW optimizer"}
+    beta2: float = field(
+        default=0.999,
+        metadata={"help": "Beta2 for for Adam & Distributed Shampoo."},
     )
     adam_epsilon: float = field(
         default=1e-8, metadata={"help": "Epsilon for AdamW optimizer."}
@@ -234,9 +234,47 @@ class TrainingArguments:
     max_grad_norm: float = field(
         default=1.0, metadata={"help": "Max gradient norm for Adafactor."}
     )
-    use_decay: bool = field(
+    block_size: int = field(
+        default=1024,
+        metadata={"help": "Chunked size for large layers with Distributed Shampoo."},
+    )
+    preconditioning_compute_steps: int = field(
+        default=10, metadata={"help": "Number of steps to update preconditioner."}
+    )
+    skip_preconditioning_dim_size_gt: int = field(
+        default=4096,
+        metadata={"help": "Max size for preconditioning with Distributed Shampoo."},
+    )
+    optim_quantized: bool = field(
         default=False,
-        metadata={"help": "Whether to use decay in the learning rate scheduler."},
+        metadata={
+            "help": "Whether to quantize optimizer (only supported with Distributed Shampoo)."
+        },
+    )
+
+    lr_decay: str = field(
+        default=None,
+        metadata={
+            "help": "Decay to be used in the learning rate scheduler. Can be None (default), linear or exponential."
+        },
+    )
+    lr_transition_steps: int = field(
+        default=None,
+        metadata={
+            "help": "Number of transition steps associated with learning rate decay when using exponential decay."
+        },
+    )
+    lr_decay_rate: float = field(
+        default=None,
+        metadata={
+            "help": "Decay rate associated with learning rate when using exponential decay."
+        },
+    )
+    lr_staircase: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use staircase or continuous learning rate when using exponential decay."
+        },
     )
 
     num_train_epochs: float = field(
@@ -267,17 +305,17 @@ class TrainingArguments:
         },
     )
 
-    push_to_hub: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether or not to upload the trained model to the model hub after training."
-        },
-    )
-
     resume_from_checkpoint: Optional[str] = field(
         default=None,
         metadata={"help": "Reference to a wandb artifact for resuming training."},
     )
+
+    def __post_init__(self):
+        assert self.optim in [
+            "distributed_shampoo",
+            "adam",
+            "adafactor",
+        ], f"Selected optimizer not supported: {self.optim}"
 
 
 class TrainState(train_state.TrainState):
@@ -307,33 +345,6 @@ class TrainState(train_state.TrainState):
             train_time=training_state["train_time"],
             train_samples=training_state["train_samples"],
         )
-
-
-def create_learning_rate_fn(
-    num_warmup_steps: int,
-    learning_rate: float,
-    use_decay: bool,
-    num_train_steps: int = None,  # used only with `use_decay`, typically train_size // batch_size * num_epochs
-) -> Callable[[int], jnp.array]:
-    """Returns a linear warmup, linear_decay learning rate function."""
-    if use_decay:
-        assert (
-            num_train_steps is not None
-        ), "Learning rate with decay requires number of training steps"
-    warmup_fn = optax.linear_schedule(
-        init_value=0.0, end_value=learning_rate, transition_steps=num_warmup_steps
-    )
-    if not use_decay:
-        return warmup_fn
-    decay_fn = optax.linear_schedule(
-        init_value=learning_rate,
-        end_value=0,
-        transition_steps=num_train_steps - num_warmup_steps,
-    )
-    schedule_fn = optax.join_schedules(
-        schedules=[warmup_fn, decay_fn], boundaries=[num_warmup_steps]
-    )
-    return schedule_fn
 
 
 class MetricsLogger:
@@ -529,12 +540,37 @@ def main():
     num_params = model.num_params
 
     # Create learning rate schedule
-    learning_rate_fn = create_learning_rate_fn(
-        training_args.warmup_steps,
-        training_args.learning_rate,
-        training_args.use_decay,
-        num_train_steps,
-    )
+    def create_learning_rate_fn() -> Callable[[int], jnp.array]:
+        """Create the learning rate function."""
+        warmup_fn = optax.linear_schedule(
+            init_value=0.0,
+            end_value=training_args.learning_rate,
+            transition_steps=training_args.warmup_steps,
+        )
+        if training_args.lr_decay is None:
+            return warmup_fn
+        elif training_args.lr_decay == "linear":
+            assert (
+                num_train_steps is not None
+            ), "linear decay requires knowing the dataset length"
+            decay_fn = optax.linear_schedule(
+                init_value=training_args.learning_rate,
+                end_value=0,
+                transition_steps=num_train_steps - training_args.warmup_steps,
+            )
+        elif training_args.lr_decay == "exponential":
+            decay_fn = optax.exponential_decay(
+                init_value=training_args.learning_rate,
+                transition_steps=training_args.lr_transition_steps,
+                decay_rate=training_args.lr_decay_rate,
+                staircase=training_args.lr_staircase,
+            )
+        schedule_fn = optax.join_schedules(
+            schedules=[warmup_fn, decay_fn], boundaries=[training_args.warmup_steps]
+        )
+        return schedule_fn
+
+    learning_rate_fn = create_learning_rate_fn()
 
     # We use Optax's "masking" functionality to not apply weight decay
     # to bias and LayerNorm scale parameters. decay_mask_fn returns a
@@ -558,29 +594,22 @@ def main():
         return traverse_util.unflatten_dict(flat_mask)
 
     # create adam optimizer
-    if training_args.adafactor:
-        # We use the default parameters here to initialize adafactor,
-        # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
-        optimizer = optax.adafactor(
-            learning_rate=learning_rate_fn,
-            weight_decay_rate=training_args.weight_decay,
-            weight_decay_mask=decay_mask_fn,
-            clipping_threshold=training_args.max_grad_norm,
-        )
-    elif training_args.distributed_shampoo:
+    if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         # Notes:
-        # - mask for weight decay is not implemented but we don't use it anyway
+        # - mask for weight decay is not implemented
         optimizer = distributed_shampoo(
             learning_rate_fn,
-            block_size=1024,  # recommended default for large LM is 1536
-            beta1=0.9,
-            beta2=0.999,
+            block_size=training_args.block_size,
+            beta1=training_args.beta1,
+            beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
             matrix_epsilon=1e-8,
-            weight_decay=0.0,
-            start_preconditioning_step=1001,
-            preconditioning_compute_steps=10,
+            weight_decay=training_args.weight_decay
+            if training_args.weight_decay is not None
+            else 0.0,
+            start_preconditioning_step=training_args.warmup_steps,
+            preconditioning_compute_steps=training_args.preconditioning_compute_steps,
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
             graft_type=GraftingType.RMSPROP_NORMALIZED,
@@ -589,22 +618,31 @@ def main():
             batch_axis_name="batch",
             inverse_failure_threshold=0.1,
             moving_average_for_momentum=True,
-            skip_preconditioning_dim_size_gt=4096,
+            skip_preconditioning_dim_size_gt=training_args.skip_preconditioning_dim_size_gt,
             clip_by_scaled_gradient_norm=None,
             precision=jax.lax.Precision.HIGHEST,
-            best_effort_memory_usage_reduction=False,
+            best_effort_memory_usage_reduction=training_args.optim_quantized,
         )
 
-    else:
+    elif training_args.optim == "adam":
         optimizer = optax.adamw(
             learning_rate=learning_rate_fn,
-            b1=training_args.adam_beta1,
-            b2=training_args.adam_beta2,
+            b1=training_args.beta1,
+            b2=training_args.beta2,
             eps=training_args.adam_epsilon,
             weight_decay=training_args.weight_decay
             if training_args.weight_decay is not None
             else 0.0,
             mask=decay_mask_fn,
+        )
+    elif training_args.optim == "adafactor":
+        # We use the default parameters here to initialize adafactor,
+        # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
+        optimizer = optax.adafactor(
+            learning_rate=learning_rate_fn,
+            weight_decay_rate=training_args.weight_decay,
+            weight_decay_mask=decay_mask_fn,
+            clipping_threshold=training_args.max_grad_norm,
         )
 
     # add gradient accumulation
@@ -821,16 +859,6 @@ def main():
 
                     wandb.run.log_artifact(artifact)
 
-                # save to the hub
-                if training_args.push_to_hub:
-                    model.save_pretrained(
-                        training_args.output_dir,
-                        params=params,
-                        push_to_hub=training_args.push_to_hub,
-                        commit_message=f"Saving weights and logs at step {unreplicate(state.step)+1}",
-                        temp_dir=True,  # avoid issues with being in a repository
-                    )
-
     # init variables
     last_time = time.perf_counter()
     train_metrics = None
@@ -841,7 +869,7 @@ def main():
         metrics_logger.log({"train/epoch": epoch}, step=unreplicate(state.step))
 
         # Generate an epoch by shuffling sampling indices from the train dataset
-        train_loader = dataset.dataloader("train", train_batch_size)
+        train_loader = dataset.dataloader("train", train_batch_size, epoch)
         # train
         for batch in tqdm(
             train_loader,
