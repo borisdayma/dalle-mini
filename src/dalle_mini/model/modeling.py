@@ -575,5 +575,7 @@ class DalleBart(FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration):
             # we download everything, including opt_state, so we can resume training if needed
             # see also: #120
             pretrained_model_name_or_path = artifact.download()
-            
-        return super(DalleBart, cls).from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
+        model = super(DalleBart, cls).from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        model.config.resolved_name_or_path = pretrained_model_name_or_path
+        return model
