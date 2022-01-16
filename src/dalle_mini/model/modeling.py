@@ -15,9 +15,9 @@
 """ DalleBart model. """
 
 import math
+import os
 from functools import partial
 from typing import Optional, Tuple
-import os
 
 import flax.linen as nn
 import jax
@@ -45,6 +45,7 @@ from transformers.models.bart.modeling_flax_bart import (
     FlaxBartPreTrainedModel,
 )
 from transformers.utils import logging
+
 import wandb
 
 from .configuration import DalleBartConfig
