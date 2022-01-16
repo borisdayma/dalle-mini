@@ -219,9 +219,7 @@ class TrainingArguments:
             "help": 'The optimizer to use. Can be "distributed_shampoo" (default), "adam" or "adafactor"'
         },
     )
-    weight_decay: float = field(
-        default=None, metadata={"help": "Weight decay."}
-    )
+    weight_decay: float = field(default=None, metadata={"help": "Weight decay."})
     beta1: float = field(
         default=0.9,
         metadata={"help": "Beta1 for Adam & Distributed Shampoo."},
@@ -237,13 +235,15 @@ class TrainingArguments:
         default=1.0, metadata={"help": "Max gradient norm for Adafactor."}
     )
     block_size: int = field(
-        default=1024, metadata={"help": "Chunked size for large layers with Distributed Shampoo."}
+        default=1024,
+        metadata={"help": "Chunked size for large layers with Distributed Shampoo."},
     )
     preconditioning_compute_steps: int = field(
         default=10, metadata={"help": "Number of steps to update preconditioner."}
     )
     skip_preconditioning_dim_size_gt: int = field(
-        default=4096, metadata={"help": "Max size for preconditioning with Distributed Shampoo."}
+        default=4096,
+        metadata={"help": "Max size for preconditioning with Distributed Shampoo."},
     )
     optim_quantized: bool = field(
         default=False,
