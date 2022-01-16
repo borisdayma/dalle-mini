@@ -65,7 +65,7 @@ class ModelArguments:
     config_name: Optional[str] = field(
         default=None,
         metadata={
-            "help": "Pretrained config name or path if not the same as model_name"
+            "help": "Pretrained config name or path if not the same as model_name_or_path"
         },
     )
     tokenizer_name: Optional[str] = field(
@@ -77,7 +77,7 @@ class ModelArguments:
     dtype: Optional[str] = field(
         default="float32",
         metadata={
-            "help": "Floating-point format in which the model weights should be initialized and trained. Choose one of `[float32, float16, bfloat16]`."
+            "help": "Floating-point format in which the computations will be performed (not the model weights). Choose one of `[float32, float16, bfloat16]`."
         },
     )
 
@@ -106,11 +106,15 @@ class DataTrainingArguments:
     )
     train_file: Optional[str] = field(
         default=None,
-        metadata={"help": "The input training data file (glob acceptable)."},
+        metadata={
+            "help": "The input training data file (glob & braceexpand acceptable)."
+        },
     )
     validation_file: Optional[str] = field(
         default=None,
-        metadata={"help": "An optional input evaluation data file (glob acceptable)."},
+        metadata={
+            "help": "An optional input evaluation data file (glob & braceexpand acceptable)."
+        },
     )
     # data loading should not be a bottleneck so we use "streaming" mode by default
     streaming: Optional[bool] = field(
@@ -132,15 +136,13 @@ class DataTrainingArguments:
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
+            "help": "For debugging purposes or quicker training, truncate the number of training examples."
         },
     )
     max_eval_samples: Optional[int] = field(
         default=None,
         metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
-            "value if set."
+            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples."
         },
     )
     preprocessing_num_workers: Optional[int] = field(
@@ -191,42 +193,42 @@ class TrainingArguments:
 
     do_train: bool = field(default=False, metadata={"help": "Whether to run training."})
     do_eval: bool = field(
-        default=False, metadata={"help": "Whether to run eval on the dev set."}
+        default=False, metadata={"help": "Whether to run eval on the validation set."}
     )
 
     per_device_train_batch_size: int = field(
-        default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for training."}
+        default=8, metadata={"help": "Batch size per GPU/TPU/CPU for training."}
     )
     per_device_eval_batch_size: int = field(
-        default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation."}
+        default=8, metadata={"help": "Batch size per GPU/TPU/CPU for evaluation."}
     )
 
     gradient_accumulation_steps: int = field(
         default=1,
         metadata={
-            "help": "Number of updates steps to accumulate before performing a backward/update pass."
+            "help": "Number of updates steps to accumulate before performing an update pass."
         },
     )
 
     learning_rate: float = field(
         default=5e-5, metadata={"help": "The initial learning rate."}
     )
-    adafactor: bool = field(
-        default=False,
-        metadata={"help": "Use Adafactor instead of AdamW."},
-    )
-    distributed_shampoo: bool = field(
-        default=False,
-        metadata={"help": "Use Distributed Shampoo optimizer instead of AdamW."},
+    optim: str = field(
+        default="distributed_shampoo",
+        metadata={
+            "help": 'The optimizer to use. Can be "distributed_shampoo" (default), "adam" or "adafactor"'
+        },
     )
     weight_decay: float = field(
         default=None, metadata={"help": "Weight decay if we apply some."}
     )
-    adam_beta1: float = field(
-        default=0.9, metadata={"help": "Beta1 for AdamW optimizer"}
+    beta1: float = field(
+        default=0.9,
+        metadata={"help": "Beta1 for adam & distributed_shampoo optimizers"},
     )
-    adam_beta2: float = field(
-        default=0.999, metadata={"help": "Beta2 for AdamW optimizer"}
+    beta2: float = field(
+        default=0.999,
+        metadata={"help": "Beta2 for adam & distributed_shampoo optimizers"},
     )
     adam_epsilon: float = field(
         default=1e-8, metadata={"help": "Epsilon for AdamW optimizer."}
@@ -234,6 +236,16 @@ class TrainingArguments:
     max_grad_norm: float = field(
         default=1.0, metadata={"help": "Max gradient norm for Adafactor."}
     )
+    preconditioning_compute_steps: int = field(
+        default=10, metadata={"help": "Number of steps to update preconditioner."}
+    )
+    optim_quantized: bool = field(
+        default=False,
+        metadat={
+            "help": "Whether to quantize optimizer (only supported with distributed_shampoo)."
+        },
+    )
+
     use_decay: bool = field(
         default=False,
         metadata={"help": "Whether to use decay in the learning rate scheduler."},
@@ -271,6 +283,13 @@ class TrainingArguments:
         default=None,
         metadata={"help": "Reference to a wandb artifact for resuming training."},
     )
+
+    def __post_init__(self):
+        assert self.optim in [
+            "distributed_shampoo",
+            "adam",
+            "adafactor",
+        ], f"Selected optimizer not supported: {self.optim}"
 
 
 class TrainState(train_state.TrainState):
@@ -551,29 +570,22 @@ def main():
         return traverse_util.unflatten_dict(flat_mask)
 
     # create adam optimizer
-    if training_args.adafactor:
-        # We use the default parameters here to initialize adafactor,
-        # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
-        optimizer = optax.adafactor(
-            learning_rate=learning_rate_fn,
-            weight_decay_rate=training_args.weight_decay,
-            weight_decay_mask=decay_mask_fn,
-            clipping_threshold=training_args.max_grad_norm,
-        )
-    elif training_args.distributed_shampoo:
+    if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         # Notes:
-        # - mask for weight decay is not implemented but we don't use it anyway
+        # - mask for weight decay is not implemented
         optimizer = distributed_shampoo(
             learning_rate_fn,
             block_size=1024,  # recommended default for large LM is 1536
-            beta1=0.9,
-            beta2=0.999,
+            beta1=training_args.beta1,
+            beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
             matrix_epsilon=1e-8,
-            weight_decay=0.0,
+            weight_decay=training_args.weight_decay
+            if training_args.weight_decay is not None
+            else 0.0,
             start_preconditioning_step=1001,
-            preconditioning_compute_steps=10,
+            preconditioning_compute_steps=training_args.preconditioning_compute_steps,
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
             graft_type=GraftingType.RMSPROP_NORMALIZED,
@@ -585,19 +597,28 @@ def main():
             skip_preconditioning_dim_size_gt=4096,
             clip_by_scaled_gradient_norm=None,
             precision=jax.lax.Precision.HIGHEST,
-            best_effort_memory_usage_reduction=False,
+            best_effort_memory_usage_reduction=training_args.optim_quantized,
         )
 
-    else:
+    elif training_args.optim == "adam":
         optimizer = optax.adamw(
             learning_rate=learning_rate_fn,
-            b1=training_args.adam_beta1,
-            b2=training_args.adam_beta2,
+            b1=training_args.beta1,
+            b2=training_args.beta2,
             eps=training_args.adam_epsilon,
             weight_decay=training_args.weight_decay
             if training_args.weight_decay is not None
             else 0.0,
             mask=decay_mask_fn,
+        )
+    elif training_args.optim == "adafactor":
+        # We use the default parameters here to initialize adafactor,
+        # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
+        optimizer = optax.adafactor(
+            learning_rate=learning_rate_fn,
+            weight_decay_rate=training_args.weight_decay,
+            weight_decay_mask=decay_mask_fn,
+            clipping_threshold=training_args.max_grad_norm,
         )
 
     # add gradient accumulation
