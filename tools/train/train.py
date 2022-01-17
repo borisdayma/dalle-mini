@@ -277,8 +277,8 @@ class TrainingArguments:
         },
     )
 
-    num_train_epochs: float = field(
-        default=3.0, metadata={"help": "Total number of training epochs to perform."}
+    num_train_epochs: int = field(
+        default=3, metadata={"help": "Total number of training epochs to perform."}
     )
     warmup_steps: int = field(
         default=0, metadata={"help": "Linear warmup over warmup_steps."}
@@ -310,12 +310,40 @@ class TrainingArguments:
         metadata={"help": "Reference to a wandb artifact for resuming training."},
     )
 
+    wandb_entity: Optional[str] = field(
+        default=None,
+        metadata={"help": "The wandb entity to use (for teams)."},
+    )
+    wandb_project: str = field(
+        default="dalle-mini",
+        metadata={"help": "The name of the wandb project."},
+    )
+    wandb_job_type: str = field(
+        default="Seq2Seq",
+        metadata={"help": "The name of the wandb job type."},
+    )
+
+    assert_TPU_available: bool = field(
+        default=False,
+        metadata={"help": "Verify that TPU is not in use."},
+    )
+
     def __post_init__(self):
         assert self.optim in [
             "distributed_shampoo",
             "adam",
             "adafactor",
         ], f"Selected optimizer not supported: {self.optim}"
+        if (
+            os.path.exists(self.output_dir)
+            and os.listdir(self.output_dir)
+            and self.do_train
+            and not self.overwrite_output_dir
+        ):
+            raise ValueError(
+                f"Output directory ({training_args.output_dir}) already exists and is not empty."
+                "Use --overwrite_output_dir to overcome."
+            )
 
 
 class TrainState(train_state.TrainState):
@@ -396,17 +424,6 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    if (
-        os.path.exists(training_args.output_dir)
-        and os.listdir(training_args.output_dir)
-        and training_args.do_train
-        and not training_args.overwrite_output_dir
-    ):
-        raise ValueError(
-            f"Output directory ({training_args.output_dir}) already exists and is not empty."
-            "Use --overwrite_output_dir to overcome."
-        )
-
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -433,14 +450,18 @@ def main():
     )
 
     logger.info(f"Local TPUs: {jax.local_device_count()}")
-    assert jax.local_device_count() == 8, "TPUs in use, please check running processes"
+    logger.info(f"Global TPUs: {jax.device_count()}")
+    if training_args.assert_TPU_available:
+        assert (
+            jax.local_device_count() == 8
+        ), "TPUs in use, please check running processes"
 
     # Set up wandb run
     if jax.process_index() == 0:
         wandb.init(
-            entity="dalle-mini",
-            project="dalle-mini",
-            job_type="Seq2Seq",
+            entity=training_args.wandb_entity,
+            project=training_args.wandb_project,
+            job_type=training_args.wandb_job_type,
             config=parser.parse_args(),
         )
 
@@ -515,22 +536,19 @@ def main():
     rng, dropout_rng = jax.random.split(rng)
 
     # Store some constant
-    num_epochs = int(training_args.num_train_epochs)
+    num_epochs = training_args.num_train_epochs
     # batch size per node
     train_batch_size = (
-        int(training_args.per_device_train_batch_size) * jax.local_device_count()
+        training_args.per_device_train_batch_size * jax.local_device_count()
     )
-    batch_size_per_update = (
-        train_batch_size
-        * training_args.gradient_accumulation_steps
-        * jax.process_count()
-    )
+    batch_size_per_node = train_batch_size * training_args.gradient_accumulation_steps
+    batch_size_per_step = batch_size_per_node * jax.process_count()
     eval_batch_size = (
-        int(training_args.per_device_eval_batch_size) * jax.local_device_count()
+        training_args.per_device_eval_batch_size * jax.local_device_count()
     )
     len_train_dataset, len_eval_dataset = dataset.length
     steps_per_epoch = (
-        len_train_dataset // (train_batch_size * jax.process_count())
+        len_train_dataset // batch_size_per_node
         if len_train_dataset is not None
         else None
     )
@@ -645,12 +663,6 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
         )
 
-    # add gradient accumulation
-    if training_args.gradient_accumulation_steps > 1:
-        optimizer = optax.chain(
-            optax.apply_every(training_args.gradient_accumulation_steps), optimizer
-        )
-
     # Setup train state
     state = TrainState.create(
         apply_fn=model.__call__,
@@ -673,22 +685,48 @@ def main():
     def train_step(state, batch, delta_time):
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
-        def compute_loss(params, batch):
-            labels = batch.pop("labels")
+        def compute_loss(params, minibatch):
+            labels = minibatch.pop("labels")
             logits = state.apply_fn(
-                **batch, params=params, dropout_rng=dropout_rng, train=True
+                **minibatch, params=params, dropout_rng=dropout_rng, train=True
             )[0]
-            loss = loss_fn(logits, labels)
-            return loss
+            return loss_fn(logits, labels)
 
         grad_fn = jax.value_and_grad(compute_loss)
-        loss, grads = grad_fn(state.params, batch)
+
+        if training_args.gradient_accumulation_steps == 1:
+            minibatch = jax.tree_map(lambda x: x[0], batch)
+            loss, grads = grad_fn(state.params, minibatch)
+        else:
+
+            def _cumul_loss_grads(i, cumul_loss_grads):
+                minibatch = jax.tree_map(lambda x: x[i], batch)
+                return jax.tree_map(
+                    lambda x, y: x + y,
+                    cumul_loss_grads,
+                    grad_fn(state.params, minibatch),
+                )
+
+            init_loss_grads = (
+                0.0,
+                jax.tree_map(jnp.zeros_like, state.params),
+            )
+            loss, grads = jax.tree_map(
+                lambda x: x / training_args.gradient_accumulation_steps,
+                jax.lax.fori_loop(
+                    0,
+                    training_args.gradient_accumulation_steps,
+                    _cumul_loss_grads,
+                    init_loss_grads,
+                ),
+            )
+
         grads = jax.lax.pmean(grads, "batch")
         state = state.apply_gradients(
             grads=grads,
             dropout_rng=new_dropout_rng,
             train_time=state.train_time + delta_time,
-            train_samples=state.train_samples + train_batch_size * jax.process_count(),
+            train_samples=state.train_samples + batch_size_per_step,
         )
 
         metrics = {
@@ -711,19 +749,20 @@ def main():
         return metrics
 
     # Create parallel version of the train and eval step
-    p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0,))
-    p_eval_step = jax.pmap(eval_step, "batch")
+    p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0, 1))
+    p_eval_step = jax.pmap(eval_step, "batch", donate_argnums=(1,))
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len_train_dataset}")
     logger.info(f"  Num Epochs = {num_epochs}")
     logger.info(
-        f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}"
+        f"  Batch size per device = {training_args.per_device_train_batch_size}"
     )
     logger.info(f"  Number of devices = {jax.device_count()}")
     logger.info(
-        f"  Total train batch size (w. parallel, distributed & gradient accumulation) = {batch_size_per_update}"
+        f"  Gradient accumulation steps = {training_args.gradient_accumulation_steps}"
     )
+    logger.info(f"  Batch size per update = {batch_size_per_step}")
     logger.info(f"  Model parameters = {num_params:,}")
     epochs = tqdm(
         range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
@@ -740,8 +779,9 @@ def main():
             {
                 "len_train_dataset": len_train_dataset,
                 "len_eval_dataset": len_eval_dataset,
-                "batch_size_per_update": batch_size_per_update,
+                "batch_size_per_step": batch_size_per_step,
                 "num_params": num_params,
+                "num_devices": jax.device_count(),
             }
         )
 
@@ -752,7 +792,9 @@ def main():
         # ======================== Evaluating ==============================
         eval_metrics = []
         if training_args.do_eval:
-            eval_loader = dataset.dataloader("eval", eval_batch_size)
+            eval_loader = dataset.dataloader(
+                "eval", training_args.per_device_eval_batch_size
+            )
             eval_steps = (
                 len_eval_dataset // eval_batch_size
                 if len_eval_dataset is not None
@@ -869,7 +911,12 @@ def main():
         metrics_logger.log({"train/epoch": epoch}, step=unreplicate(state.step))
 
         # Generate an epoch by shuffling sampling indices from the train dataset
-        train_loader = dataset.dataloader("train", train_batch_size, epoch)
+        train_loader = dataset.dataloader(
+            "train",
+            training_args.per_device_train_batch_size,
+            training_args.gradient_accumulation_steps,
+            epoch,
+        )
         # train
         for batch in tqdm(
             train_loader,

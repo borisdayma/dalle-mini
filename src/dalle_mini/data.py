@@ -153,16 +153,24 @@ class Dataset:
                     ),
                 )
 
-    def dataloader(self, split, batch_size, epoch=None):
+    def dataloader(
+        self, split, per_device_batch_size, gradient_accumulation_steps=None, epoch=None
+    ):
+        num_devices = jax.local_device_count()
+
         def _dataloader_datasets_non_streaming(
             dataset: Dataset,
-            batch_size: int,
+            per_device_batch_size: int,
+            gradient_accumulation_steps: int,
             rng: jax.random.PRNGKey = None,
         ):
             """
             Returns batches of size `batch_size` from truncated `dataset`, sharded over all local devices.
             Shuffle batches if rng is set.
             """
+            batch_size = (
+                per_device_batch_size * num_devices * gradient_accumulation_steps
+            )
             steps_per_epoch = len(dataset) // batch_size
 
             if rng is not None:
@@ -178,11 +186,20 @@ class Dataset:
             for idx in batch_idx:
                 batch = dataset[idx]
                 batch = {k: jnp.array(v) for k, v in batch.items()}
+                if gradient_accumulation_steps is not None:
+                    batch = jax.tree_map(
+                        lambda x: x.reshape((-1, per_device_batch_size) + x.shape[1:]),
+                        batch,
+                    )
                 batch = shard(batch)
                 yield batch
 
         def _dataloader_datasets_streaming(
-            dataset: Dataset, split: str, batch_size: int, epoch: int
+            dataset: Dataset,
+            split: str,
+            per_device_batch_size: int,
+            gradient_accumulation_steps: int,
+            epoch: int,
         ):
             keys = ["input_ids", "attention_mask", "labels", "decoder_input_ids"]
             batch = {k: [] for k in keys}
@@ -199,8 +216,22 @@ class Dataset:
                 for item in dataset:
                     for k, v in item.items():
                         batch[k].append(v)
-                    if len(batch[keys[0]]) == batch_size:
+                        # batch = 5, devices = 8, accumulation = 2 / batch_size = 5 x 8
+                        # (40, 3, 3) -> shard 8 x (5, 3, 3)
+                        # (16, 5, 3, 3) -> shard 8 x (2, 5, 3, 3)
+                    if len(batch[keys[0]]) == per_device_batch_size * num_devices * (
+                        gradient_accumulation_steps
+                        if gradient_accumulation_steps is not None
+                        else 1
+                    ):
                         batch = {k: jnp.array(v) for k, v in batch.items()}
+                        if gradient_accumulation_steps is not None:
+                            batch = jax.tree_map(
+                                lambda x: x.reshape(
+                                    (-1, per_device_batch_size) + x.shape[1:]
+                                ),
+                                batch,
+                            )
                         batch = shard(batch)
                         yield batch
                         batch = {k: [] for k in keys}
@@ -214,11 +245,15 @@ class Dataset:
             raise ValueError(f'split must be "train" or "eval", got {split}')
 
         if self.streaming:
-            return _dataloader_datasets_streaming(ds, split, batch_size, epoch)
+            return _dataloader_datasets_streaming(
+                ds, split, per_device_batch_size, gradient_accumulation_steps, epoch
+            )
         else:
             if split == "train":
                 self.rng_dataset, input_rng = jax.random.split(self.rng_dataset)
-            return _dataloader_datasets_non_streaming(ds, batch_size, input_rng)
+            return _dataloader_datasets_non_streaming(
+                ds, per_device_batch_size, gradient_accumulation_steps, input_rng
+            )
 
     @property
     def length(self):
