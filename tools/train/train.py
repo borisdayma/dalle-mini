@@ -277,8 +277,8 @@ class TrainingArguments:
         },
     )
 
-    num_train_epochs: float = field(
-        default=3.0, metadata={"help": "Total number of training epochs to perform."}
+    num_train_epochs: int = field(
+        default=3, metadata={"help": "Total number of training epochs to perform."}
     )
     warmup_steps: int = field(
         default=0, metadata={"help": "Linear warmup over warmup_steps."}
@@ -515,10 +515,10 @@ def main():
     rng, dropout_rng = jax.random.split(rng)
 
     # Store some constant
-    num_epochs = int(training_args.num_train_epochs)
+    num_epochs = training_args.num_train_epochs
     # batch size per node
     train_batch_size = (
-        int(training_args.per_device_train_batch_size) * jax.local_device_count()
+        training_args.per_device_train_batch_size * jax.local_device_count()
     )
     batch_size_per_update = (
         train_batch_size
@@ -526,7 +526,7 @@ def main():
         * jax.process_count()
     )
     eval_batch_size = (
-        int(training_args.per_device_eval_batch_size) * jax.local_device_count()
+        training_args.per_device_eval_batch_size * jax.local_device_count()
     )
     len_train_dataset, len_eval_dataset = dataset.length
     steps_per_epoch = (
@@ -645,12 +645,6 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
         )
 
-    # add gradient accumulation
-    if training_args.gradient_accumulation_steps > 1:
-        optimizer = optax.MultiSteps(
-            optimizer, training_args.gradient_accumulation_steps
-        )
-
     # Setup train state
     state = TrainState.create(
         apply_fn=model.__call__,
@@ -673,16 +667,42 @@ def main():
     def train_step(state, batch, delta_time):
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
-        def compute_loss(params, batch):
-            labels = batch.pop("labels")
+        def compute_loss(params, minibatch):
+            labels = minibatch.pop("labels")
             logits = state.apply_fn(
-                **batch, params=params, dropout_rng=dropout_rng, train=True
+                **minibatch, params=params, dropout_rng=dropout_rng, train=True
             )[0]
-            loss = loss_fn(logits, labels)
-            return loss
+            return loss_fn(logits, labels)
 
         grad_fn = jax.value_and_grad(compute_loss)
-        loss, grads = grad_fn(state.params, batch)
+
+        if training_args.gradient_accumulation_steps == 1:
+            minibatch = jax.tree_map(lambda x: x[0], batch)
+            loss, grads = grad_fn(state.params, minibatch)
+        else:
+
+            def _cumul_loss_grads(i, cumul_loss_grads):
+                minibatch = jax.tree_map(lambda x: x[i], batch)
+                return jax.tree_map(
+                    lambda x, y: x + y,
+                    cumul_loss_grads,
+                    grad_fn(state.params, minibatch),
+                )
+
+            init_loss_grads = (
+                0.0,
+                jax.tree_map(jnp.zeros_like, state.params),
+            )
+            loss, grads = jax.tree_map(
+                lambda x: x / training_args.gradient_accumulation_steps,
+                jax.lax.fori_loop(
+                    0,
+                    training_args.gradient_accumulation_steps,
+                    _cumul_loss_grads,
+                    init_loss_grads,
+                ),
+            )
+
         grads = jax.lax.pmean(grads, "batch")
         state = state.apply_gradients(
             grads=grads,
@@ -871,7 +891,12 @@ def main():
         metrics_logger.log({"train/epoch": epoch}, step=unreplicate(state.step))
 
         # Generate an epoch by shuffling sampling indices from the train dataset
-        train_loader = dataset.dataloader("train", train_batch_size, epoch)
+        train_loader = dataset.dataloader(
+            "train",
+            training_args.per_device_train_batch_size,
+            training_args.gradient_accumulation_steps,
+            epoch,
+        )
         # train
         for batch in tqdm(
             train_loader,
