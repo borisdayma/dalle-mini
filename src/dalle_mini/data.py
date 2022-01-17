@@ -161,13 +161,16 @@ class Dataset:
         def _dataloader_datasets_non_streaming(
             dataset: Dataset,
             per_device_batch_size: int,
+            gradient_accumulation_steps: int,
             rng: jax.random.PRNGKey = None,
         ):
             """
             Returns batches of size `batch_size` from truncated `dataset`, sharded over all local devices.
             Shuffle batches if rng is set.
             """
-            batch_size = per_device_batch_size * num_devices
+            batch_size = (
+                per_device_batch_size * num_devices * gradient_accumulation_steps
+            )
             steps_per_epoch = len(dataset) // batch_size
 
             if rng is not None:
@@ -183,6 +186,11 @@ class Dataset:
             for idx in batch_idx:
                 batch = dataset[idx]
                 batch = {k: jnp.array(v) for k, v in batch.items()}
+                if gradient_accumulation_steps is not None:
+                    batch = jax.tree_map(
+                        lambda x: x.reshape((-1, per_device_batch_size) + x.shape[1:]),
+                        batch,
+                    )
                 batch = shard(batch)
                 yield batch
 
@@ -244,7 +252,7 @@ class Dataset:
             if split == "train":
                 self.rng_dataset, input_rng = jax.random.split(self.rng_dataset)
             return _dataloader_datasets_non_streaming(
-                ds, per_device_batch_size, input_rng
+                ds, per_device_batch_size, gradient_accumulation_steps, input_rng
             )
 
     @property
