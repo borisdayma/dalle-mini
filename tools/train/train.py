@@ -349,7 +349,7 @@ class TrainingArguments:
             and not self.overwrite_output_dir
         ):
             raise ValueError(
-                f"Output directory ({training_args.output_dir}) already exists and is not empty."
+                f"Output directory ({self.output_dir}) already exists and is not empty."
                 "Use --overwrite_output_dir to overcome."
             )
 
