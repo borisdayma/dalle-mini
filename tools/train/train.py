@@ -199,8 +199,11 @@ class TrainingArguments:
     per_device_train_batch_size: int = field(
         default=8, metadata={"help": "Batch size per GPU/TPU/CPU for training."}
     )
-    per_device_eval_batch_size: int = field(
-        default=8, metadata={"help": "Batch size per GPU/TPU/CPU for evaluation."}
+    per_device_eval_batch_size: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Batch size per GPU/TPU/CPU for evaluation. Same as training batch size if not set."
+        },
     )
 
     gradient_accumulation_steps: int = field(
@@ -252,6 +255,13 @@ class TrainingArguments:
         },
     )
 
+    num_train_epochs: int = field(
+        default=3, metadata={"help": "Total number of training epochs to perform."}
+    )
+
+    warmup_steps: int = field(
+        default=0, metadata={"help": "Linear warmup over warmup_steps."}
+    )
     lr_decay: str = field(
         default=None,
         metadata={
@@ -275,13 +285,6 @@ class TrainingArguments:
         metadata={
             "help": "Whether to use staircase or continuous learning rate when using exponential decay."
         },
-    )
-
-    num_train_epochs: int = field(
-        default=3, metadata={"help": "Total number of training epochs to perform."}
-    )
-    warmup_steps: int = field(
-        default=0, metadata={"help": "Linear warmup over warmup_steps."}
     )
 
     logging_steps: int = field(
@@ -334,6 +337,11 @@ class TrainingArguments:
             "adam",
             "adafactor",
         ], f"Selected optimizer not supported: {self.optim}"
+        if self.per_device_eval_batch_size is None:
+            self.per_device_eval_batch_size = self.per_device_train_batch_size
+        if self.weight_decay is None:
+            if self.optim in ["distributed_shampoo", "adam"]:
+                self.weight_decay = 0.0
         if (
             os.path.exists(self.output_dir)
             and os.listdir(self.output_dir)
@@ -623,9 +631,7 @@ def main():
             beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
             matrix_epsilon=1e-8,
-            weight_decay=training_args.weight_decay
-            if training_args.weight_decay is not None
-            else 0.0,
+            weight_decay=training_args.weight_decay,
             start_preconditioning_step=training_args.warmup_steps,
             preconditioning_compute_steps=training_args.preconditioning_compute_steps,
             statistics_compute_steps=1,
@@ -648,9 +654,7 @@ def main():
             b1=training_args.beta1,
             b2=training_args.beta2,
             eps=training_args.adam_epsilon,
-            weight_decay=training_args.weight_decay
-            if training_args.weight_decay is not None
-            else 0.0,
+            weight_decay=training_args.weight_decay,
             mask=decay_mask_fn,
         )
     elif training_args.optim == "adafactor":
@@ -749,8 +753,8 @@ def main():
         return metrics
 
     # Create parallel version of the train and eval step
-    p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0, 1))
-    p_eval_step = jax.pmap(eval_step, "batch", donate_argnums=(1,))
+    p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0,))
+    p_eval_step = jax.pmap(eval_step, "batch")
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len_train_dataset}")
