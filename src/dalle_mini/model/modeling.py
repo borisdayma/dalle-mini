@@ -15,14 +15,12 @@
 """ DalleBart model. """
 
 import math
-import os
 from functools import partial
 from typing import Optional, Tuple
 
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import wandb
 from flax.core.frozen_dict import unfreeze
 from flax.linen import make_causal_mask
 from flax.traverse_util import flatten_dict
@@ -48,6 +46,7 @@ from transformers.models.bart.modeling_flax_bart import (
 from transformers.utils import logging
 
 from .configuration import DalleBartConfig
+from .wandb_pretrained import PretrainedFromWandbMixin
 
 logger = logging.get_logger(__name__)
 
@@ -421,7 +420,9 @@ class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationMod
         )
 
 
-class DalleBart(FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration):
+class DalleBart(
+    PretrainedFromWandbMixin, FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration
+):
     """
     Edits:
     - renamed from FlaxBartForConditionalGeneration
@@ -563,24 +564,3 @@ class DalleBart(FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration):
             outputs = outputs[:1] + (unfreeze(past["cache"]),) + outputs[1:]
 
         return outputs
-
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        """
-        Initializes from a wandb artifact, or delegates loading to the superclass.
-        """
-        if ":" in pretrained_model_name_or_path and not os.path.isdir(
-            pretrained_model_name_or_path
-        ):
-            # wandb artifact
-            artifact = wandb.Api().artifact(pretrained_model_name_or_path)
-
-            # we download everything, including opt_state, so we can resume training if needed
-            # see also: #120
-            pretrained_model_name_or_path = artifact.download()
-
-        model = super(DalleBart, cls).from_pretrained(
-            pretrained_model_name_or_path, *model_args, **kwargs
-        )
-        model.config.resolved_name_or_path = pretrained_model_name_or_path
-        return model
