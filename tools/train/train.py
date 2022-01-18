@@ -44,7 +44,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, HfArgumentParser
 
 from dalle_mini.data import Dataset
-from dalle_mini.model import DalleBart, DalleBartConfig
+from dalle_mini.model import DalleBart, DalleBartConfig, DalleBartTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -435,9 +435,15 @@ def main():
         )
 
     if training_args.resume_from_checkpoint is not None:
+        if jax.process_index() == 0:
+            artifact = wandb.run.use_artifact(training_args.resume_from_checkpoint)
+        else:
+            artifact = wandb.Api().artifact(training_args.resume_from_checkpoint)
+        artifact_dir = artifact.download()
+
         # load model
         model = DalleBart.from_pretrained(
-            training_args.resume_from_checkpoint,
+            artifact_dir,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
         )
@@ -445,8 +451,8 @@ def main():
         print(model.params)
 
         # load tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model.config.resolved_name_or_path,
+        tokenizer = DalleBartTokenizer.from_pretrained(
+            artifact_dir,
             use_fast=True,
         )
 
@@ -481,9 +487,8 @@ def main():
                 model_args.tokenizer_name, use_fast=True
             )
         else:
-            # Use non-standard configuration property set by `DalleBart.from_pretrained`
-            tokenizer = AutoTokenizer.from_pretrained(
-                model.config.resolved_name_or_path,
+            tokenizer = DalleBartTokenizer.from_pretrained(
+                model_args.model_name_or_path,
                 use_fast=True,
             )
 
@@ -621,7 +626,7 @@ def main():
     if training_args.resume_from_checkpoint is not None:
         # restore optimizer state and other parameters
         # we currently ignore partial epoch training: see https://github.com/borisdayma/dalle-mini/issues/105
-        state = state.restore_state(model.config.resolved_name_or_path)
+        state = state.restore_state(artifact_dir)
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
