@@ -1,16 +1,17 @@
 program: train.py
-entity: dalle-mini
 project: dalle-mini
 method: random
 metric:
   name: eval/loss
   goal: minimize
 parameters:
+  optim:
+    value: distributed_shampoo
   learning_rate:
     distribution: log_uniform
     # from exp(min) to exp(max)
-    min: -6.9
-    max: -3.5
+    min: -9.2
+    max: -6.9
   tokenizer_name:
     value: boris/dalle-mini-tokenizer
   config_name:
@@ -26,15 +27,15 @@ parameters:
   gradient_accumulation_steps:
     value: 1
   warmup_steps:
-    value: 4000
+    value: 1000
   num_train_epochs:
     value: 1
-  logging_steps:
-    value: 32
-  eval_steps:
-    value: 800
   max_train_samples:
     value: 1000000
+  logging_steps:
+    value: 40
+  eval_steps:
+    value: 200
 
 command:
   - python3
@@ -43,7 +44,6 @@ command:
   - "--output_dir"
   - "./output"
   - "--overwrite_output_dir"
-  - "--adafactor"
   - "--do_train"
   - "--do_eval"
   - ${args}
