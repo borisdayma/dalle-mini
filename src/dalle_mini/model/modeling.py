@@ -46,6 +46,7 @@ from transformers.models.bart.modeling_flax_bart import (
 from transformers.utils import logging
 
 from .configuration import DalleBartConfig
+from .wandb_pretrained import PretrainedFromWandbMixin
 
 logger = logging.get_logger(__name__)
 
@@ -419,7 +420,9 @@ class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationMod
         )
 
 
-class DalleBart(FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration):
+class DalleBart(
+    PretrainedFromWandbMixin, FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration
+):
     """
     Edits:
     - renamed from FlaxBartForConditionalGeneration

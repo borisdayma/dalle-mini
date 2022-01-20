@@ -18,10 +18,12 @@ import warnings
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
+from .wandb_pretrained import PretrainedFromWandbMixin
+
 logger = logging.get_logger(__name__)
 
 
-class DalleBartConfig(PretrainedConfig):
+class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
     model_type = "dallebart"
     keys_to_ignore_at_inference = ["past_key_values"]
     attribute_map = {

@@ -44,7 +44,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, HfArgumentParser
 
 from dalle_mini.data import Dataset
-from dalle_mini.model import DalleBart, DalleBartConfig
+from dalle_mini.model import DalleBart, DalleBartConfig, DalleBartTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +58,9 @@ class ModelArguments:
     model_name_or_path: Optional[str] = field(
         default=None,
         metadata={
-            "help": "The model checkpoint for weights initialization."
-            "Don't set if you want to train a model from scratch."
+            "help": "The model checkpoint for weights initialization. "
+            "Don't set if you want to train a model from scratch. "
+            "W&B artifact references are supported in addition to the sources supported by `PreTrainedModel`."
         },
     )
     config_name: Optional[str] = field(
@@ -482,13 +483,15 @@ def main():
 
         # load model
         model = DalleBart.from_pretrained(
-            artifact_dir, dtype=getattr(jnp, model_args.dtype), abstract_init=True
+            artifact_dir,
+            dtype=getattr(jnp, model_args.dtype),
+            abstract_init=True,
         )
         # avoid OOM on TPU: see https://github.com/google/flax/issues/1658
         print(model.params)
 
         # load tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer = DalleBartTokenizer.from_pretrained(
             artifact_dir,
             use_fast=True,
         )
@@ -498,7 +501,7 @@ def main():
         if model_args.config_name:
             config = DalleBartConfig.from_pretrained(model_args.config_name)
         else:
-            config = DalleBartConfig.from_pretrained(model_args.model_name_or_path)
+            config = None
 
         # Load or create new model
         if model_args.model_name_or_path:
@@ -524,7 +527,7 @@ def main():
                 model_args.tokenizer_name, use_fast=True
             )
         else:
-            tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer = DalleBartTokenizer.from_pretrained(
                 model_args.model_name_or_path,
                 use_fast=True,
             )
