@@ -13,7 +13,10 @@ class PretrainedFromWandbMixin:
             pretrained_model_name_or_path
         ):
             # wandb artifact
-            artifact = wandb.Api().artifact(pretrained_model_name_or_path)
+            if wandb.run is not None:
+                artifact = wandb.run.use_artifact(pretrained_model_name_or_path)
+            else:
+                artifact = wandb.Api().artifact(pretrained_model_name_or_path)
             pretrained_model_name_or_path = artifact.download()
 
         return super(PretrainedFromWandbMixin, cls).from_pretrained(

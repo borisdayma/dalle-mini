@@ -18,7 +18,7 @@ import warnings
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
-from .wandb_pretrained import PretrainedFromWandbMixin
+from .utils import PretrainedFromWandbMixin
 
 logger = logging.get_logger(__name__)
 
