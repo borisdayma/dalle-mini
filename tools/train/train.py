@@ -727,6 +727,8 @@ def main():
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
+        # use a different rng per node
+        dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
 
         def compute_loss(params, minibatch):
             labels = minibatch.pop("labels")
