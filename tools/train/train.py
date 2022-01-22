@@ -38,7 +38,7 @@ from distributed_shampoo import GraftingType, distributed_shampoo
 from flax.core.frozen_dict import freeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
-from flax.training.common_utils import get_metrics, onehot
+from flax.training.common_utils import onehot, stack_forest
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.pjit import pjit
 from tqdm import tqdm
@@ -764,7 +764,6 @@ def main():
                 ),
             )
 
-        grads = jax.lax.pmean(grads, "batch")
         state = state.apply_gradients(
             grads=grads,
             dropout_rng=new_dropout_rng,
@@ -776,7 +775,6 @@ def main():
             "loss": loss,
             "learning_rate": learning_rate_fn(state.step),
         }
-        metrics = jax.lax.pmean(metrics, axis_name="batch")
 
         return state, metrics
 
@@ -788,7 +786,6 @@ def main():
 
         # summarize metrics
         metrics = {"loss": loss}
-        metrics = jax.lax.pmean(metrics, axis_name="batch")
         return metrics
 
     # Create parallel version of the train and eval step
@@ -861,7 +858,7 @@ def main():
                 eval_metrics.append(metrics)
 
             # normalize eval metrics
-            eval_metrics = get_metrics(eval_metrics)
+            eval_metrics = stack_forest(eval_metrics)
             eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
 
             # log metrics
