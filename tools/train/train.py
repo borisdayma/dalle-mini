@@ -679,39 +679,40 @@ def main():
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
     mesh = maps.Mesh(devices, ("batch", "mp"))
 
-    # Setup train state
-    def init_state(params, opt_state):
-        return TrainState(
-            apply_fn=model.__call__,
-            tx=optimizer,
-            params=params,
-            opt_state=opt_state,
-            dropout_rng=dropout_rng,
-            step=0,
-        )
-
-    state_spec = init_state(param_spec, opt_state_spec)
-    state_spec = state_spec.replace(
+    # Create state spec
+    state_spec = TrainState(
+        params=param_spec,
+        opt_state=opt_state_spec,
         dropout_rng=None,
         step=None,
         epoch=None,
         train_time=None,
         train_samples=None,
+        apply_fn=model.__call__,
+        tx=optimizer,
     )
 
+    # create training state
+    def init_state(params):
+        state = TrainState.create(
+            apply_fn=model.__call__,
+            tx=optimizer,
+            params=freeze(params),
+            dropout_rng=dropout_rng,
+        )
+        return state
+
+    # hack: move the inital params to CPU to free up device memory
+    # TODO: allow loading weights on CPU in pre-trained model
+    model.params = jax.tree_map(lambda x: np.asarray(x), model.params)
+
     with maps.mesh(mesh.devices, mesh.axis_names):
-        # move params & init opt_state over specified devices
-        params, opt_state = pjit(
-            lambda x: (x, optimizer.init(x)),
-            in_axis_resources=None,
-            out_axis_resources=(param_spec, opt_state_spec),
-        )(freeze(model.params))
-        # create training state
         state = pjit(
             init_state,
-            in_axis_resources=(param_spec, opt_state_spec),
+            in_axis_resources=None,
             out_axis_resources=state_spec,
-        )(params, opt_state)
+            donate_argnums=(0,),
+        )(freeze(model.params))
 
     if training_args.resume_from_checkpoint is not None:
         # restore optimizer state and other parameters
@@ -793,7 +794,7 @@ def main():
     # Create parallel version of the train and eval step
     p_train_step = pjit(
         train_step,
-        in_axis_resources=(state_spec, None, None),
+        in_axis_resources=(state_spec, PartitionSpec("batch", None), None),
         out_axis_resources=(state_spec, None),
         donate_argnums=(0,),
     )
