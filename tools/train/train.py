@@ -702,10 +702,6 @@ def main():
         )
         return state
 
-    # hack: move the inital params to CPU to free up device memory
-    # TODO: allow loading weights on CPU in pre-trained model
-    model.params = jax.tree_map(lambda x: np.asarray(x), model.params)
-
     with maps.mesh(mesh.devices, mesh.axis_names):
         state = pjit(
             init_state,
