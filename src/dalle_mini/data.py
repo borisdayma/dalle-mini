@@ -191,7 +191,6 @@ class Dataset:
                         lambda x: x.reshape((-1, per_device_batch_size) + x.shape[1:]),
                         batch,
                     )
-                batch = shard(batch)
                 yield batch
 
         def _dataloader_datasets_streaming(
@@ -232,7 +231,6 @@ class Dataset:
                                 ),
                                 batch,
                             )
-                        batch = shard(batch)
                         yield batch
                         batch = {k: [] for k in keys}
                 first_loop = False

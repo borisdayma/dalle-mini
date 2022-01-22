@@ -34,13 +34,11 @@ import numpy as np
 import optax
 import transformers
 from datasets import Dataset
-from distributed_shampoo import GraftingType, distributed_shampoo, pad_matrix
-from flax import jax_utils, traverse_util
-from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
-from flax.jax_utils import unreplicate
+from distributed_shampoo import GraftingType, distributed_shampoo
+from flax.core.frozen_dict import freeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
-from flax.training.common_utils import get_metrics, onehot, shard_prng_key
+from flax.training.common_utils import get_metrics, onehot
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.pjit import pjit
 from tqdm import tqdm
@@ -402,14 +400,14 @@ class MetricsLogger:
 
     def get_all_train_metrics(self, train_metrics, state):
         """Make a dict of training metrics to be logged"""
-        metrics = unreplicate(train_metrics)
+        metrics = train_metrics
         # get state parameters
         state_dict = {
-            k.split("_")[-1]: unreplicate(getattr(state, k))
+            k.split("_")[-1]: getattr(state, k)
             for k in ["epoch", "train_time", "train_samples"]
         }
         # timing metrics
-        new_step = int(unreplicate(state.step))
+        new_step = int(state.step)
         new_time = time.perf_counter()
         if new_step > self.step:
             time_per_step = (new_time - self.time) / (new_step - self.step)
@@ -551,7 +549,7 @@ def main():
 
     # Initialize our training
     rng = jax.random.PRNGKey(training_args.seed_model)
-    rng, *dropout_rng = jax.random.split(rng, num=training_args.dp_devices + 1)
+    rng, dropout_rng = jax.random.split(rng)
 
     # Store some constant
     num_epochs = training_args.num_train_epochs
@@ -681,34 +679,39 @@ def main():
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
     mesh = maps.Mesh(devices, ("batch", "mp"))
 
-    # move params & init opt_state over specified devices
+    # Setup train state
+    def init_state(params, opt_state):
+        return TrainState(
+            apply_fn=model.__call__,
+            tx=optimizer,
+            params=params,
+            opt_state=opt_state,
+            dropout_rng=dropout_rng,
+            step=0,
+        )
+
+    state_spec = init_state(param_spec, opt_state_spec)
+    state_spec = state_spec.replace(
+        dropout_rng=None,
+        step=None,
+        epoch=None,
+        train_time=None,
+        train_samples=None,
+    )
+
     with maps.mesh(mesh.devices, mesh.axis_names):
+        # move params & init opt_state over specified devices
         params, opt_state = pjit(
             lambda x: (x, optimizer.init(x)),
             in_axis_resources=None,
             out_axis_resources=(param_spec, opt_state_spec),
         )(freeze(model.params))
-
-    # Setup train state
-    state = TrainState(
-        apply_fn=model.__call__,
-        params=params,
-        opt_state=opt_state,
-        tx=optimizer,
-        dropout_rng=dropout_rng,
-        step=0,
-    )
-
-    # create PartitionSpec for state
-    state_spec = {
-        "params": param_spec,
-        "opt_state": opt_state_spec,
-        "dropout_rng": PartitionSpec("batch", None),
-        "epoch": None,
-        "step": None,
-        "train_samples": None,
-        "train_time": None,
-    }
+        # create training state
+        state = pjit(
+            init_state,
+            in_axis_resources=(param_spec, opt_state_spec),
+            out_axis_resources=state_spec,
+        )(params, opt_state)
 
     if training_args.resume_from_checkpoint is not None:
         # restore optimizer state and other parameters
