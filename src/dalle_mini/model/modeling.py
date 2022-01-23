@@ -300,6 +300,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
     - added num_params property
     - config_class replaced to DalleBartConfig
     - __init__ accepts abstract_init which does uses parameter shape to initialize the model
+    - init weights on CPU
     """
 
     config_class = DalleBartConfig
@@ -311,6 +312,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
         abstract_init: bool = False,
+        load_on_cpu: bool = True,
         **kwargs,
     ):
         module = self.module_class(config=config, dtype=dtype, **kwargs)
@@ -330,15 +332,21 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         self.key = PRNGKey(seed)
         self.dtype = dtype
 
+        # init weights on CPU
+        if load_on_cpu:
+            init_fn = jax.jit(self.init_weights, static_argnums=(1,), backend="cpu")
+        else:
+            init_fn = self.init_weights
+
         # randomly initialized parameters
         if abstract_init:
             # init the model weights only abstractly, eval_shape will return a pytree
             # with the structure as weights but without any actual values, this will just contain
             # the shape information. Weights need to be loaded later.
-            init_fn = partial(self.init_weights, input_shape=input_shape)
+            init_fn = partial(init_fn, input_shape=input_shape)
             random_params = jax.eval_shape(init_fn, self.key)
         else:
-            random_params = self.init_weights(self.key, input_shape)
+            random_params = init_fn(self.key, input_shape)
 
         # save required_params as set
         self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
