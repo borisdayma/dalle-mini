@@ -33,6 +33,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import transformers
+import wandb
 from datasets import Dataset
 from distributed_shampoo import GraftingType, distributed_shampoo
 from flax.core.frozen_dict import freeze
@@ -44,7 +45,6 @@ from jax.experimental.pjit import pjit
 from tqdm import tqdm
 from transformers import HfArgumentParser
 
-import wandb
 from dalle_mini.data import Dataset
 from dalle_mini.model import (
     DalleBart,
