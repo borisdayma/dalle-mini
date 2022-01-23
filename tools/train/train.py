@@ -42,7 +42,7 @@ from flax.training.common_utils import onehot, stack_forest
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.pjit import pjit
 from tqdm import tqdm
-from transformers import AutoTokenizer, HfArgumentParser
+from transformers import HfArgumentParser
 
 import wandb
 from dalle_mini.data import Dataset
@@ -375,23 +375,6 @@ class TrainState(train_state.TrainState):
     train_time: float = 0.0  # total time the model trained
     train_samples: int = 0  # number of samples seen
 
-    def restore_state(self, artifact_dir):
-        # restore optimizer state
-        with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
-            new_opt_state = from_bytes(self.opt_state, f.read())
-
-        # restore other parameters
-        with (Path(artifact_dir) / "training_state.json").open("r") as f:
-            training_state = json.load(f)
-
-        # replace state
-        return self.replace(
-            opt_state=new_opt_state,
-            step=training_state["step"],
-            train_time=training_state["train_time"],
-            train_samples=training_state["train_samples"],
-        )
-
 
 class MetricsLogger:
     def __init__(self, state):
@@ -528,7 +511,7 @@ def main():
 
         # Load tokenizer
         if model_args.tokenizer_name is not None:
-            tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer = DalleBartTokenizer.from_pretrained(
                 model_args.tokenizer_name, use_fast=True
             )
         else:
@@ -648,8 +631,7 @@ def main():
         )
 
     # get opt_state shape without actual init
-    param_shape = jax.tree_map(lambda x: x.shape, model.params)
-    opt_state_shape = jax.eval_shape(lambda x: optimizer.init(x), param_shape)
+    opt_state_shape = jax.eval_shape(lambda x: optimizer.init(x), model.params)
 
     # get PartitionSpec for model params
     param_spec = set_partitions(model.params)
@@ -692,28 +674,51 @@ def main():
         tx=optimizer,
     )
 
+    opt_state, attr_state = None, None
+    if training_args.resume_from_checkpoint is not None:
+        # restore opt_state
+        with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
+            opt_state = from_bytes(opt_state_shape, f.read())
+            # need to freeze dict for pjit
+            opt_state = jax.tree_map(
+                lambda x: freeze(x) if isinstance(x, dict) else x,
+                opt_state,
+                is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
+            )
+        # restore other attributes
+        with (Path(artifact_dir) / "training_state.json").open("r") as f:
+            attr_state = json.load(f)
+
     # create training state
-    def init_state(params):
-        state = TrainState.create(
-            apply_fn=model.__call__,
-            tx=optimizer,
-            params=freeze(params),
-            dropout_rng=dropout_rng,
-        )
+    def init_state(params, opt_state):
+        if training_args.resume_from_checkpoint is None:
+            state = TrainState.create(
+                apply_fn=model.__call__,
+                tx=optimizer,
+                params=freeze(params),
+                dropout_rng=dropout_rng,
+            )
+        else:
+            state = TrainState(
+                apply_fn=model.__call__,
+                tx=optimizer,
+                params=freeze(params),
+                opt_state=opt_state,
+                dropout_rng=dropout_rng,
+                **attr_state,
+            )
         return state
 
     with maps.mesh(mesh.devices, mesh.axis_names):
         state = pjit(
             init_state,
-            in_axis_resources=None,
+            in_axis_resources=(param_spec, opt_state_spec),
             out_axis_resources=state_spec,
-            donate_argnums=(0,),
-        )(freeze(model.params))
+            donate_argnums=(0, 1),
+        )(freeze(model.params), opt_state)
 
-    if training_args.resume_from_checkpoint is not None:
-        # restore optimizer state and other parameters
-        # we currently ignore partial epoch training: see https://github.com/borisdayma/dalle-mini/issues/105
-        state = state.restore_state(artifact_dir)
+    # free memory from large parameters
+    del model._params, opt_state
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
