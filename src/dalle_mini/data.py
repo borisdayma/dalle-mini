@@ -6,7 +6,6 @@ import jax.numpy as jnp
 import numpy as np
 from braceexpand import braceexpand
 from datasets import Dataset, load_dataset
-from flax.training.common_utils import shard
 
 from .text import TextNormalizer
 
