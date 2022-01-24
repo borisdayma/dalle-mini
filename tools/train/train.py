@@ -36,7 +36,7 @@ import transformers
 import wandb
 from datasets import Dataset
 from distributed_shampoo import GraftingType, distributed_shampoo
-from flax.core.frozen_dict import freeze
+from flax.core.frozen_dict import freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import onehot, stack_forest
@@ -478,6 +478,7 @@ def main():
             artifact_dir,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
+            load_on_cpu=True,
         )
 
         # load tokenizer
@@ -501,12 +502,14 @@ def main():
                 seed=training_args.seed_model,
                 dtype=getattr(jnp, model_args.dtype),
                 abstract_init=True,
+                load_on_cpu=True,
             )
         else:
             model = DalleBart(
                 config,
                 seed=training_args.seed_model,
                 dtype=getattr(jnp, model_args.dtype),
+                load_on_cpu=True,
             )
 
         # Load tokenizer
@@ -606,7 +609,10 @@ def main():
             graft_type=GraftingType.RMSPROP_NORMALIZED,
             nesterov=False,
             exponent_override=0,
-            batch_axis_name="batch",
+            statistics_partition_spec=PartitionSpec(None, "batch", None),
+            preconditioner_partition_spec=PartitionSpec("batch", None, None),
+            num_devices_for_pjit=training_args.dp_devices,
+            shard_optimizer_states=True,
             inverse_failure_threshold=0.1,
             moving_average_for_momentum=True,
             skip_preconditioning_dim_size_gt=training_args.skip_preconditioning_dim_size_gt,
@@ -630,31 +636,48 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
         )
 
-    # get opt_state shape without actual init
-    opt_state_shape = jax.eval_shape(lambda x: optimizer.init(x), model.params)
-
     # get PartitionSpec for model params
     param_spec = set_partitions(model.params)
 
-    # create PartitionSpec for opt_state
-    def opt_state_spec_per_leaf(x):
-        if training_args.optim in ["adam", "adafactor"]:
-            if isinstance(x, dict):
-                # variables with same structure as params
-                return param_spec
-            else:
-                # other variables such as count
-                return None
-        else:
-            # TODO: create spec for Distributed Shampoo
-            raise NotImplementedError
+    # get PartitionSpec for optimizer state
+    def get_opt_state_spec_and_shape(param_spec):
+        if training_args.optim == "adam":
+            # get opt_state shape without actual init
+            opt_state_shape = jax.eval_shape(optimizer.init, model.params)
 
-    opt_state_spec = jax.tree_map(
-        opt_state_spec_per_leaf,
-        opt_state_shape,
-        # return None spec for empty elements
-        is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
-    )
+            def _opt_state_spec_per_leaf(x):
+                if isinstance(x, dict):
+                    # variables with same structure as params
+                    return param_spec
+                else:
+                    # other variables such as count
+                    return None
+
+            opt_state_spec = jax.tree_map(
+                _opt_state_spec_per_leaf,
+                opt_state_shape,
+                # return None spec for empty elements
+                is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
+            )
+
+        elif training_args.optim == "adafactor":
+            # factorized state must be replicated (rank different than params)
+            opt_state_spec = None
+
+        elif training_args.optim == "distributed_shampoo":
+            # memory efficient in distributed_shampoo, fake init
+            _opt_state = optimizer.init(model.params)
+            opt_state_spec = _opt_state.pspec_fn(
+                params=model.params,
+                params_partition_spec=unfreeze(param_spec),
+                partition_spec_for_statistics=PartitionSpec(None, "batch", None),
+            )
+            opt_state_shape = _opt_state.shape_and_dtype_fn(model.params)
+        else:
+            raise NotImplementedError
+        return opt_state_spec, opt_state_shape
+
+    opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape(param_spec)
 
     # create a mesh
     mesh_shape = (training_args.dp_devices, training_args.mp_devices)
@@ -674,51 +697,62 @@ def main():
         tx=optimizer,
     )
 
-    opt_state, attr_state = None, None
-    if training_args.resume_from_checkpoint is not None:
-        # restore opt_state
-        with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
-            opt_state = from_bytes(opt_state_shape, f.read())
-            # need to freeze dict for pjit
-            opt_state = jax.tree_map(
-                lambda x: freeze(x) if isinstance(x, dict) else x,
-                opt_state,
-                is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
-            )
-        # restore other attributes
-        with (Path(artifact_dir) / "training_state.json").open("r") as f:
-            attr_state = json.load(f)
-
     # create training state
-    def init_state(params, opt_state):
-        if training_args.resume_from_checkpoint is None:
-            state = TrainState.create(
-                apply_fn=model.__call__,
-                tx=optimizer,
-                params=freeze(params),
-                dropout_rng=dropout_rng,
-            )
-        else:
-            state = TrainState(
-                apply_fn=model.__call__,
-                tx=optimizer,
-                params=freeze(params),
-                opt_state=opt_state,
-                dropout_rng=dropout_rng,
-                **attr_state,
-            )
-        return state
-
     with maps.mesh(mesh.devices, mesh.axis_names):
-        state = pjit(
-            init_state,
-            in_axis_resources=(param_spec, opt_state_spec),
-            out_axis_resources=state_spec,
-            donate_argnums=(0, 1),
-        )(freeze(model.params), opt_state)
+        if training_args.resume_from_checkpoint is None:
 
-    # free memory from large parameters
-    del model._params, opt_state
+            def init_state(params):
+                return TrainState.create(
+                    apply_fn=model.__call__,
+                    tx=optimizer,
+                    params=params,
+                    dropout_rng=dropout_rng,
+                )
+
+            state = pjit(
+                init_state,
+                in_axis_resources=(param_spec,),
+                out_axis_resources=state_spec,
+                donate_argnums=(0,),
+            )(freeze(model.params))
+
+        else:
+            # restore opt_state
+            with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
+                opt_state = from_bytes(opt_state_shape, f.read())
+                # need to freeze dict for pjit
+                opt_state = jax.tree_map(
+                    lambda x: freeze(x) if isinstance(x, dict) else x,
+                    opt_state,
+                    is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
+                )
+
+            # restore other attributes
+            with (Path(artifact_dir) / "training_state.json").open("r") as f:
+                attr_state = json.load(f)
+
+            def restore_state(params, opt_state):
+                return TrainState(
+                    apply_fn=model.__call__,
+                    tx=optimizer,
+                    params=params,
+                    opt_state=opt_state,
+                    dropout_rng=dropout_rng,
+                    **attr_state,
+                )
+
+            state = pjit(
+                restore_state,
+                in_axis_resources=(param_spec, opt_state_spec),
+                out_axis_resources=state_spec,
+                donate_argnums=(0, 1),
+            )(freeze(model.params), opt_state)
+
+            # remove opt_state from CPU
+            del opt_state
+
+    # free memory
+    del model._params
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):

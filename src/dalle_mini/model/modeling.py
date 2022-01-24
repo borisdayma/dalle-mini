@@ -312,7 +312,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
         abstract_init: bool = False,
-        load_on_cpu: bool = True,
+        load_on_cpu: bool = False,
         **kwargs,
     ):
         module = self.module_class(config=config, dtype=dtype, **kwargs)
