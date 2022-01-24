@@ -25,7 +25,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 import datasets
 import jax
@@ -36,7 +36,7 @@ import transformers
 import wandb
 from datasets import Dataset
 from distributed_shampoo import GraftingType, distributed_shampoo
-from flax.core.frozen_dict import freeze, unfreeze
+from flax.core.frozen_dict import FrozenDict, freeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import onehot, stack_forest
@@ -523,6 +523,12 @@ def main():
                 use_fast=True,
             )
 
+    # get PartitionSpec for model params (required to be a dict)
+    param_spec = set_partitions(model.params)
+
+    # convert params to frozen dict
+    model._params = freeze(model.params)
+
     # Preprocessing the datasets.
     # We need to normalize and tokenize inputs and targets.
 
@@ -620,6 +626,13 @@ def main():
             precision=jax.lax.Precision.HIGHEST,
             best_effort_memory_usage_reduction=training_args.optim_quantized,
         )
+        # get the real optimizer and helper functions
+        update_fn = optimizer.update
+        optimizer = optimizer.init(model.params)
+        opt_fn = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
+            optimizer.pspec_fn, optimizer.shape_and_dtype_fn
+        )
+        optimizer = optax.GradientTransformation(optimizer.init_fn, update_fn)
 
     elif training_args.optim == "adam":
         optimizer = optax.adamw(
@@ -636,43 +649,40 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
         )
 
-    # get PartitionSpec for model params
-    param_spec = set_partitions(model.params)
-
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape(param_spec):
-        if training_args.optim == "adam":
+        if training_args.optim in ["adam", "adafactor"]:
             # get opt_state shape without actual init
             opt_state_shape = jax.eval_shape(optimizer.init, model.params)
 
-            def _opt_state_spec_per_leaf(x):
-                if isinstance(x, dict):
-                    # variables with same structure as params
-                    return param_spec
-                else:
-                    # other variables such as count
-                    return None
+            if training_args.optim == "adam":
 
-            opt_state_spec = jax.tree_map(
-                _opt_state_spec_per_leaf,
-                opt_state_shape,
-                # return None spec for empty elements
-                is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
-            )
+                def _opt_state_spec_per_leaf(x):
+                    if isinstance(x, FrozenDict):
+                        # variables with same structure as params
+                        return param_spec
+                    else:
+                        # other variables such as count
+                        return None
 
-        elif training_args.optim == "adafactor":
-            # factorized state must be replicated (rank different than params)
-            opt_state_spec = None
+                opt_state_spec = jax.tree_map(
+                    _opt_state_spec_per_leaf,
+                    opt_state_shape,
+                    # return None spec for empty elements
+                    is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
+                )
+
+            elif training_args.optim == "adafactor":
+                # factorized state must be replicated (rank different than params)
+                opt_state_spec = None
 
         elif training_args.optim == "distributed_shampoo":
-            # memory efficient in distributed_shampoo, fake init
-            _opt_state = optimizer.init(model.params)
-            opt_state_spec = _opt_state.pspec_fn(
+            opt_state_spec = opt_fn.pspec_fn(
                 params=model.params,
-                params_partition_spec=unfreeze(param_spec),
+                params_partition_spec=param_spec,
                 partition_spec_for_statistics=PartitionSpec(None, "batch", None),
             )
-            opt_state_shape = _opt_state.shape_and_dtype_fn(model.params)
+            opt_state_shape = opt_fn.shape_and_dtype_fn(model.params)
         else:
             raise NotImplementedError
         return opt_state_spec, opt_state_shape
@@ -714,18 +724,12 @@ def main():
                 in_axis_resources=(param_spec,),
                 out_axis_resources=state_spec,
                 donate_argnums=(0,),
-            )(freeze(model.params))
+            )(model.params)
 
         else:
             # restore opt_state
             with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
                 opt_state = from_bytes(opt_state_shape, f.read())
-                # need to freeze dict for pjit
-                opt_state = jax.tree_map(
-                    lambda x: freeze(x) if isinstance(x, dict) else x,
-                    opt_state,
-                    is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
-                )
 
             # restore other attributes
             with (Path(artifact_dir) / "training_state.json").open("r") as f:
@@ -746,7 +750,7 @@ def main():
                 in_axis_resources=(param_spec, opt_state_spec),
                 out_axis_resources=state_spec,
                 donate_argnums=(0, 1),
-            )(freeze(model.params), opt_state)
+            )(model.params, opt_state)
 
             # remove opt_state from CPU
             del opt_state
