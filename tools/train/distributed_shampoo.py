@@ -1,7 +1,5 @@
-"""File copied from https://github.com/google-research/google-research/edit/master/scalable_shampoo/optax/distributed_shampoo.py"""
-
 # coding=utf-8
-# Copyright 2021 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -147,6 +145,12 @@ class QuantizedValue:
         return val
 
 
+@struct.dataclass
+class TrainingMetrics:
+    inverse_pth_root_errors: chex.Array  # Error for inverse-pth roots.
+    # TODO(rohananil): Add more important metrics to track during training.
+
+
 # Per parameter optimizer state used in data-parallel training.
 class ParameterStats(NamedTuple):
     """State associated to each parameter of the model being trained."""
@@ -156,6 +160,7 @@ class ParameterStats(NamedTuple):
     preconditioners: List[Any]  # Preconditioners (QuantizedValue, chex.Array)
     diagonal_momentum: QuantizedValue  # Momentum for the diagonal preconditioner
     momentum: QuantizedValue  # Momentum for the shampoo preconditioner
+    training_metrics: TrainingMetrics  # Metrics (optional for training).
 
 
 # For training extremely large model; We keep a global state with a concatenated
@@ -166,6 +171,7 @@ class ParameterStats(NamedTuple):
 class GlobalShardedParameterStats:
     statistics: chex.Array  # Statistics
     preconditioners: chex.Array  # Preconditioners
+    exponents: chex.Array  # exponents
 
 
 # These are per-parameter local states; All statistics here mirror the parameter
@@ -177,10 +183,32 @@ class LocalShardedParameterStats:
     diagonal_statistics: QuantizedValue  # Accumulator for diagonal preconditioner
     diagonal_momentum: QuantizedValue  # Momentum for the diagonal preconditioner
     momentum: QuantizedValue  # Momentum for the shampoo preconditioner
+    training_metrics: TrainingMetrics  # Metrics (optional for training).
     index_start: np.int32 = struct.field(
         pytree_node=False
     )  # Index into global statistics array
     sizes: Any = struct.field(pytree_node=False)  # Sizes of the statistics.
+
+
+def init_training_metrics(num_statistics):
+    if num_statistics:
+        return TrainingMetrics(jnp.zeros([num_statistics], jnp.float32))
+    else:
+        return TrainingMetrics([])
+
+
+def init_training_metrics_shapes(num_statistics):
+    if num_statistics:
+        return TrainingMetrics([[num_statistics], jnp.float32])
+    else:
+        return TrainingMetrics([None, jnp.float32])
+
+
+def init_training_metrics_pspec(num_statistics):
+    if num_statistics:
+        return TrainingMetrics(pjit.PartitionSpec())
+    else:
+        return TrainingMetrics(None)
 
 
 class ShardedShampooStats(NamedTuple):
@@ -193,6 +221,12 @@ class ShardedShampooStats(NamedTuple):
 class ShampooState(NamedTuple):
     count: chex.Array
     stats: Any
+
+
+class InitFnState(NamedTuple):
+    init_fn: Any
+    pspec_fn: Any
+    shape_and_dtype_fn: Any
 
 
 class GraftingType(enum.IntEnum):
@@ -291,6 +325,8 @@ def matrix_inverse_pth_root(
     Returns:
       matrix^(-1/p)
     """
+
+    assert matrix.shape[0] == matrix.shape[1]
 
     # We use float32 for the matrix inverse pth root.
     # Switch to f64 if you have hardware that supports it.
@@ -615,6 +651,7 @@ def _convert_to_parameter_stats(global_stats, local_stat):
         new_preconditioners,
         local_stat.diagonal_momentum,
         local_stat.momentum,
+        local_stat.training_metrics,
     )
 
 
@@ -624,9 +661,38 @@ def _convert_from_parameter_stats(parameter_stats, local_stats):
         parameter_stats.diagonal_statistics,
         parameter_stats.diagonal_momentum,
         parameter_stats.momentum,
+        parameter_stats.training_metrics,
         local_stats.index_start,
         local_stats.sizes,
     )
+
+
+def _add_error_into_local_stats(local_stats, errors, inverse_failure_threshold):
+    """Adds errors back into local statistics."""
+    new_local_stats = []
+    for local_stat in local_stats:
+        index_start = int(local_stat.index_start)
+        index_end = int(len(local_stat.sizes)) + index_start
+        per_stat_error = errors[index_start:index_end]
+        if local_stat.sizes:
+            per_stat_error = jnp.where(
+                jnp.logical_and(
+                    per_stat_error > 0.0, per_stat_error != inverse_failure_threshold
+                ),
+                per_stat_error,
+                local_stat.training_metrics.inverse_pth_root_errors,
+            )
+        new_local_stats.append(
+            LocalShardedParameterStats(
+                local_stat.diagonal_statistics,
+                local_stat.diagonal_momentum,
+                local_stat.momentum,
+                TrainingMetrics(per_stat_error),
+                local_stat.index_start,
+                local_stat.sizes,
+            )
+        )
+    return new_local_stats
 
 
 def batch(x, num_devices):
@@ -670,7 +736,8 @@ def distributed_shampoo(
     batch_axis_name=None,
     ### Only set following 3 params in pjit/spmd mode.
     ### WARNING: Experimental
-    mesh_axis_names=None,
+    statistics_partition_spec=None,
+    preconditioner_partition_spec=None,
     num_devices_for_pjit=None,
     shard_optimizer_states=False,
     ###
@@ -730,7 +797,8 @@ def distributed_shampoo(
       exponent_override: Override the exponent used in matrix inverse.
       batch_axis_name: labeled axis over pmap for data-parallel training the
         optimizer used for.
-      mesh_axis_names: Axis names for the mesh (used in pjit).
+      statistics_partition_spec: PartitionSpec to be used in sharded mode.
+      preconditioner_partition_spec: PartitionSpec to be used in sharded mode.
       num_devices_for_pjit: Number of devices to parallelize over when using pjit.
       shard_optimizer_states: Shard optimizer states to save memory in model
         parallel training.
@@ -830,6 +898,11 @@ def distributed_shampoo(
         )
 
     def sharded_init_fn(params):
+        """Returns optimizer state (for PJIT mode).
+
+        Args:
+          params: the parameters that should be updated.
+        """
         params_flat, treedef = jax.tree_flatten(params)
         # Find max size to pad to.
         max_size = 0
@@ -845,6 +918,7 @@ def distributed_shampoo(
         padded_statistics = []
         padded_preconditioners = []
         local_stats_flat = []
+        exponents = []
         for param in params_flat:
             preconditioner = Preconditioner(
                 param, block_size, best_effort_shape_interpretation
@@ -862,6 +936,12 @@ def distributed_shampoo(
                 preconditioners = [jnp.eye(max_size) for s in shapes]
                 padded_statistics.extend(statistics)
                 padded_preconditioners.extend(preconditioners)
+                exponent = (
+                    preconditioner.exponent_for_preconditioner()
+                    if exponent_override == 0
+                    else exponent_override
+                )
+                exponents.extend([exponent] * len(shapes))
 
             diagonal_statistics = []
             if graft_type != GraftingType.SGD:
@@ -871,6 +951,7 @@ def distributed_shampoo(
                     _quantize_diagonal_statistics(diagonal_statistics),
                     _quantize_momentum(jnp.zeros_like(param)),
                     _quantize_momentum(jnp.zeros_like(param)),
+                    init_training_metrics(len(sizes)),
                     index_start,
                     sizes,
                 )
@@ -888,11 +969,235 @@ def distributed_shampoo(
         padded_preconditioners.extend(
             [jnp.eye(max_size, dtype=padded_statistics[0].dtype) for _ in range(to_pad)]
         )
+        exponents.extend([1 for _ in range(to_pad)])
         global_stats = GlobalShardedParameterStats(
-            jnp.stack(padded_statistics), jnp.stack(padded_preconditioners)
+            jnp.stack(padded_statistics),
+            jnp.stack(padded_preconditioners),
+            jnp.stack(exponents),
         )
         return ShampooState(
             count=jnp.zeros([], jnp.int32),
+            stats=ShardedShampooStats(global_stats, local_stats),
+        )
+
+    def _max_statistics_size_from_params(params):
+        max_size = 0
+        for param in params:
+            param_clone = jnp.zeros(param.shape, dtype=param.dtype)
+            preconditioner = Preconditioner(
+                param_clone, block_size, best_effort_shape_interpretation
+            )
+            if not _skip_preconditioning(param):
+                shapes = preconditioner.shapes_for_preconditioners()
+                sizes = [s[0] for s in shapes]
+                max_size = max(max(sizes), max_size)
+        return max_size
+
+    def _remove_leading_sharding_annotation(pspec):
+        """Mapping from N-d to (N-1)-d, used for quantization, factoring etc."""
+        # None and PSpec(None) are valid PSpecs.
+        if pspec and len(pspec) > 1:
+            return pjit.PartitionSpec(*pspec[1:])
+        else:
+            return None
+
+    def sharded_init_partition_spec_fn(
+        params, params_partition_spec, partition_spec_for_statistics
+    ):
+        """Returns a parallel state tree with PartitionSpec associated with state.
+
+
+        Args:
+          params: A pytree with params.
+          params_partition_spec: A pytree with PartitionSpec for params.
+          partition_spec_for_statistics: PartitionSpec for the statistics.
+        """
+        # Parallel lists of spec, and params.
+        param_pspec_flat, _ = jax.tree_flatten(
+            params_partition_spec, is_leaf=lambda x: x is None
+        )
+        params_flat, treedef = jax.tree_flatten(params)
+        assert param_pspec_flat
+        assert params_flat
+        # Step is replicated across cores.
+        # None means cores.
+        local_stats_flat = []
+        num_statistics = 0
+        for param, param_pspec in zip(params_flat, param_pspec_flat):
+            param_clone = jnp.zeros(param.shape, dtype=param.dtype)
+            preconditioner = Preconditioner(
+                param_clone, block_size, best_effort_shape_interpretation
+            )
+            shapes = preconditioner.shapes_for_preconditioners()
+            sizes = []
+
+            index_start = num_statistics
+            if not _skip_preconditioning(param):
+                sizes = [s[0] for s in shapes]
+                shapes = preconditioner.shapes_for_preconditioners()
+                num_statistics += len(shapes)
+
+            diagonal_statistics_pspec = []
+            diagonal_statistics_scale_pspec = []
+            if graft_type != GraftingType.SGD:
+                # Identically shaped param.
+                diagonal_statistics_pspec = param_pspec
+                if quantized_dtype_for_diagonal_statistics_buffers() != jnp.float32:
+                    diagonal_statistics_scale_pspec = (
+                        _remove_leading_sharding_annotation(param_pspec)
+                    )
+
+            m1_pspec = param_pspec
+            m2_pspec = param_pspec
+
+            m1_scale_pspec = []
+            m2_scale_pspec = []
+
+            if quantized_dtype_for_momentum_buffers() != jnp.float32:
+                m1_scale_pspec = _remove_leading_sharding_annotation(m1_pspec)
+                m2_scale_pspec = _remove_leading_sharding_annotation(m2_pspec)
+
+            local_stats_flat.append(
+                LocalShardedParameterStats(
+                    QuantizedValue(
+                        diagonal_statistics_pspec,
+                        [],
+                        diagonal_statistics_scale_pspec,
+                        quantized_dtype_for_diagonal_statistics_buffers(),
+                        False,
+                        list(param.shape),
+                    ),
+                    QuantizedValue(
+                        m1_pspec,
+                        [],
+                        m1_scale_pspec,
+                        quantized_dtype_for_momentum_buffers(),
+                        False,
+                        list(param.shape),
+                    ),
+                    QuantizedValue(
+                        m2_pspec,
+                        [],
+                        m2_scale_pspec,
+                        quantized_dtype_for_momentum_buffers(),
+                        False,
+                        list(param.shape),
+                    ),
+                    init_training_metrics_pspec(len(sizes)),
+                    index_start,
+                    sizes,
+                )
+            )
+
+        local_stats = jax.tree_unflatten(treedef, local_stats_flat)
+        global_stats = GlobalShardedParameterStats(
+            partition_spec_for_statistics,
+            partition_spec_for_statistics,
+            pjit.PartitionSpec(),
+        )
+        count_pspec = pjit.PartitionSpec()
+        return ShampooState(
+            count=count_pspec, stats=ShardedShampooStats(global_stats, local_stats)
+        )
+
+    def sharded_init_shape_and_dtype_fn(params):
+        """Returns a parallel state tree with shape, dtype associated with state.
+
+
+        Args:
+          params: A pytree with params.
+        """
+        # Parallel lists of spec, and params.
+        params_flat, treedef = jax.tree_flatten(params)
+        assert params_flat
+        # Step is replicated across cores.
+        # None means cores.
+        local_stats_flat = []
+        num_statistics = 0
+        for param in params_flat:
+            param_clone = jnp.zeros(param.shape, dtype=param.dtype)
+            preconditioner = Preconditioner(
+                param_clone, block_size, best_effort_shape_interpretation
+            )
+            shapes = preconditioner.shapes_for_preconditioners()
+            sizes = []
+
+            index_start = num_statistics
+            if not _skip_preconditioning(param):
+                sizes = [s[0] for s in shapes]
+                shapes = preconditioner.shapes_for_preconditioners()
+                num_statistics += len(shapes)
+
+            diagonal_statistics_shape_and_dtype = []
+            diagonal_statistics_scale_shape_and_dtype = []
+            if graft_type != GraftingType.SGD:
+                diagonal_statistics_shape_and_dtype = [list(param.shape), param.dtype]
+                qdtype = quantized_dtype_for_diagonal_statistics_buffers()
+                if qdtype != jnp.float32:
+                    diagonal_statistics_shape_and_dtype = [list(param.shape), qdtype]
+                    diagonal_statistics_scale_shape_and_dtype = [
+                        list(param.shape)[1:],
+                        param.dtype,
+                    ]
+
+            m1_shape_and_dtype = [list(param.shape), param.dtype]
+            m2_shape_and_dtype = [list(param.shape), param.dtype]
+
+            m1_scale_shape_and_dtype = []
+            m2_scale_shape_and_dtype = []
+
+            qdtype = quantized_dtype_for_momentum_buffers()
+            if qdtype != jnp.float32:
+                m1_shape_and_dtype = [list(param.shape), qdtype]
+                m2_shape_and_dtype = [list(param.shape), qdtype]
+
+                m1_scale_shape_and_dtype = [list(param.shape)[1:], qdtype]
+                m2_scale_shape_and_dtype = [list(param.shape)[1:], qdtype]
+
+            local_stats_flat.append(
+                LocalShardedParameterStats(
+                    QuantizedValue(
+                        diagonal_statistics_shape_and_dtype,
+                        [],
+                        diagonal_statistics_scale_shape_and_dtype,
+                        quantized_dtype_for_diagonal_statistics_buffers(),
+                        False,
+                        list(param.shape),
+                    ),
+                    QuantizedValue(
+                        m1_shape_and_dtype,
+                        [],
+                        m1_scale_shape_and_dtype,
+                        quantized_dtype_for_momentum_buffers(),
+                        False,
+                        list(param.shape),
+                    ),
+                    QuantizedValue(
+                        m2_shape_and_dtype,
+                        [],
+                        m2_scale_shape_and_dtype,
+                        quantized_dtype_for_momentum_buffers(),
+                        False,
+                        list(param.shape),
+                    ),
+                    init_training_metrics_shapes(len(sizes)),
+                    index_start,
+                    sizes,
+                )
+            )
+
+        local_stats = jax.tree_unflatten(treedef, local_stats_flat)
+        max_statistics_size = _max_statistics_size_from_params(params_flat)
+        to_pad = -num_statistics % num_devices_for_pjit
+        num_statistics += to_pad
+        statistics_shape = [num_statistics, max_statistics_size, max_statistics_size]
+        global_stats = GlobalShardedParameterStats(
+            [statistics_shape, jnp.float32],
+            [statistics_shape, jnp.float32],
+            [[num_statistics], jnp.int32],
+        )
+        return ShampooState(
+            count=[[], jnp.float32],
             stats=ShardedShampooStats(global_stats, local_stats),
         )
 
@@ -923,20 +1228,6 @@ def distributed_shampoo(
             params_flat,
         )
 
-        exponents = []
-        for stat, param in zip(new_stats_flat, params_flat):
-            num_statistics = len(stat.statistics)
-            if num_statistics > 0:
-                preconditioner = Preconditioner(
-                    param, block_size, best_effort_shape_interpretation
-                )
-                exponent = (
-                    preconditioner.exponent_for_preconditioner()
-                    if exponent_override == 0
-                    else exponent_override
-                )
-                exponents.extend([exponent] * num_statistics)
-
         outputs = jax.tree_multimap(
             lambda g, s, p: _transform_grad(g, s, p, state.count),
             grads_flat,
@@ -951,7 +1242,6 @@ def distributed_shampoo(
             _convert_from_parameter_stats(new_stat, local_stat)
             for new_stat, local_stat in zip(new_stats_flat, local_stats_flat)
         ]
-        new_local_stats = jax.tree_unflatten(treedef, new_local_stats_flat)
 
         max_size = global_stats.statistics.shape[1]
         new_padded_statistics = []
@@ -974,22 +1264,16 @@ def distributed_shampoo(
                 for _ in range(to_pad)
             ]
         )
-        exponents.extend([1 for _ in range(to_pad)])
         new_stacked_padded_statistics = jnp.stack(new_padded_statistics)
-        new_stacked_exponents = jnp.stack(exponents)
-
-        def _matrix_inverse_pth_root_vmap(xs, ps):
-            mi_pth_root = functools.partial(
-                matrix_inverse_pth_root,
-                ridge_epsilon=matrix_epsilon,
-                precision=precision,
-            )
-            preconditioners, errors = jax.vmap(mi_pth_root)(xs, ps)
-            return preconditioners, errors
+        new_stacked_padded_statistics = pjit.with_sharding_constraint(
+            new_stacked_padded_statistics, statistics_partition_spec
+        )
 
         def _internal_inverse_pth_root_all():
-            preconditioners, errors = _matrix_inverse_pth_root_vmap(
-                new_stacked_padded_statistics, new_stacked_exponents
+            preconditioners, errors = _matrix_inverse_pth_root_pjit(
+                new_stacked_padded_statistics,
+                global_stats.exponents,
+                statistics_partition_spec,
             )
             return preconditioners, errors
 
@@ -1000,13 +1284,18 @@ def distributed_shampoo(
             # shaped tensors. Note statistics will be ignored as we are passing in
             # a large init value for error.
             preconditioners_init = new_stacked_padded_statistics
-            errors_init = np.stack([inverse_failure_threshold] * len(exponents))
+            n = new_stacked_padded_statistics.shape[0]
+            errors_init = jnp.ones([n], jnp.float32) * inverse_failure_threshold
             init_state = [preconditioners_init, errors_init]
             perform_step = state.count % preconditioning_compute_steps == 0
             new_preconditioners, errors = efficient_cond(
                 perform_step, _internal_inverse_pth_root_all, init_state
             )
 
+        new_local_stats_flat = _add_error_into_local_stats(
+            new_local_stats_flat, errors, inverse_failure_threshold
+        )
+        new_local_stats = jax.tree_unflatten(treedef, new_local_stats_flat)
         errors = errors.reshape((-1, 1, 1))
         predicate = jnp.logical_or(
             jnp.isnan(errors), errors >= inverse_failure_threshold
@@ -1017,7 +1306,9 @@ def distributed_shampoo(
             + (1.0 - predicate) * new_preconditioners
         )
         new_global_stats = GlobalShardedParameterStats(
-            new_stacked_padded_statistics, new_conditional_preconditioners
+            new_stacked_padded_statistics,
+            new_conditional_preconditioners,
+            global_stats.exponents,
         )
         new_shampoo_state = ShampooState(
             count=state.count + 1,
@@ -1048,6 +1339,7 @@ def distributed_shampoo(
                 _maybe_quantize_preconditioners(preconditioners),
                 _quantize_momentum(jnp.zeros_like(param)),
                 _quantize_momentum(jnp.zeros_like(param)),
+                init_training_metrics(len(statistics)),
             )
 
         return ShampooState(
@@ -1092,6 +1384,7 @@ def distributed_shampoo(
             state.preconditioners,
             state.diagonal_momentum,
             state.momentum,
+            state.training_metrics,
         )
 
     def _matrix_inverse_pth_root_vmap(xs, ps):
@@ -1115,33 +1408,27 @@ def distributed_shampoo(
 
         return jax.vmap(matrix_inverse_pth_root_wrapper)(qxs, qds, qbs, ps)
 
-    def _matrix_inverse_pth_root_pjit(xs, ps):
-        mesh_axis_names_tuple = tuple(mesh_axis_names)
+    def _matrix_inverse_pth_root_pjit(xs, ps, statistics_partition_spec=None):
         # Partition the concatenated statistics matrix across all cores.
-        partitioned_xs, partitioned_ps = pjit.pjit(
-            lambda x, y: (x, y),
-            in_axis_resources=None,
-            out_axis_resources=pjit.PartitionSpec(
-                mesh_axis_names_tuple,
-            ),
-        )(xs, ps)
+        pspec_for_partition = preconditioner_partition_spec
+        partitioned_xs = pjit.with_sharding_constraint(xs, pspec_for_partition)
+        partitioned_ps = pjit.with_sharding_constraint(
+            ps, pjit.PartitionSpec(preconditioner_partition_spec[0])
+        )
         # Run matrix inverse pth root on each shard.
         partitioned_preconditioners, partitioned_errors = _matrix_inverse_pth_root_vmap(
             partitioned_xs, partitioned_ps
         )
+        # Reshard output to have the same PSpec as input. This is required to avoid
+        # vmap seeing the full set of statistics.
+        partitioned_preconditioners = pjit.with_sharding_constraint(
+            partitioned_preconditioners, pspec_for_partition
+        )
         # Recombine the outputs at each core.
-        preconditioners, errors = pjit.pjit(
-            lambda x, y: (x, y),
-            in_axis_resources=(
-                pjit.PartitionSpec(
-                    mesh_axis_names_tuple,
-                ),
-                pjit.PartitionSpec(
-                    mesh_axis_names_tuple,
-                ),
-            ),
-            out_axis_resources=(None, None),
-        )(partitioned_preconditioners, partitioned_errors)
+        preconditioners = pjit.with_sharding_constraint(
+            partitioned_preconditioners, statistics_partition_spec
+        )
+        errors = pjit.with_sharding_constraint(partitioned_errors, pjit.PartitionSpec())
         return preconditioners, errors
 
     def _pmap_compute_preconditioners(
@@ -1223,31 +1510,54 @@ def distributed_shampoo(
             )
 
         new_preconditioners_flat = []
+        new_errors_flat = []
         for p, shape, prev_p, error in zip(
             preconditioners_flat, original_shapes, prev_preconditioners, errors_flat
         ):
             new_preconditioners_flat.append(
                 _select_preconditioner(error, p[: shape[0], : shape[1]], prev_p)
             )
+            new_errors_flat.append(error)
 
         assert len(states) == len(num_statistics_per_state)
         assert len(new_preconditioners_flat) == num_statistics
+        assert len(new_errors_flat) == num_statistics
 
         # Add back empty preconditioners so we that we can set the optimizer state.
         preconditioners_for_states = []
         idx = 0
+        errors_for_states = []
         for num_statistics, state in zip(num_statistics_per_state, states):
             if num_statistics == 0:
                 preconditioners_for_states.append([])
+                errors_for_states.append([])
             else:
                 preconditioners_for_state = new_preconditioners_flat[
                     idx : idx + num_statistics
                 ]
                 assert len(state.statistics) == len(preconditioners_for_state)
                 preconditioners_for_states.append(preconditioners_for_state)
+
+                errors_for_state = jnp.stack(
+                    new_errors_flat[idx : idx + num_statistics]
+                )
+                assert len(state.statistics) == len(errors_for_state)
+                errors_for_states.append(errors_for_state)
+
                 idx += num_statistics
         new_states = []
-        for state, new_preconditioners in zip(states, preconditioners_for_states):
+        for state, new_preconditioners, new_errors in zip(
+            states, preconditioners_for_states, errors_for_states
+        ):
+            if state.statistics:
+                new_errors = jnp.where(
+                    jnp.logical_and(
+                        new_errors > 0.0, new_errors != inverse_failure_threshold
+                    ),
+                    new_errors,
+                    state.training_metrics.inverse_pth_root_errors,
+                )
+            new_training_metrics = TrainingMetrics(new_errors)
             new_states.append(
                 ParameterStats(
                     state.diagonal_statistics,
@@ -1255,6 +1565,7 @@ def distributed_shampoo(
                     new_preconditioners,
                     state.diagonal_momentum,
                     state.momentum,
+                    new_training_metrics,
                 )
             )
 
@@ -1413,6 +1724,7 @@ def distributed_shampoo(
         new_quantized_preconditioners_flat = []
         new_quantized_diagonals_flat = []
         new_quantized_bucket_sizes_flat = []
+        new_errors_flat = []
         for p, d, b, shape, prev_p, error in zip(
             quantized_preconditioners_flat,
             quantized_diagonals_flat,
@@ -1432,6 +1744,7 @@ def distributed_shampoo(
             new_quantized_bucket_sizes_flat.append(
                 _select_preconditioner(error, b[: shape[0]], prev_p.bucket_size)
             )
+            new_errors_flat.append(error)
 
         assert len(states) == len(num_statistics_per_state)
         assert len(new_quantized_preconditioners_flat) == num_statistics
@@ -1440,10 +1753,12 @@ def distributed_shampoo(
 
         # Add back empty preconditioners so we that we can set the optimizer state.
         preconditioners_for_states = []
+        errors_for_states = []
         idx = 0
         for num_statistics, state in zip(num_statistics_per_state, states):
             if num_statistics == 0:
                 preconditioners_for_states.append([])
+                errors_for_states.append([])
             else:
                 quantized_preconditioners_for_state = (
                     new_quantized_preconditioners_flat[idx : idx + num_statistics]
@@ -1454,10 +1769,14 @@ def distributed_shampoo(
                 quantized_bucket_sizes_for_state = new_quantized_bucket_sizes_flat[
                     idx : idx + num_statistics
                 ]
+                errors_for_state = jnp.stack(
+                    new_errors_flat[idx : idx + num_statistics]
+                )
 
                 assert len(state.statistics) == len(quantized_preconditioners_for_state)
                 assert len(state.statistics) == len(quantized_diagonals_for_state)
                 assert len(state.statistics) == len(quantized_bucket_sizes_for_state)
+                assert len(state.statistics) == len(errors_for_state)
 
                 quantized_preconditioners = []
                 for qv, qd, qb in zip(
@@ -1469,9 +1788,21 @@ def distributed_shampoo(
                         QuantizedValue(qv, qd, qb, qv.dtype, True, list(qv.shape))
                     )
                 preconditioners_for_states.append(quantized_preconditioners)
+                errors_for_states.append(errors_for_state)
                 idx += num_statistics
         new_states = []
-        for state, new_preconditioners in zip(states, preconditioners_for_states):
+        for state, new_preconditioners, new_errors in zip(
+            states, preconditioners_for_states, errors_for_states
+        ):
+            if state.statistics:
+                new_errors = jnp.where(
+                    jnp.logical_and(
+                        new_errors > 0.0, new_errors != inverse_failure_threshold
+                    ),
+                    new_errors,
+                    state.training_metrics.inverse_pth_root_errors,
+                )
+            new_training_metrics = TrainingMetrics(new_errors)
             new_states.append(
                 ParameterStats(
                     state.diagonal_statistics,
@@ -1479,6 +1810,7 @@ def distributed_shampoo(
                     new_preconditioners,
                     state.diagonal_momentum,
                     state.momentum,
+                    new_training_metrics,
                 )
             )
 
@@ -1560,31 +1892,53 @@ def distributed_shampoo(
             )
 
         new_preconditioners_flat = []
+        new_errors_flat = []
         for p, shape, prev_p, error in zip(
             preconditioners_flat, original_shapes, prev_preconditioners, errors_flat
         ):
             new_preconditioners_flat.append(
                 _select_preconditioner(error, p[: shape[0], : shape[1]], prev_p)
             )
+            new_errors_flat.append(error)
 
         assert len(states) == len(num_statistics_per_state)
         assert len(new_preconditioners_flat) == num_statistics
 
         # Add back empty preconditioners so we that we can set the optimizer state.
         preconditioners_for_states = []
+        errors_for_states = []
         idx = 0
         for num_statistics, state in zip(num_statistics_per_state, states):
             if num_statistics == 0:
                 preconditioners_for_states.append([])
+                errors_for_states.append([])
             else:
                 preconditioners_for_state = new_preconditioners_flat[
                     idx : idx + num_statistics
                 ]
                 assert len(state.statistics) == len(preconditioners_for_state)
                 preconditioners_for_states.append(preconditioners_for_state)
+
+                errors_for_state = jnp.stack(
+                    new_errors_flat[idx : idx + num_statistics]
+                )
+                assert len(state.statistics) == len(errors_for_state)
+                errors_for_states.append(errors_for_state)
                 idx += num_statistics
+
         new_states = []
-        for state, new_preconditioners in zip(states, preconditioners_for_states):
+        for state, new_preconditioners, new_errors in zip(
+            states, preconditioners_for_states, errors_for_states
+        ):
+            if state.statistics:
+                new_errors = jnp.where(
+                    jnp.logical_and(
+                        new_errors > 0.0, new_errors != inverse_failure_threshold
+                    ),
+                    new_errors,
+                    state.training_metrics.inverse_pth_root_errors,
+                )
+            new_training_metrics = TrainingMetrics(new_errors)
             new_states.append(
                 ParameterStats(
                     state.diagonal_statistics,
@@ -1592,6 +1946,7 @@ def distributed_shampoo(
                     new_preconditioners,
                     state.diagonal_momentum,
                     state.momentum,
+                    new_training_metrics,
                 )
             )
 
@@ -1778,7 +2133,9 @@ def distributed_shampoo(
             state.preconditioners,
             _quantize_momentum(grafting_update_with_wd_momentum),
             _quantize_momentum(shampoo_update_with_wd_momentum),
+            state.training_metrics,
         )
+
         return transformed_update, param_stats
 
     def update_fn(grads, state, params):
@@ -1821,6 +2178,15 @@ def distributed_shampoo(
         return updates, new_state
 
     if shard_optimizer_states:
-        return optax.GradientTransformation(sharded_init_fn, sharded_update_fn)
+        # Hijacks the init_fn signature so we can return an OptState with
+        # appropriate init_fns.
+        def _init_fns(unused_params):
+            return InitFnState(
+                init_fn=sharded_init_fn,
+                pspec_fn=sharded_init_partition_spec_fn,
+                shape_and_dtype_fn=sharded_init_shape_and_dtype_fn,
+            )
+
+        return optax.GradientTransformation(_init_fns, sharded_update_fn)
     else:
         return optax.GradientTransformation(init_fn, update_fn)
