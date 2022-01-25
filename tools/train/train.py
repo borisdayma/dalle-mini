@@ -549,11 +549,11 @@ def main():
 
     # Store some constant
     num_epochs = training_args.num_train_epochs
-    # batch size per node
-    train_batch_size = (
+    # batch size
+    minibatch_size = (
         training_args.per_device_train_batch_size * jax.local_device_count()
     )
-    batch_size_per_node = train_batch_size * training_args.gradient_accumulation_steps
+    batch_size_per_node = minibatch_size * training_args.gradient_accumulation_steps
     batch_size_per_step = batch_size_per_node * jax.process_count()
     eval_batch_size = (
         training_args.per_device_eval_batch_size * jax.local_device_count()
@@ -770,6 +770,12 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
+        # check correct batch shape during compilation
+        assert batch["labels"].shape[0:2] == (
+            training_args.gradient_accumulation_steps,
+            minibatch_size,
+        ), f"Expected label batch of shape gradient_acculumation x minibatch_size x items and got {batch['labels'].shape}"
+        # create a new rng
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
         # use a different rng per node
         dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
@@ -837,13 +843,13 @@ def main():
     # Create parallel version of the train and eval step
     p_train_step = pjit(
         train_step,
-        in_axis_resources=(state_spec, PartitionSpec("batch", None), None),
+        in_axis_resources=(state_spec, PartitionSpec(None, "batch"), None),
         out_axis_resources=(state_spec, None),
         donate_argnums=(0,),
     )
     p_eval_step = pjit(
         eval_step,
-        in_axis_resources=(param_spec, PartitionSpec("batch", None)),
+        in_axis_resources=(param_spec, PartitionSpec("batch")),
         out_axis_resources=None,
     )
 
