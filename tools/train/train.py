@@ -36,12 +36,12 @@ import transformers
 import wandb
 from datasets import Dataset
 from distributed_shampoo import GraftingType, distributed_shampoo
-from flax.core.frozen_dict import FrozenDict, freeze
+from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import onehot, stack_forest
 from jax.experimental import PartitionSpec, maps
-from jax.experimental.pjit import pjit
+from jax.experimental.pjit import pjit, with_sharding_constraint
 from tqdm import tqdm
 from transformers import HfArgumentParser
 
@@ -551,12 +551,12 @@ def main():
     num_epochs = training_args.num_train_epochs
     # batch size
     minibatch_size = (
-        training_args.per_device_train_batch_size * jax.local_device_count()
+        training_args.per_device_train_batch_size * training_args.dp_devices
     )
     batch_size_per_node = minibatch_size * training_args.gradient_accumulation_steps
     batch_size_per_step = batch_size_per_node * jax.process_count()
     eval_batch_size = (
-        training_args.per_device_eval_batch_size * jax.local_device_count()
+        training_args.per_device_eval_batch_size * training_args.dp_devices
     )
     len_train_dataset, len_eval_dataset = dataset.length
     steps_per_epoch = (
@@ -762,6 +762,10 @@ def main():
     # free memory
     del model._params
 
+    # define batch specs
+    keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
+    batch_spec = freeze({k: PartitionSpec("batch") for k in keys})
+
     # label smoothed cross entropy
     def loss_fn(logits, labels):
         loss = optax.softmax_cross_entropy(logits, onehot(labels, logits.shape[-1]))
@@ -771,16 +775,18 @@ def main():
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
         # check correct batch shape during compilation
-        assert batch["labels"].shape[0:2] == (
+        assert batch["labels"].shape[0:3] == (
+            training_args.dp_devices,
             training_args.gradient_accumulation_steps,
-            minibatch_size,
-        ), f"Expected label batch of shape gradient_acculumation x minibatch_size x items and got {batch['labels'].shape}"
+            training_args.per_device_train_batch_size,
+        ), f"Expected label batch of shape dp_devices x gradient_acculumation x batch_per_device and got {batch['labels'].shape}"
         # create a new rng
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
         # use a different rng per node
         dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
 
         def compute_loss(params, minibatch):
+            minibatch = unfreeze(minibatch)
             labels = minibatch.pop("labels")
             logits = state.apply_fn(
                 **minibatch, params=params, dropout_rng=dropout_rng, train=True
@@ -789,32 +795,52 @@ def main():
 
         grad_fn = jax.value_and_grad(compute_loss)
 
-        if training_args.gradient_accumulation_steps == 1:
-            minibatch = jax.tree_map(lambda x: x[0], batch)
-            loss, grads = grad_fn(state.params, minibatch)
-        else:
+        def loss_grad_per_device(device_batch):
+            # device_batch has format (gradient_accumulation_steps, batch_size, ...)
 
-            def _cumul_loss_grads(i, cumul_loss_grads):
-                minibatch = jax.tree_map(lambda x: x[i], batch)
-                return jax.tree_map(
-                    lambda x, y: x + y,
-                    cumul_loss_grads,
-                    grad_fn(state.params, minibatch),
+            if training_args.gradient_accumulation_steps == 1:
+                minibatch = jax.tree_map(
+                    lambda x: x[0],
+                    device_batch,
                 )
+                loss, grads = grad_fn(state.params, minibatch)
+            else:
 
-            init_loss_grads = (
-                0.0,
-                jax.tree_map(jnp.zeros_like, state.params),
-            )
-            loss, grads = jax.tree_map(
-                lambda x: x / training_args.gradient_accumulation_steps,
-                jax.lax.fori_loop(
-                    0,
-                    training_args.gradient_accumulation_steps,
-                    _cumul_loss_grads,
-                    init_loss_grads,
-                ),
-            )
+                def _cumul_loss_grads(i, cumul_loss_grads):
+                    minibatch = jax.tree_map(
+                        lambda x: x[i],
+                        device_batch,
+                    )
+                    return jax.tree_map(
+                        lambda x, y: x + y,
+                        cumul_loss_grads,
+                        grad_fn(state.params, minibatch),
+                    )
+
+                init_loss_grads = (
+                    0.0,
+                    jax.tree_map(jnp.zeros_like, state.params),
+                )
+                loss, grads = jax.tree_map(
+                    lambda x: x / training_args.gradient_accumulation_steps,
+                    jax.lax.fori_loop(
+                        0,
+                        training_args.gradient_accumulation_steps,
+                        _cumul_loss_grads,
+                        init_loss_grads,
+                    ),
+                )
+            return loss, grads
+
+        # calculate loss, grads per dp device
+        # batch has shape (dp_devices, gradient_accumulation_steps, batch_per_dp_device, ...)
+        loss, grads = jax.vmap(loss_grad_per_device, in_axes=0, out_axes=(0, 0))(batch)
+        # enforce sharding constraints to avoid OOM
+        loss = with_sharding_constraint(loss, PartitionSpec("batch"))
+        grads = with_sharding_constraint(grads, PartitionSpec("batch"))
+        # calculate the mean over all devices
+        loss = jnp.mean(loss)
+        grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), grads)
 
         state = state.apply_gradients(
             grads=grads,
@@ -832,6 +858,7 @@ def main():
 
     # Define eval fn
     def eval_step(params, batch):
+        batch = unfreeze(batch)
         labels = batch.pop("labels")
         logits = model(**batch, params=params, train=False)[0]
         loss = loss_fn(logits, labels)
@@ -843,13 +870,13 @@ def main():
     # Create parallel version of the train and eval step
     p_train_step = pjit(
         train_step,
-        in_axis_resources=(state_spec, PartitionSpec(None, "batch"), None),
+        in_axis_resources=(state_spec, batch_spec, None),
         out_axis_resources=(state_spec, None),
         donate_argnums=(0,),
     )
     p_eval_step = pjit(
         eval_step,
-        in_axis_resources=(param_spec, PartitionSpec("batch")),
+        in_axis_resources=(param_spec, batch_spec),
         out_axis_resources=None,
     )
 
@@ -890,9 +917,7 @@ def main():
         # ======================== Evaluating ==============================
         eval_metrics = []
         if training_args.do_eval:
-            eval_loader = dataset.dataloader(
-                "eval", training_args.per_device_eval_batch_size
-            )
+            eval_loader = dataset.dataloader("eval", eval_batch_size)
             eval_steps = (
                 len_eval_dataset // eval_batch_size
                 if len_eval_dataset is not None
@@ -905,8 +930,8 @@ def main():
                 leave=False,
                 total=eval_steps,
             ):
-                # Model forward
-                metrics = p_eval_step(state.params, batch)
+                # TODO: make this more efficient once training loop is fast
+                metrics = p_eval_step(state.params, freeze(batch))
                 eval_metrics.append(metrics)
 
             # normalize eval metrics
@@ -1010,8 +1035,7 @@ def main():
             # Generate an epoch by shuffling sampling indices from the train dataset
             train_loader = dataset.dataloader(
                 "train",
-                training_args.per_device_train_batch_size,
-                training_args.gradient_accumulation_steps,
+                batch_size_per_node,
                 epoch,
             )
             # train
@@ -1022,15 +1046,27 @@ def main():
                 leave=False,
                 total=steps_per_epoch,
             ):
-
                 # calculate delta time (we have a lag of one step but it's ok)
                 new_time = time.perf_counter()
                 delta_time = new_time - last_time
                 last_time = new_time
 
+                # reshape data into (dp_devices, gradient_accumulation_steps, batch_per_dp_device, ...)
+                batch = jax.tree_map(
+                    lambda x: x.reshape(
+                        (
+                            training_args.dp_devices,
+                            training_args.gradient_accumulation_steps,
+                            -1,
+                        )
+                        + x.shape[1:]
+                    ),
+                    batch,
+                )
+
                 # train step
-                state, train_metrics = p_train_step(state, batch, delta_time)
-                step = state.step
+                state, train_metrics = p_train_step(state, freeze(batch), delta_time)
+                step = int(state.step)
 
                 if step % training_args.logging_steps == 0 and jax.process_index() == 0:
                     all_metrics = metrics_logger.get_all_train_metrics(

@@ -152,14 +152,7 @@ class Dataset:
                     ),
                 )
 
-    def dataloader(
-        self, split, per_device_batch_size, gradient_accumulation_steps=None, epoch=None
-    ):
-        num_devices = jax.local_device_count()
-        total_batch_size = per_device_batch_size * num_devices
-        if gradient_accumulation_steps is not None:
-            total_batch_size *= gradient_accumulation_steps
-
+    def dataloader(self, split, batch_size, epoch=None):
         def _dataloader_datasets_non_streaming(
             dataset: Dataset,
             rng: jax.random.PRNGKey = None,
@@ -168,7 +161,7 @@ class Dataset:
             Returns batches of size `batch_size` from truncated `dataset`, sharded over all local devices.
             Shuffle batches if rng is set.
             """
-            steps_per_epoch = len(dataset) // total_batch_size
+            steps_per_epoch = len(dataset) // batch_size
 
             if rng is not None:
                 batch_idx = jax.random.permutation(rng, len(dataset))
@@ -176,20 +169,13 @@ class Dataset:
                 batch_idx = jnp.arange(len(dataset))
 
             batch_idx = batch_idx[
-                : steps_per_epoch * total_batch_size
+                : steps_per_epoch * batch_size
             ]  # Skip incomplete batch.
-            batch_idx = batch_idx.reshape((steps_per_epoch, total_batch_size))
+            batch_idx = batch_idx.reshape((steps_per_epoch, batch_size))
 
             for idx in batch_idx:
                 batch = dataset[idx]
                 batch = {k: jnp.array(v) for k, v in batch.items()}
-                if gradient_accumulation_steps is not None:
-                    batch = jax.tree_map(
-                        lambda x: x.reshape(
-                            (gradient_accumulation_steps, -1) + x.shape[1:]
-                        ),
-                        batch,
-                    )
                 yield batch
 
         def _dataloader_datasets_streaming(
@@ -205,22 +191,15 @@ class Dataset:
                 # For validation data we put the entire set on each host as we could lose
                 # too many samples on pods
                 if epoch is not None:
-                    # reshuffle training data at each epoch (not applicable with validation set)
+                    assert split == "train"
+                    # reshuffle training data at each epoch
                     dataset.set_epoch(epoch)
                     epoch += 1
                 for item in dataset:
                     for k, v in item.items():
                         batch[k].append(v)
-                    if len(batch[keys[0]]) == total_batch_size:
+                    if len(batch[keys[0]]) == batch_size:
                         batch = {k: jnp.array(v) for k, v in batch.items()}
-                        if gradient_accumulation_steps is not None:
-                            # training mode
-                            batch = jax.tree_map(
-                                lambda x: x.reshape(
-                                    (gradient_accumulation_steps, -1) + x.shape[1:]
-                                ),
-                                batch,
-                            )
                         yield batch
                         batch = {k: [] for k in keys}
                 first_loop = False
