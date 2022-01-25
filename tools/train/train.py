@@ -837,7 +837,9 @@ def main():
         loss, grads = jax.vmap(loss_grad_per_device, in_axes=0, out_axes=(0, 0))(batch)
         # enforce sharding constraints to avoid OOM
         loss = with_sharding_constraint(loss, PartitionSpec("batch"))
-        grads = with_sharding_constraint(grads, PartitionSpec("batch"))
+        grads = jax.tree_map(
+            lambda x: with_sharding_constraint(x, PartitionSpec("batch")), grads
+        )
         # calculate the mean over all devices
         loss = jnp.mean(loss)
         grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), grads)
