@@ -36,10 +36,10 @@ import transformers
 import wandb
 from datasets import Dataset
 from distributed_shampoo import GraftingType, distributed_shampoo
-from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
+from flax.core.frozen_dict import FrozenDict, freeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
-from flax.training.common_utils import onehot, stack_forest
+from flax.training.common_utils import onehot
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from tqdm import tqdm
@@ -382,7 +382,7 @@ class TrainState(train_state.TrainState):
 
 class MetricsLogger:
     def __init__(self, state):
-        self.step = state.step
+        self.step = int(state.step)
         self.time = time.perf_counter()
 
     def get_all_train_metrics(self, train_metrics, state):
@@ -792,8 +792,7 @@ def main():
 
         def compute_loss(params, minibatch, dropout_rng):
             # minibatch has dim (batch_size, ...)
-            minibatch = unfreeze(minibatch)
-            labels = minibatch.pop("labels")
+            minibatch, labels = minibatch.pop("labels")
             logits = state.apply_fn(
                 **minibatch, params=params, dropout_rng=dropout_rng, train=True
             )[0]
@@ -883,14 +882,10 @@ def main():
 
     # Define eval fn
     def eval_step(params, batch):
-        batch = unfreeze(batch)
-        labels = batch.pop("labels")
+        batch, labels = batch.pop("labels")
         logits = model(**batch, params=params, train=False)[0]
         loss = loss_fn(logits, labels)
-
-        # summarize metrics
-        metrics = {"loss": loss}
-        return metrics
+        return loss
 
     # Create parallel version of the train and eval step
     p_train_step = pjit(
@@ -940,7 +935,6 @@ def main():
 
     def run_evaluation():
         # ======================== Evaluating ==============================
-        eval_metrics = []
         if training_args.do_eval:
             eval_loader = dataset.dataloader("eval", eval_batch_size)
             eval_steps = (
@@ -948,6 +942,7 @@ def main():
                 if len_eval_dataset is not None
                 else None
             )
+            eval_loss = []
             for batch in tqdm(
                 eval_loader,
                 desc="Evaluating...",
@@ -955,13 +950,15 @@ def main():
                 leave=False,
                 total=eval_steps,
             ):
-                # TODO: make this more efficient once training loop is fast
-                metrics = p_eval_step(state.params, freeze(batch))
-                eval_metrics.append(metrics)
+                # freeze batch to pass safely to JAX transforms
+                batch = freeze(batch)
+                # accumulate losses async
+                eval_loss.append(p_eval_step(state.params, batch))
 
-            # normalize eval metrics
-            eval_metrics = stack_forest(eval_metrics)
-            eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
+            # get the mean of the loss
+            eval_loss = jnp.stack(eval_loss)
+            eval_loss = jnp.mean(eval_loss)
+            eval_metrics = {"loss": eval_loss}
 
             # log metrics
             metrics_logger.log(eval_metrics, step=state.step, prefix="eval")
@@ -1050,6 +1047,7 @@ def main():
     # init variables
     last_time = time.perf_counter()
     train_metrics = None
+    step = int(state.step)
 
     with maps.mesh(mesh.devices, mesh.axis_names):
         for epoch in epochs:
@@ -1088,10 +1086,12 @@ def main():
                     ),
                     batch,
                 )
+                # freeze batch to pass safely to jax transforms
+                batch = freeze(batch)
 
                 # train step
-                state, train_metrics = p_train_step(state, freeze(batch), delta_time)
-                step = int(state.step)
+                state, train_metrics = p_train_step(state, batch, delta_time)
+                step += 1
 
                 if step % training_args.logging_steps == 0 and jax.process_index() == 0:
                     all_metrics = metrics_logger.get_all_train_metrics(
@@ -1100,7 +1100,7 @@ def main():
                     metrics_logger.log(all_metrics, step=step, prefix="train")
 
                 eval_metrics = None
-                if training_args.eval_steps and step % training_args.eval_steps == 0:
+                if step % training_args.eval_steps == 0:
                     eval_metrics = run_evaluation()
 
                 if step % training_args.save_steps == 0:
