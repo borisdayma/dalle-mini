@@ -765,6 +765,7 @@ def main():
     # define batch specs
     keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
     batch_spec = freeze({k: PartitionSpec("batch") for k in keys})
+    grad_batch_spec = freeze({k: PartitionSpec(None, "batch") for k in keys})
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
@@ -774,18 +775,22 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
+        # batch is (gradient_accumulation_steps, minibatch_size, ...)
         # check correct batch shape during compilation
-        assert batch["labels"].shape[0:3] == (
-            training_args.dp_devices,
+        assert batch["labels"].shape[0:2] == (
             training_args.gradient_accumulation_steps,
-            training_args.per_device_train_batch_size,
+            minibatch_size,
         ), f"Expected label batch of shape dp_devices x gradient_acculumation x batch_per_device and got {batch['labels'].shape}"
-        # create a new rng
-        dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
-        # use a different rng per node
-        dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
 
-        def compute_loss(params, minibatch):
+        # get a minibatch (one gradient accumulation slice)
+        def get_minibatch(batch, grad_idx):
+            return jax.tree_map(
+                lambda x: jax.lax.dynamic_index_in_dim(x, grad_idx, keepdims=False),
+                batch,
+            )
+
+        def compute_loss(params, minibatch, dropout_rng):
+            # minibatch has dim (batch_size, ...)
             minibatch = unfreeze(minibatch)
             labels = minibatch.pop("labels")
             logits = state.apply_fn(
@@ -795,58 +800,61 @@ def main():
 
         grad_fn = jax.value_and_grad(compute_loss)
 
-        def loss_grad_per_device(device_batch):
-            # device_batch has format (gradient_accumulation_steps, batch_size, ...)
+        def loss_and_grad(grad_idx, dropout_rng):
+            minibatch = get_minibatch(batch, grad_idx)
+            # ensure batch is sharded over devices
+            minibatch = jax.tree_map(
+                lambda x: with_sharding_constraint(x, PartitionSpec("batch")), minibatch
+            )
+            # return loss and grads
+            return grad_fn(state.params, minibatch, dropout_rng)
 
-            if training_args.gradient_accumulation_steps == 1:
-                minibatch = jax.tree_map(
-                    lambda x: x[0],
-                    device_batch,
-                )
-                loss, grads = grad_fn(state.params, minibatch)
-            else:
+        # create a new rng
+        dropout_rng, _ = jax.random.split(state.dropout_rng)
+        # use a different rng per node
+        dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
 
-                def _cumul_loss_grads(i, cumul_loss_grads):
-                    minibatch = jax.tree_map(
-                        lambda x: x[i],
-                        device_batch,
-                    )
-                    return jax.tree_map(
-                        lambda x, y: x + y,
-                        cumul_loss_grads,
-                        grad_fn(state.params, minibatch),
-                    )
+        if training_args.gradient_accumulation_steps == 1:
 
-                init_loss_grads = (
-                    0.0,
-                    jax.tree_map(jnp.zeros_like, state.params),
-                )
-                loss, grads = jax.tree_map(
-                    lambda x: x / training_args.gradient_accumulation_steps,
-                    jax.lax.fori_loop(
-                        0,
-                        training_args.gradient_accumulation_steps,
-                        _cumul_loss_grads,
-                        init_loss_grads,
-                    ),
-                )
-            return loss, grads
+            def batch_step(dropout_rng):
+                dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
+                loss_grad = loss_and_grad(0, dropout_rng)
+                return loss_grad, new_dropout_rng
 
-        # calculate loss, grads per dp device
-        # batch has shape (dp_devices, gradient_accumulation_steps, batch_per_dp_device, ...)
-        loss, grads = jax.vmap(loss_grad_per_device, in_axes=0, out_axes=(0, 0))(batch)
-        # enforce sharding constraints to avoid OOM
-        loss = with_sharding_constraint(loss, PartitionSpec("batch"))
-        grads = jax.tree_map(
-            lambda x: with_sharding_constraint(x, PartitionSpec("batch")), grads
-        )
-        # calculate the mean over all devices
-        loss = jnp.mean(loss)
-        grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), grads)
+            loss_grad, dropout_rng = batch_step(dropout_rng)
+        else:
+            # create initial state for per_minibatch_step loop
+            init_cumul_loss_grad = (
+                0.0,
+                jax.tree_map(jnp.zeros_like, state.params),
+            )
+            init_minibatch_step = (init_cumul_loss_grad, dropout_rng)
 
+            # accumulate gradients
+            def cumul_minibatch_step(grad_idx, cumul_loss_grad_dropout):
+                cumul_loss_grad, dropout_rng = cumul_loss_grad_dropout
+                dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
+                loss_grad = loss_and_grad(grad_idx, dropout_rng)
+                cumul_loss_grad = jax.tree_map(jnp.add, cumul_loss_grad, loss_grad)
+                return cumul_loss_grad, new_dropout_rng
+
+            # loop over gradients
+            loss_grad, dropout_rng = jax.lax.fori_loop(
+                0,
+                training_args.gradient_accumulation_steps,
+                cumul_minibatch_step,
+                init_minibatch_step,
+            )
+            # sum -> mean
+            loss_grad = jax.tree_map(
+                lambda x: x / training_args.gradient_accumulation_steps, loss_grad
+            )
+
+        # update state
+        loss, grads = loss_grad
         state = state.apply_gradients(
             grads=grads,
-            dropout_rng=new_dropout_rng,
+            dropout_rng=dropout_rng,
             train_time=state.train_time + delta_time,
             train_samples=state.train_samples + batch_size_per_step,
         )
@@ -872,7 +880,7 @@ def main():
     # Create parallel version of the train and eval step
     p_train_step = pjit(
         train_step,
-        in_axis_resources=(state_spec, batch_spec, None),
+        in_axis_resources=(state_spec, grad_batch_spec, None),
         out_axis_resources=(state_spec, None),
         donate_argnums=(0,),
     )
@@ -1053,13 +1061,12 @@ def main():
                 delta_time = new_time - last_time
                 last_time = new_time
 
-                # reshape data into (dp_devices, gradient_accumulation_steps, batch_per_dp_device, ...)
+                # reshape data into (gradient_accumulation_steps, minibatch_size, ...)
                 batch = jax.tree_map(
                     lambda x: x.reshape(
                         (
-                            training_args.dp_devices,
                             training_args.gradient_accumulation_steps,
-                            -1,
+                            minibatch_size,
                         )
                         + x.shape[1:]
                     ),
