@@ -25,7 +25,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 import datasets
 import jax
@@ -36,12 +36,12 @@ import transformers
 import wandb
 from datasets import Dataset
 from distributed_shampoo import GraftingType, distributed_shampoo
-from flax.core.frozen_dict import freeze
+from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import onehot, stack_forest
 from jax.experimental import PartitionSpec, maps
-from jax.experimental.pjit import pjit
+from jax.experimental.pjit import pjit, with_sharding_constraint
 from tqdm import tqdm
 from transformers import HfArgumentParser
 
@@ -247,6 +247,10 @@ class TrainingArguments:
     block_size: int = field(
         default=1024,
         metadata={"help": "Chunked size for large layers with Distributed Shampoo."},
+    )
+    start_preconditioning_step: int = field(
+        default=100,
+        metadata={"help": "Number of steps before starting to update preconditioner."},
     )
     preconditioning_compute_steps: int = field(
         default=10, metadata={"help": "Number of steps to update preconditioner."}
@@ -478,6 +482,7 @@ def main():
             artifact_dir,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
+            load_on_cpu=True,
         )
 
         # load tokenizer
@@ -501,12 +506,14 @@ def main():
                 seed=training_args.seed_model,
                 dtype=getattr(jnp, model_args.dtype),
                 abstract_init=True,
+                load_on_cpu=True,
             )
         else:
             model = DalleBart(
                 config,
                 seed=training_args.seed_model,
                 dtype=getattr(jnp, model_args.dtype),
+                load_on_cpu=True,
             )
 
         # Load tokenizer
@@ -519,6 +526,12 @@ def main():
                 model_args.model_name_or_path,
                 use_fast=True,
             )
+
+    # get PartitionSpec for model params (required to be a dict)
+    param_spec = set_partitions(model.params)
+
+    # convert params to frozen dict
+    model._params = freeze(model.params)
 
     # Preprocessing the datasets.
     # We need to normalize and tokenize inputs and targets.
@@ -536,14 +549,14 @@ def main():
 
     # Store some constant
     num_epochs = training_args.num_train_epochs
-    # batch size per node
-    train_batch_size = (
-        training_args.per_device_train_batch_size * jax.local_device_count()
+    # batch size
+    minibatch_size = (
+        training_args.per_device_train_batch_size * training_args.dp_devices
     )
-    batch_size_per_node = train_batch_size * training_args.gradient_accumulation_steps
+    batch_size_per_node = minibatch_size * training_args.gradient_accumulation_steps
     batch_size_per_step = batch_size_per_node * jax.process_count()
     eval_batch_size = (
-        training_args.per_device_eval_batch_size * jax.local_device_count()
+        training_args.per_device_eval_batch_size * training_args.dp_devices
     )
     len_train_dataset, len_eval_dataset = dataset.length
     steps_per_epoch = (
@@ -599,14 +612,17 @@ def main():
             beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
             matrix_epsilon=1e-8,
-            start_preconditioning_step=training_args.warmup_steps,
+            start_preconditioning_step=training_args.start_preconditioning_step,
             preconditioning_compute_steps=training_args.preconditioning_compute_steps,
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
             graft_type=GraftingType.RMSPROP_NORMALIZED,
             nesterov=False,
             exponent_override=0,
-            batch_axis_name="batch",
+            statistics_partition_spec=PartitionSpec(None, "batch", None),
+            preconditioner_partition_spec=PartitionSpec("batch", None, None),
+            num_devices_for_pjit=training_args.dp_devices,
+            shard_optimizer_states=True,
             inverse_failure_threshold=0.1,
             moving_average_for_momentum=True,
             skip_preconditioning_dim_size_gt=training_args.skip_preconditioning_dim_size_gt,
@@ -614,6 +630,13 @@ def main():
             precision=jax.lax.Precision.HIGHEST,
             best_effort_memory_usage_reduction=training_args.optim_quantized,
         )
+        # get the real optimizer and helper functions
+        update_fn = optimizer.update
+        optimizer = optimizer.init(model.params)
+        opt_fn = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
+            optimizer.pspec_fn, optimizer.shape_and_dtype_fn
+        )
+        optimizer = optax.GradientTransformation(optimizer.init_fn, update_fn)
 
     elif training_args.optim == "adam":
         optimizer = optax.adamw(
@@ -630,31 +653,45 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
         )
 
-    # get opt_state shape without actual init
-    opt_state_shape = jax.eval_shape(lambda x: optimizer.init(x), model.params)
-
-    # get PartitionSpec for model params
-    param_spec = set_partitions(model.params)
-
-    # create PartitionSpec for opt_state
-    def opt_state_spec_per_leaf(x):
+    # get PartitionSpec for optimizer state
+    def get_opt_state_spec_and_shape(param_spec):
         if training_args.optim in ["adam", "adafactor"]:
-            if isinstance(x, dict):
-                # variables with same structure as params
-                return param_spec
-            else:
-                # other variables such as count
-                return None
-        else:
-            # TODO: create spec for Distributed Shampoo
-            raise NotImplementedError
+            # get opt_state shape without actual init
+            opt_state_shape = jax.eval_shape(optimizer.init, model.params)
 
-    opt_state_spec = jax.tree_map(
-        opt_state_spec_per_leaf,
-        opt_state_shape,
-        # return None spec for empty elements
-        is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
-    )
+            if training_args.optim == "adam":
+
+                def _opt_state_spec_per_leaf(x):
+                    if isinstance(x, FrozenDict):
+                        # variables with same structure as params
+                        return param_spec
+                    else:
+                        # other variables such as count
+                        return None
+
+                opt_state_spec = jax.tree_map(
+                    _opt_state_spec_per_leaf,
+                    opt_state_shape,
+                    # return None spec for empty elements
+                    is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
+                )
+
+            elif training_args.optim == "adafactor":
+                # factorized state must be replicated (rank different than params)
+                opt_state_spec = None
+
+        elif training_args.optim == "distributed_shampoo":
+            opt_state_spec = opt_fn.pspec_fn(
+                params=model.params,
+                params_partition_spec=param_spec,
+                partition_spec_for_statistics=PartitionSpec(None, "batch", None),
+            )
+            opt_state_shape = opt_fn.shape_and_dtype_fn(model.params)
+        else:
+            raise NotImplementedError
+        return opt_state_spec, opt_state_shape
+
+    opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape(param_spec)
 
     # create a mesh
     mesh_shape = (training_args.dp_devices, training_args.mp_devices)
@@ -674,51 +711,61 @@ def main():
         tx=optimizer,
     )
 
-    opt_state, attr_state = None, None
-    if training_args.resume_from_checkpoint is not None:
-        # restore opt_state
-        with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
-            opt_state = from_bytes(opt_state_shape, f.read())
-            # need to freeze dict for pjit
-            opt_state = jax.tree_map(
-                lambda x: freeze(x) if isinstance(x, dict) else x,
-                opt_state,
-                is_leaf=lambda x: isinstance(x, (dict, optax.EmptyState)),
-            )
-        # restore other attributes
-        with (Path(artifact_dir) / "training_state.json").open("r") as f:
-            attr_state = json.load(f)
-
     # create training state
-    def init_state(params, opt_state):
-        if training_args.resume_from_checkpoint is None:
-            state = TrainState.create(
-                apply_fn=model.__call__,
-                tx=optimizer,
-                params=freeze(params),
-                dropout_rng=dropout_rng,
-            )
-        else:
-            state = TrainState(
-                apply_fn=model.__call__,
-                tx=optimizer,
-                params=freeze(params),
-                opt_state=opt_state,
-                dropout_rng=dropout_rng,
-                **attr_state,
-            )
-        return state
-
     with maps.mesh(mesh.devices, mesh.axis_names):
-        state = pjit(
-            init_state,
-            in_axis_resources=(param_spec, opt_state_spec),
-            out_axis_resources=state_spec,
-            donate_argnums=(0, 1),
-        )(freeze(model.params), opt_state)
+        if training_args.resume_from_checkpoint is None:
 
-    # free memory from large parameters
-    del model._params, opt_state
+            def init_state(params):
+                return TrainState.create(
+                    apply_fn=model.__call__,
+                    tx=optimizer,
+                    params=params,
+                    dropout_rng=dropout_rng,
+                )
+
+            state = pjit(
+                init_state,
+                in_axis_resources=(param_spec,),
+                out_axis_resources=state_spec,
+                donate_argnums=(0,),
+            )(model.params)
+
+        else:
+            # restore opt_state
+            with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
+                opt_state = from_bytes(opt_state_shape, f.read())
+
+            # restore other attributes
+            with (Path(artifact_dir) / "training_state.json").open("r") as f:
+                attr_state = json.load(f)
+
+            def restore_state(params, opt_state):
+                return TrainState(
+                    apply_fn=model.__call__,
+                    tx=optimizer,
+                    params=params,
+                    opt_state=opt_state,
+                    dropout_rng=dropout_rng,
+                    **attr_state,
+                )
+
+            state = pjit(
+                restore_state,
+                in_axis_resources=(param_spec, opt_state_spec),
+                out_axis_resources=state_spec,
+                donate_argnums=(0, 1),
+            )(model.params, opt_state)
+
+            # remove opt_state from CPU
+            del opt_state
+
+    # free memory
+    del model._params
+
+    # define batch specs
+    keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
+    batch_spec = freeze({k: PartitionSpec("batch") for k in keys})
+    grad_batch_spec = freeze({k: PartitionSpec(None, "batch") for k in keys})
 
     # label smoothed cross entropy
     def loss_fn(logits, labels):
@@ -728,11 +775,24 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
-        dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
-        # use a different rng per node
-        dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
+        # batch is (gradient_accumulation_steps, minibatch_size, ...)
+        # check correct batch shape during compilation
+        assert batch["labels"].shape[0:3] == (
+            training_args.gradient_accumulation_steps,
+            training_args.dp_devices,
+            training_args.per_device_train_batch_size,
+        ), f"Expected label batch of shape dp_devices x gradient_acculumation x batch_per_device and got {batch['labels'].shape}"
 
-        def compute_loss(params, minibatch):
+        # get a minibatch (one gradient accumulation slice)
+        def get_minibatch(batch, grad_idx):
+            return jax.tree_map(
+                lambda x: jax.lax.dynamic_index_in_dim(x, grad_idx, keepdims=False),
+                batch,
+            )
+
+        def compute_loss(params, minibatch, dropout_rng):
+            # minibatch has dim (batch_size, ...)
+            minibatch = unfreeze(minibatch)
             labels = minibatch.pop("labels")
             logits = state.apply_fn(
                 **minibatch, params=params, dropout_rng=dropout_rng, train=True
@@ -741,36 +801,75 @@ def main():
 
         grad_fn = jax.value_and_grad(compute_loss)
 
+        def loss_and_grad(grad_idx, dropout_rng):
+            # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
+            minibatch = get_minibatch(batch, grad_idx)
+            # ensure batch is sharded over devices
+            minibatch = jax.tree_map(
+                lambda x: with_sharding_constraint(x, PartitionSpec("batch")), minibatch
+            )
+            # calculate loss and grads independently per dp_device
+            loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, None), out_axes=(0, 0))(
+                state.params, minibatch, dropout_rng
+            )
+            # ensure they are sharded over devices
+            loss_grads = jax.tree_map(
+                lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
+                loss_grads,
+            )
+
+            # average across all devices
+            loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
+
+            # return loss and grads
+            return loss_grads
+
+        # create a new rng
+        dropout_rng, _ = jax.random.split(state.dropout_rng)
+        # use a different rng per node
+        dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
+
         if training_args.gradient_accumulation_steps == 1:
-            minibatch = jax.tree_map(lambda x: x[0], batch)
-            loss, grads = grad_fn(state.params, minibatch)
+
+            def batch_step(dropout_rng):
+                dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
+                loss_grad = loss_and_grad(0, dropout_rng)
+                return loss_grad, new_dropout_rng
+
+            loss_grad, dropout_rng = batch_step(dropout_rng)
         else:
-
-            def _cumul_loss_grads(i, cumul_loss_grads):
-                minibatch = jax.tree_map(lambda x: x[i], batch)
-                return jax.tree_map(
-                    lambda x, y: x + y,
-                    cumul_loss_grads,
-                    grad_fn(state.params, minibatch),
-                )
-
-            init_loss_grads = (
+            # create initial state for per_minibatch_step loop
+            init_cumul_loss_grad = (
                 0.0,
                 jax.tree_map(jnp.zeros_like, state.params),
             )
-            loss, grads = jax.tree_map(
-                lambda x: x / training_args.gradient_accumulation_steps,
-                jax.lax.fori_loop(
-                    0,
-                    training_args.gradient_accumulation_steps,
-                    _cumul_loss_grads,
-                    init_loss_grads,
-                ),
+            init_minibatch_step = (init_cumul_loss_grad, dropout_rng)
+
+            # accumulate gradients
+            def cumul_minibatch_step(grad_idx, cumul_loss_grad_dropout):
+                cumul_loss_grad, dropout_rng = cumul_loss_grad_dropout
+                dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
+                loss_grad = loss_and_grad(grad_idx, dropout_rng)
+                cumul_loss_grad = jax.tree_map(jnp.add, cumul_loss_grad, loss_grad)
+                return cumul_loss_grad, new_dropout_rng
+
+            # loop over gradients
+            loss_grad, dropout_rng = jax.lax.fori_loop(
+                0,
+                training_args.gradient_accumulation_steps,
+                cumul_minibatch_step,
+                init_minibatch_step,
+            )
+            # sum -> mean
+            loss_grad = jax.tree_map(
+                lambda x: x / training_args.gradient_accumulation_steps, loss_grad
             )
 
+        # update state
+        loss, grads = loss_grad
         state = state.apply_gradients(
             grads=grads,
-            dropout_rng=new_dropout_rng,
+            dropout_rng=dropout_rng,
             train_time=state.train_time + delta_time,
             train_samples=state.train_samples + batch_size_per_step,
         )
@@ -784,6 +883,7 @@ def main():
 
     # Define eval fn
     def eval_step(params, batch):
+        batch = unfreeze(batch)
         labels = batch.pop("labels")
         logits = model(**batch, params=params, train=False)[0]
         loss = loss_fn(logits, labels)
@@ -795,13 +895,13 @@ def main():
     # Create parallel version of the train and eval step
     p_train_step = pjit(
         train_step,
-        in_axis_resources=(state_spec, PartitionSpec("batch", None), None),
+        in_axis_resources=(state_spec, grad_batch_spec, None),
         out_axis_resources=(state_spec, None),
         donate_argnums=(0,),
     )
     p_eval_step = pjit(
         eval_step,
-        in_axis_resources=(param_spec, PartitionSpec("batch", None)),
+        in_axis_resources=(param_spec, batch_spec),
         out_axis_resources=None,
     )
 
@@ -842,9 +942,7 @@ def main():
         # ======================== Evaluating ==============================
         eval_metrics = []
         if training_args.do_eval:
-            eval_loader = dataset.dataloader(
-                "eval", training_args.per_device_eval_batch_size
-            )
+            eval_loader = dataset.dataloader("eval", eval_batch_size)
             eval_steps = (
                 len_eval_dataset // eval_batch_size
                 if len_eval_dataset is not None
@@ -857,8 +955,8 @@ def main():
                 leave=False,
                 total=eval_steps,
             ):
-                # Model forward
-                metrics = p_eval_step(state.params, batch)
+                # TODO: make this more efficient once training loop is fast
+                metrics = p_eval_step(state.params, freeze(batch))
                 eval_metrics.append(metrics)
 
             # normalize eval metrics
@@ -962,8 +1060,7 @@ def main():
             # Generate an epoch by shuffling sampling indices from the train dataset
             train_loader = dataset.dataloader(
                 "train",
-                training_args.per_device_train_batch_size,
-                training_args.gradient_accumulation_steps,
+                batch_size_per_node,
                 epoch,
             )
             # train
@@ -974,15 +1071,27 @@ def main():
                 leave=False,
                 total=steps_per_epoch,
             ):
-
                 # calculate delta time (we have a lag of one step but it's ok)
                 new_time = time.perf_counter()
                 delta_time = new_time - last_time
                 last_time = new_time
 
+                # reshape data into (gradient_accumulation_steps, dp_devices, batch_per_dp, ...)
+                batch = jax.tree_map(
+                    lambda x: x.reshape(
+                        (
+                            training_args.gradient_accumulation_steps,
+                            training_args.dp_devices,
+                            training_args.per_device_train_batch_size,
+                        )
+                        + x.shape[1:]
+                    ),
+                    batch,
+                )
+
                 # train step
-                state, train_metrics = p_train_step(state, batch, delta_time)
-                step = state.step
+                state, train_metrics = p_train_step(state, freeze(batch), delta_time)
+                step = int(state.step)
 
                 if step % training_args.logging_steps == 0 and jax.process_index() == 0:
                     all_metrics = metrics_logger.get_all_train_metrics(
