@@ -777,9 +777,10 @@ def main():
     def train_step(state, batch, delta_time):
         # batch is (gradient_accumulation_steps, minibatch_size, ...)
         # check correct batch shape during compilation
-        assert batch["labels"].shape[0:2] == (
+        assert batch["labels"].shape[0:3] == (
             training_args.gradient_accumulation_steps,
-            minibatch_size,
+            training_args.dp_devices,
+            training_args.per_device_train_batch_size,
         ), f"Expected label batch of shape dp_devices x gradient_acculumation x batch_per_device and got {batch['labels'].shape}"
 
         # get a minibatch (one gradient accumulation slice)
@@ -801,13 +802,27 @@ def main():
         grad_fn = jax.value_and_grad(compute_loss)
 
         def loss_and_grad(grad_idx, dropout_rng):
+            # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
             minibatch = get_minibatch(batch, grad_idx)
             # ensure batch is sharded over devices
             minibatch = jax.tree_map(
                 lambda x: with_sharding_constraint(x, PartitionSpec("batch")), minibatch
             )
+            # calculate loss and grads independently per dp_device
+            loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, None), out_axes=(0, 0))(
+                state.params, minibatch, dropout_rng
+            )
+            # ensure they are sharded over devices
+            loss_grads = jax.tree_map(
+                lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
+                loss_grads,
+            )
+
+            # average across all devices
+            loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
+
             # return loss and grads
-            return grad_fn(state.params, minibatch, dropout_rng)
+            return loss_grads
 
         # create a new rng
         dropout_rng, _ = jax.random.split(state.dropout_rng)
@@ -1061,12 +1076,13 @@ def main():
                 delta_time = new_time - last_time
                 last_time = new_time
 
-                # reshape data into (gradient_accumulation_steps, minibatch_size, ...)
+                # reshape data into (gradient_accumulation_steps, dp_devices, batch_per_dp, ...)
                 batch = jax.tree_map(
                     lambda x: x.reshape(
                         (
                             training_args.gradient_accumulation_steps,
-                            minibatch_size,
+                            training_args.dp_devices,
+                            training_args.per_device_train_batch_size,
                         )
                         + x.shape[1:]
                     ),
