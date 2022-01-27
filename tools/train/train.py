@@ -88,6 +88,24 @@ class ModelArguments:
             "help": "Floating-point format in which the computations will be performed (not the model weights). Choose one of `[float32, float16, bfloat16]`."
         },
     )
+    restore_state: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "Restore optimizer and training state associated with a wandb checkpoint."
+        },
+    )
+
+    state_artifact: str = field(init=False)
+
+    def __post_init__(self):
+        if self.restore_state:
+            assert (
+                "/model-" in self.model_name_or_path
+            ), "Restoring state only available with W&B artifact reference"
+            self.state_artifact = self.model_name_or_path.replace(
+                "/model-", "/state-", 1
+            )
+            raise ValueError("Need a dataset repository or path.")
 
 
 @dataclass
@@ -319,11 +337,6 @@ class TrainingArguments:
         },
     )
 
-    resume_from_checkpoint: Optional[str] = field(
-        default=None,
-        metadata={"help": "Reference to a wandb artifact for resuming training."},
-    )
-
     wandb_entity: Optional[str] = field(
         default=None,
         metadata={"help": "The wandb entity to use (for teams)."},
@@ -348,6 +361,8 @@ class TrainingArguments:
             "help": "Number of devices required for model parallelism. The other dimension of available devices is used for data parallelism."
         },
     )
+
+    dp_devices: int = field(init=False)
 
     def __post_init__(self):
         assert self.optim in [
@@ -470,62 +485,40 @@ def main():
             config=parser.parse_args(),
         )
 
-    if training_args.resume_from_checkpoint is not None:
-        if jax.process_index() == 0:
-            artifact = wandb.run.use_artifact(training_args.resume_from_checkpoint)
-        else:
-            artifact = wandb.Api().artifact(training_args.resume_from_checkpoint)
-        artifact_dir = artifact.download()
+    # Set up our new model config
+    if model_args.config_name:
+        config = DalleBartConfig.from_pretrained(model_args.config_name)
+    else:
+        config = None
 
-        # load model
+    # Load or create new model
+    if model_args.model_name_or_path:
         model = DalleBart.from_pretrained(
-            artifact_dir,
+            model_args.model_name_or_path,
+            config=config,
+            seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
             load_on_cpu=True,
         )
-
-        # load tokenizer
-        tokenizer = DalleBartTokenizer.from_pretrained(
-            artifact_dir,
-            use_fast=True,
+    else:
+        model = DalleBart(
+            config,
+            seed=training_args.seed_model,
+            dtype=getattr(jnp, model_args.dtype),
+            load_on_cpu=True,
         )
 
+    # Load tokenizer
+    if model_args.tokenizer_name is not None:
+        tokenizer = DalleBartTokenizer.from_pretrained(
+            model_args.tokenizer_name, use_fast=True
+        )
     else:
-        # Set up our new model config
-        if model_args.config_name:
-            config = DalleBartConfig.from_pretrained(model_args.config_name)
-        else:
-            config = None
-
-        # Load or create new model
-        if model_args.model_name_or_path:
-            model = DalleBart.from_pretrained(
-                model_args.model_name_or_path,
-                config=config,
-                seed=training_args.seed_model,
-                dtype=getattr(jnp, model_args.dtype),
-                abstract_init=True,
-                load_on_cpu=True,
-            )
-        else:
-            model = DalleBart(
-                config,
-                seed=training_args.seed_model,
-                dtype=getattr(jnp, model_args.dtype),
-                load_on_cpu=True,
-            )
-
-        # Load tokenizer
-        if model_args.tokenizer_name is not None:
-            tokenizer = DalleBartTokenizer.from_pretrained(
-                model_args.tokenizer_name, use_fast=True
-            )
-        else:
-            tokenizer = DalleBartTokenizer.from_pretrained(
-                model_args.model_name_or_path,
-                use_fast=True,
-            )
+        tokenizer = DalleBartTokenizer.from_pretrained(
+            model_args.model_name_or_path,
+            use_fast=True,
+        )
 
     # get PartitionSpec for model params (required to be a dict)
     param_spec = set_partitions(model.params)
@@ -698,7 +691,7 @@ def main():
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
     mesh = maps.Mesh(devices, ("batch", "mp"))
 
-    # Create state spec
+    # define state spec
     state_spec = TrainState(
         params=param_spec,
         opt_state=opt_state_spec,
@@ -713,7 +706,7 @@ def main():
 
     # create training state
     with maps.mesh(mesh.devices, mesh.axis_names):
-        if training_args.resume_from_checkpoint is None:
+        if not model_args.restore_state:
 
             def init_state(params):
                 return TrainState.create(
@@ -731,6 +724,13 @@ def main():
             )(model.params)
 
         else:
+            # get state files from artifact
+            if jax.process_index() == 0:
+                artifact = wandb.run.use_artifact(model_args.state_artifact)
+            else:
+                artifact = wandb.Api().artifact(model_args.state_artifact)
+            artifact_dir = artifact.download()
+
             # restore opt_state
             with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
                 opt_state = from_bytes(opt_state_shape, f.read())
@@ -998,51 +998,46 @@ def main():
                     f,
                 )
 
-            if jax.process_index() == 0:
-                # save to W&B
-                if training_args.log_model:
-                    # save some space
-                    c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
-                    c.cleanup(wandb.util.from_human_size("10GB"))
+            # save to W&B
+            if training_args.log_model:
+                # save some space
+                c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
+                c.cleanup(wandb.util.from_human_size("10GB"))
 
-                    metadata = dict(state_dict)
-                    metadata["num_params"] = num_params
-                    if eval_metrics is not None:
-                        metadata["eval"] = eval_metrics
-                    artifact = wandb.Artifact(
-                        name=f"model-{wandb.run.id}",
-                        type="bart_model",
-                        metadata=metadata,
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "flax_model.msgpack")
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "config.json")
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "tokenizer.json")
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "tokenizer_config.json")
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "vocab.json")
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "merges.txt")
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "special_tokens_map.json")
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "opt_state.msgpack")
-                    )
-                    artifact.add_file(
-                        str(Path(training_args.output_dir) / "training_state.json")
-                    )
+                metadata = dict(state_dict)
+                metadata["num_params"] = num_params
+                if eval_metrics is not None:
+                    metadata["eval"] = eval_metrics
 
-                    wandb.run.log_artifact(artifact)
+                # create model artifact
+                artifact = wandb.Artifact(
+                    name=f"model-{wandb.run.id}",
+                    type="DalleBart_model",
+                    metadata=metadata,
+                )
+                for filename in [
+                    "config.json",
+                    "flax_model.msgpack",
+                    "merges.txt",
+                    "special_tokens_map.json",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vocab.json",
+                ]:
+                    artifact.add_file(f"{Path(training_args.output_dir) / filename}")
+                wandb.run.log_artifact(artifact)
+
+                # create state artifact
+                artifact_state = wandb.Artifact(
+                    name=f"state-{wandb.run.id}",
+                    type="DalleBart_state",
+                    metadata=metadata,
+                )
+                for filename in ["opt_state.msgpack", "training_state.json"]:
+                    artifact_state.add_file(
+                        f"{Path(training_args.output_dir) / filename}"
+                    )
+                wandb.run.log_artifact(artifact_state)
 
     # init variables
     last_time = time.perf_counter()
