@@ -105,7 +105,6 @@ class ModelArguments:
             self.state_artifact = self.model_name_or_path.replace(
                 "/model-", "/state-", 1
             )
-            raise ValueError("Need a dataset repository or path.")
 
 
 @dataclass
@@ -648,30 +647,29 @@ def main():
 
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape(param_spec):
-        if training_args.optim in ["adam", "adafactor"]:
-            # get opt_state shape without actual init
-            opt_state_shape = jax.eval_shape(optimizer.init, model.params)
+        # get opt_state shape without actual init
+        opt_state_shape = jax.eval_shape(optimizer.init, model.params)
 
-            if training_args.optim == "adam":
+        if training_args.optim == "adam":
 
-                def _opt_state_spec_per_leaf(x):
-                    if isinstance(x, FrozenDict):
-                        # variables with same structure as params
-                        return param_spec
-                    else:
-                        # other variables such as count
-                        return None
+            def _opt_state_spec_per_leaf(x):
+                if isinstance(x, FrozenDict):
+                    # variables with same structure as params
+                    return param_spec
+                else:
+                    # other variables such as count
+                    return None
 
-                opt_state_spec = jax.tree_map(
-                    _opt_state_spec_per_leaf,
-                    opt_state_shape,
-                    # return None spec for empty elements
-                    is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
-                )
+            opt_state_spec = jax.tree_map(
+                _opt_state_spec_per_leaf,
+                opt_state_shape,
+                # return None spec for empty elements
+                is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
+            )
 
-            elif training_args.optim == "adafactor":
-                # factorized state must be replicated (rank different than params)
-                opt_state_spec = None
+        elif training_args.optim == "adafactor":
+            # factorized state must be replicated (rank different than params)
+            opt_state_spec = None
 
         elif training_args.optim == "distributed_shampoo":
             opt_state_spec = opt_fn.pspec_fn(
@@ -679,7 +677,6 @@ def main():
                 params_partition_spec=param_spec,
                 partition_spec_for_statistics=PartitionSpec(None, "batch", None),
             )
-            opt_state_shape = opt_fn.shape_and_dtype_fn(model.params)
         else:
             raise NotImplementedError
         return opt_state_spec, opt_state_shape
@@ -760,7 +757,7 @@ def main():
             del opt_state
 
     # free memory
-    del model._params
+    del model._params, opt_state_spec, opt_state_shape
 
     # define batch specs
     keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
