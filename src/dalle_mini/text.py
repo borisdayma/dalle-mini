@@ -116,7 +116,7 @@ def remove_comma_numbers(t):
 
 
 def pre_process_dot_numbers(t):
-    return re.sub("(\w)\.(\w)", fr"\1{temp_token}dot{temp_token}\2", t)
+    return re.sub("(\w)\.(\w)", rf"\1{temp_token}dot{temp_token}\2", t)
 
 
 def post_process_dot_numbers(t):
@@ -126,7 +126,7 @@ def post_process_dot_numbers(t):
 def pre_process_quotes(t):
     # allows quotes only for 's, 't, 'd, 'm, 'll, 're, 've
     return re.sub(
-        r"'(?=([stdm]|(ll)|(re)|(ve)|(ll))\b)", fr"{temp_token}quote{temp_token}", t
+        r"'(?=([stdm]|(ll)|(re)|(ve)|(ll))\b)", rf"{temp_token}quote{temp_token}", t
     )
 
 
@@ -135,7 +135,7 @@ def post_process_quotes(t):
 
 
 def pre_process_dates(t):
-    return re.sub("(\d)/(\d)", fr"\1{temp_token}slash{temp_token}\2", t)
+    return re.sub("(\d)/(\d)", rf"\1{temp_token}slash{temp_token}\2", t)
 
 
 def post_process_dates(t):
