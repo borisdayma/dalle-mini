@@ -395,17 +395,16 @@ class TrainState(train_state.TrainState):
 
 
 class MetricsLogger:
-    def __init__(self, state):
-        self.step = int(state.step)
+    def __init__(self, step):
+        self.step = step
         self.time = time.perf_counter()
+        self.state_dict = {}
 
-    def get_all_train_metrics(self, train_metrics, state):
-        """Make a dict of training metrics to be logged"""
-        metrics = train_metrics
-        # get state parameters
-        state_dict = {
-            k.split("_")[-1]: getattr(state, k)
-            for k in ["epoch", "train_time", "train_samples"]
+    def update_state_metrics(self, state):
+        """Update internal state metrics (logged at each call to be used as x-axis)"""
+        self.state_dict = {
+            f'train/{k.split("_")[-1]}': getattr(state, k)
+            for k in ["step", "epoch", "train_time", "train_samples"]
         }
         # timing metrics
         new_step = int(state.step)
@@ -414,19 +413,15 @@ class MetricsLogger:
             time_per_step = (new_time - self.time) / (new_step - self.step)
             self.step = new_step
             self.time = new_time
-            state_dict["time_per_step"] = time_per_step
-        return {**metrics, **state_dict}
+            self.state_dict["train/time_per_step"] = time_per_step
 
-    @staticmethod
-    def log(metrics, step=None, prefix=None):
+    def log(self, metrics, prefix=None):
         if jax.process_index() == 0:
             log_metrics = {
                 f"{prefix}/{k}" if prefix is not None else k: v
                 for k, v in metrics.items()
             }
-            if step is not None:
-                log_metrics["train/step"] = step
-            wandb.log(log_metrics)
+            wandb.log({**log_metrics, **self.state_dict})
 
 
 def main():
@@ -878,9 +873,9 @@ def main():
         return state, metrics
 
     # Define eval fn
-    def eval_step(params, batch):
+    def eval_step(state, batch):
         batch, labels = batch.pop("labels")
-        logits = model(**batch, params=params, train=False)[0]
+        logits = model(**batch, params=state.params, train=False)[0]
         loss = loss_fn(logits, labels)
         return loss
 
@@ -893,7 +888,7 @@ def main():
     )
     p_eval_step = pjit(
         eval_step,
-        in_axis_resources=(param_spec, batch_spec),
+        in_axis_resources=(state_spec, batch_spec),
         out_axis_resources=None,
     )
 
@@ -913,10 +908,14 @@ def main():
         range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
     )
 
-    metrics_logger = MetricsLogger(state)
+    # init variables
+    last_time = time.perf_counter()
+    train_metrics = None
+    step = int(state.step)
+    metrics_logger = MetricsLogger(step)
+
     if jax.process_index() == 0:
         # set default x-axis as 'train/step'
-        metrics_logger.log({}, step=state.step)
         wandb.define_metric("*", step_metric="train/step")
 
         # add interesting config parameters
@@ -950,7 +949,7 @@ def main():
                 # freeze batch to pass safely to JAX transforms
                 batch = freeze(batch)
                 # accumulate losses async
-                eval_loss.append(p_eval_step(state.params, batch))
+                eval_loss.append(p_eval_step(state, batch))
 
             # get the mean of the loss
             eval_loss = jnp.stack(eval_loss)
@@ -958,7 +957,7 @@ def main():
             eval_metrics = {"loss": eval_loss}
 
             # log metrics
-            metrics_logger.log(eval_metrics, step=state.step, prefix="eval")
+            metrics_logger.log(eval_metrics, prefix="eval")
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -1036,16 +1035,12 @@ def main():
                     )
                 wandb.run.log_artifact(artifact_state)
 
-    # init variables
-    last_time = time.perf_counter()
-    train_metrics = None
-    step = int(state.step)
-
     with maps.mesh(mesh.devices, mesh.axis_names):
         for epoch in epochs:
             state.replace(epoch=epoch)
             # ======================== Training ================================
-            metrics_logger.log({"train/epoch": epoch}, step=state.step)
+            metrics_logger.update_state_metrics(state)
+            metrics_logger.log({})
 
             # Generate an epoch by shuffling sampling indices from the train dataset
             train_loader = dataset.dataloader(
@@ -1086,10 +1081,8 @@ def main():
                 step += 1
 
                 if step % training_args.logging_steps == 0 and jax.process_index() == 0:
-                    all_metrics = metrics_logger.get_all_train_metrics(
-                        train_metrics, state
-                    )
-                    metrics_logger.log(all_metrics, step=step, prefix="train")
+                    metrics_logger.update_state_metrics(state)
+                    metrics_logger.log(train_metrics, prefix="train")
 
                 eval_metrics = None
                 if step % training_args.eval_steps == 0:
@@ -1100,8 +1093,8 @@ def main():
 
             # log final train metrics
             if train_metrics is not None:
-                all_metrics = metrics_logger.get_all_train_metrics(train_metrics, state)
-                metrics_logger.log(all_metrics, step=step, prefix="train")
+                metrics_logger.update_state_metrics(state)
+                metrics_logger.log(train_metrics, prefix="train")
 
                 epochs.write(
                     f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
