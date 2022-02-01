@@ -806,15 +806,14 @@ def main():
             # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
             minibatch = get_minibatch(batch, grad_idx)
             # calculate loss and grads independently per dp_device
-            dropout_rng, dp_rng = jax.random.split(dropout_rng)
-            dp_rng = jax.random.split(dp_rng, training_args.dp_devices)
+            dropout_rng, _ = jax.random.split(dropout_rng)
             # ensure inputs are sharded per device
-            minibatch, dp_rng = jax.tree_map(
+            minibatch = jax.tree_map(
                 lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
-                (minibatch, dp_rng),
+                minibatch,
             )
-            loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, 0), out_axes=(0, 0))(
-                state.params, minibatch, dp_rng
+            loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, None), out_axes=(0, 0))(
+                state.params, minibatch, dropout_rng
             )
             # ensure outputs are sharded per device
             loss_grads = jax.tree_map(
