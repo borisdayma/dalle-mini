@@ -783,7 +783,7 @@ def main():
             batch,
         )
         # ensure data is sharded correctly per dp device
-        batch = jax.tree_map(lambda x: with_sharding_constraint(x, grad_batch_spec))
+        batch = with_sharding_constraint(batch, grad_batch_spec)
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
@@ -887,7 +887,7 @@ def main():
             batch,
         )
         # ensure data is sharded correctly per dp device
-        batch = jax.tree_map(lambda x: with_sharding_constraint(x, batch_spec))
+        batch = with_sharding_constraint(batch, batch_spec)
 
         def compute_eval_loss(batch):
             batch, labels = batch.pop("labels")
