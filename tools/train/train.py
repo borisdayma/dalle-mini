@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2021 The HuggingFace Team All rights reserved.
+# Copyright 2021-2022 The HuggingFace & DALL·E Mini Team All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Fine-tuning the library models for seq2seq, text to image.
+Training DALL·E Mini.
 Script adapted from run_summarization_flax.py
 """
 
@@ -812,6 +812,7 @@ def main():
                 lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
                 minibatch,
             )
+            # only 1 single rng per grad step, let us handle larger batch size
             loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, None), out_axes=(0, 0))(
                 state.params, minibatch, dropout_rng
             )
