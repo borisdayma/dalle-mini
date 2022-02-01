@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2021 The HuggingFace Team All rights reserved.
+# Copyright 2021-2022 The HuggingFace & DALL·E Mini Team All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Fine-tuning the library models for seq2seq, text to image.
+Training DALL·E Mini.
 Script adapted from run_summarization_flax.py
 """
 
@@ -527,23 +527,29 @@ def main():
     dataset.preprocess(tokenizer=tokenizer, config=model.config)
 
     # Initialize our training
-    rng = jax.random.PRNGKey(training_args.seed_model)
-    rng, dropout_rng = jax.random.split(rng)
+    dropout_rng = jax.random.PRNGKey(training_args.seed_model)
 
     # Store some constant
     num_epochs = training_args.num_train_epochs
     # batch size
-    minibatch_size = (
-        training_args.per_device_train_batch_size * training_args.dp_devices
+    batch_size_per_node_per_grad_step = (
+        training_args.per_device_train_batch_size
+        * jax.local_device_count()
+        // training_args.mp_devices
     )
-    batch_size_per_node = minibatch_size * training_args.gradient_accumulation_steps
+    batch_size_per_node = (
+        batch_size_per_node_per_grad_step * training_args.gradient_accumulation_steps
+    )
     batch_size_per_step = batch_size_per_node * jax.process_count()
-    eval_batch_size = (
-        training_args.per_device_eval_batch_size * training_args.dp_devices
+    eval_batch_size_per_node = (
+        training_args.per_device_eval_batch_size
+        * jax.local_device_count()
+        // training_args.mp_devices
     )
+    eval_batch_size_per_step = eval_batch_size_per_node * jax.process_count()
     len_train_dataset, len_eval_dataset = dataset.length
     steps_per_epoch = (
-        len_train_dataset // batch_size_per_node
+        len_train_dataset // batch_size_per_step
         if len_train_dataset is not None
         else None
     )
@@ -763,13 +769,21 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
-        # batch is (gradient_accumulation_steps, minibatch_size, ...)
-        # check correct batch shape during compilation
-        assert batch["labels"].shape[0:3] == (
-            training_args.gradient_accumulation_steps,
-            training_args.dp_devices,
-            training_args.per_device_train_batch_size,
-        ), f"Expected label batch of shape dp_devices x gradient_acculumation x batch_per_device and got {batch['labels'].shape}"
+        # we reshape to (gradient_accumulation_steps, dp_devices, ...)
+        # allows feeding partial batch size per node for full model parallel
+        batch = jax.tree_map(
+            lambda x: x.reshape(
+                (
+                    training_args.gradient_accumulation_steps,
+                    training_args.dp_devices,
+                    training_args.per_device_train_batch_size,
+                )
+                + x.shape[2:]
+            ),
+            batch,
+        )
+        # ensure data is sharded correctly per dp device
+        batch = with_sharding_constraint(batch, grad_batch_spec)
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
@@ -791,54 +805,45 @@ def main():
         def loss_and_grad(grad_idx, dropout_rng):
             # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
             minibatch = get_minibatch(batch, grad_idx)
-            # ensure batch is sharded over devices
-            minibatch = jax.tree_map(
-                lambda x: with_sharding_constraint(x, PartitionSpec("batch")), minibatch
-            )
             # calculate loss and grads independently per dp_device
+            dropout_rng, _ = jax.random.split(dropout_rng)
+            # ensure inputs are sharded per device
+            minibatch = jax.tree_map(
+                lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
+                minibatch,
+            )
+            # only 1 single rng per grad step, let us handle larger batch size
             loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, None), out_axes=(0, 0))(
                 state.params, minibatch, dropout_rng
             )
-            # ensure they are sharded over devices
+            # ensure outputs are sharded per device
             loss_grads = jax.tree_map(
                 lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
                 loss_grads,
             )
-
             # average across all devices
             loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
-
             # return loss and grads
-            return loss_grads
-
-        # create a new rng
-        dropout_rng, _ = jax.random.split(state.dropout_rng)
-        # use a different rng per node
-        dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
+            return loss_grads, dropout_rng
 
         if training_args.gradient_accumulation_steps == 1:
-
-            def batch_step(dropout_rng):
-                dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
-                loss_grad = loss_and_grad(0, dropout_rng)
-                return loss_grad, new_dropout_rng
-
-            loss_grad, dropout_rng = batch_step(dropout_rng)
+            loss_grad, dropout_rng = loss_and_grad(0, state.dropout_rng)
         else:
-            # create initial state for per_minibatch_step loop
-            init_cumul_loss_grad = (
-                0.0,
-                jax.tree_map(jnp.zeros_like, state.params),
+            # create initial state for cumul_minibatch_step loop
+            init_minibatch_step = (
+                (
+                    0.0,
+                    jax.tree_map(jnp.zeros_like, state.params),
+                ),
+                state.dropout_rng,
             )
-            init_minibatch_step = (init_cumul_loss_grad, dropout_rng)
 
             # accumulate gradients
             def cumul_minibatch_step(grad_idx, cumul_loss_grad_dropout):
                 cumul_loss_grad, dropout_rng = cumul_loss_grad_dropout
-                dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
-                loss_grad = loss_and_grad(grad_idx, dropout_rng)
+                loss_grad, dropout_rng = loss_and_grad(grad_idx, dropout_rng)
                 cumul_loss_grad = jax.tree_map(jnp.add, cumul_loss_grad, loss_grad)
-                return cumul_loss_grad, new_dropout_rng
+                return cumul_loss_grad, dropout_rng
 
             # loop over gradients
             loss_grad, dropout_rng = jax.lax.fori_loop(
@@ -870,6 +875,20 @@ def main():
 
     # Define eval fn
     def eval_step(state, batch):
+        # we reshape to (dp_devices, ...)
+        batch = jax.tree_map(
+            lambda x: x.reshape(
+                (
+                    training_args.dp_devices,
+                    training_args.per_device_eval_batch_size,
+                )
+                + x.shape[1:]
+            ),
+            batch,
+        )
+        # ensure data is sharded correctly per dp device
+        batch = with_sharding_constraint(batch, batch_spec)
+
         def compute_eval_loss(batch):
             batch, labels = batch.pop("labels")
             logits = state.apply_fn(**batch, params=state.params, train=False)[0]
@@ -936,9 +955,9 @@ def main():
     def run_evaluation():
         # ======================== Evaluating ==============================
         if training_args.do_eval:
-            eval_loader = dataset.dataloader("eval", eval_batch_size)
+            eval_loader = dataset.dataloader("eval", eval_batch_size_per_step)
             eval_steps = (
-                len_eval_dataset // eval_batch_size
+                len_eval_dataset // eval_batch_size_per_step
                 if len_eval_dataset is not None
                 else None
             )
@@ -950,17 +969,14 @@ def main():
                 leave=False,
                 total=eval_steps,
             ):
-                # reshape data into (dp_devices, batch_per_dp, ...)
+                # need to keep only eval_batch_size_per_node items relevant to the node
                 batch = jax.tree_map(
                     lambda x: x.reshape(
-                        (
-                            training_args.dp_devices,
-                            training_args.per_device_eval_batch_size,
-                        )
-                        + x.shape[1:]
+                        (jax.process_count(), eval_batch_size_per_node) + x.shape[1:]
                     ),
                     batch,
                 )
+                batch = jax.tree_map(lambda x: x[jax.process_index()], batch)
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
                 # accumulate losses async
@@ -1081,8 +1097,7 @@ def main():
                     lambda x: x.reshape(
                         (
                             training_args.gradient_accumulation_steps,
-                            training_args.dp_devices,
-                            training_args.per_device_train_batch_size,
+                            batch_size_per_node_per_grad_step,
                         )
                         + x.shape[1:]
                     ),

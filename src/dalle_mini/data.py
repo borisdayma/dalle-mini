@@ -94,7 +94,7 @@ class Dataset:
         if self.streaming:
             # we need to shuffle early in streaming mode
             if hasattr(self, "train_dataset"):
-                self.train_dataset = self.train_dataset.shuffle(1000, self.seed_dataset)
+                self.train_dataset = self.train_dataset.shuffle(5000, self.seed_dataset)
         else:
             # prepare rng for later shuffling
             if self.seed_dataset is None:
