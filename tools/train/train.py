@@ -99,7 +99,7 @@ class ModelArguments:
 
     def __post_init__(self):
         if self.restore_state:
-            assert (
+            assert self.model_name_or_path is not None and (
                 "/model-" in self.model_name_or_path
             ), "Restoring state only available with W&B artifact reference"
             self.state_artifact = self.model_name_or_path.replace(
@@ -222,12 +222,13 @@ class TrainingArguments:
     )
 
     per_device_train_batch_size: int = field(
-        default=8, metadata={"help": "Batch size per GPU/TPU/CPU for training."}
+        default=8,
+        metadata={"help": "Batch size per data parallel device for training."},
     )
     per_device_eval_batch_size: Optional[int] = field(
         default=None,
         metadata={
-            "help": "Batch size per GPU/TPU/CPU for evaluation. Same as training batch size if not set."
+            "help": "Batch size per data parallel device for evaluation. Same as training batch size if not set."
         },
     )
 
@@ -523,12 +524,7 @@ def main():
     # Preprocessing the datasets.
     # We need to normalize and tokenize inputs and targets.
 
-    dataset.preprocess(
-        tokenizer=tokenizer,
-        decoder_start_token_id=model.config.decoder_start_token_id,
-        normalize_text=model.config.normalize_text,
-        max_length=model.config.max_text_length,
-    )
+    dataset.preprocess(tokenizer=tokenizer, config=model.config)
 
     # Initialize our training
     rng = jax.random.PRNGKey(training_args.seed_model)
@@ -874,9 +870,17 @@ def main():
 
     # Define eval fn
     def eval_step(state, batch):
-        batch, labels = batch.pop("labels")
-        logits = model(**batch, params=state.params, train=False)[0]
-        loss = loss_fn(logits, labels)
+        def compute_eval_loss(batch):
+            batch, labels = batch.pop("labels")
+            logits = state.apply_fn(**batch, params=state.params, train=False)[0]
+            return loss_fn(logits, labels)
+
+        # calculate loss independently per dp_device
+        loss = jax.vmap(compute_eval_loss, in_axes=(0,), out_axes=0)(batch)
+        # ensure they are sharded over dp devices
+        loss = with_sharding_constraint(loss, PartitionSpec("batch"))
+        # average across all devices
+        loss = jnp.mean(loss)
         return loss
 
     # Create parallel version of the train and eval step
@@ -946,7 +950,18 @@ def main():
                 leave=False,
                 total=eval_steps,
             ):
-                # freeze batch to pass safely to JAX transforms
+                # reshape data into (dp_devices, batch_per_dp, ...)
+                batch = jax.tree_map(
+                    lambda x: x.reshape(
+                        (
+                            training_args.dp_devices,
+                            training_args.per_device_eval_batch_size,
+                        )
+                        + x.shape[1:]
+                    ),
+                    batch,
+                )
+                # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
                 # accumulate losses async
                 eval_loss.append(p_eval_step(state, batch))

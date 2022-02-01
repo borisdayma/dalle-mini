@@ -54,7 +54,7 @@ logger = logging.get_logger(__name__)
 class FlaxBartAttention(FlaxBartAttention):
     """
     Edits:
-    - causal mask is used only in decoder and considers image_length + 1 (for BOS)
+    - causal mask is used only in decoder and considers image_length
     """
 
     def setup(self) -> None:
@@ -81,7 +81,7 @@ class FlaxBartAttention(FlaxBartAttention):
         if self.causal:
             # used only in decoder
             self.causal_mask = make_causal_mask(
-                jnp.ones((1, self.config.image_length + 1), dtype="bool"), dtype="bool"
+                jnp.ones((1, self.config.image_length), dtype="bool"), dtype="bool"
             )
 
 
@@ -240,7 +240,7 @@ class FlaxBartDecoder(FlaxBartDecoder):
     """
     Edits:
     - offset set to 0 (no padding token)
-    - use image_length + 1 (for BOS) instead of max_position_embeddings
+    - use image_length instead of max_position_embeddings
     - use custom FlaxBartDecoderLayerCollection
     - embed_tokens cannot be None (issue at compile time)
     """
@@ -258,7 +258,7 @@ class FlaxBartDecoder(FlaxBartDecoder):
         # and adjust num_embeddings appropriately. Other models don't have this hack
         self.offset = 0
         self.embed_positions = nn.Embed(
-            self.config.image_length + 1 + self.offset,  # image length + 1 for BOS
+            self.config.image_length + self.offset,  # image length for BOS
             embed_dim,
             embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )

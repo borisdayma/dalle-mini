@@ -59,6 +59,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         is_encoder_decoder=True,
         forced_eos_token_id=None,
         tie_word_embeddings=False,  # different modalities and sizes
+        do_sample=True,
         **kwargs,
     ):
         self.normalize_text = normalize_text
@@ -87,28 +88,28 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
             scale_embedding  # scale factor will be sqrt(d_model) if True
         )
 
-        # remove inferred keys to prevent errors when loading config (passed as kwargs)
-        for k in [
-            "pad_token_id",
-            "bos_token_id",
-            "eos_token_id",
-            "decoder_start_token_id",
-            "min_length",
-            "max_length",
-        ]:
-            kwargs.pop(k, None)
+        # special token id's are appended to vocab if not provided
+        decoder_start_token_id = kwargs.pop("decoder_start_token_id", image_vocab_size)
+        bos_token_id = kwargs.pop("bos_token_id", image_vocab_size)
+        pad_token_id = kwargs.pop("pad_token_id", image_vocab_size)
+        eos_token_id = kwargs.pop("eos_token_id", image_vocab_size)
+
+        # we generate to image_length + 1 (for bos) by default
+        min_length = kwargs.pop("min_length", image_length + 1)
+        max_length = kwargs.pop("max_length", image_length + 1)
 
         super().__init__(
-            pad_token_id=image_vocab_size
-            + 1,  # needed to avoid errors during generation (converted to jnp.array)
-            bos_token_id=image_vocab_size + 1,  # set to unreachable values
-            eos_token_id=image_vocab_size + 1,
+            # args required in parent class
             is_encoder_decoder=is_encoder_decoder,
-            decoder_start_token_id=image_vocab_size,  # BOS appended to vocab
-            forced_eos_token_id=forced_eos_token_id,
             tie_word_embeddings=tie_word_embeddings,
-            min_length=image_length + 1,
-            max_length=image_length + 1,
+            forced_eos_token_id=forced_eos_token_id,
+            decoder_start_token_id=decoder_start_token_id,
+            bos_token_id=bos_token_id,
+            pad_token_id=pad_token_id,
+            eos_token_id=eos_token_id,
+            min_length=min_length,
+            max_length=max_length,
+            do_sample=do_sample,
             **kwargs,
         )
 

@@ -85,7 +85,12 @@ class Dataset:
                     else self.eval_dataset.select(range(self.max_eval_samples))
                 )
 
-    def preprocess(self, tokenizer, decoder_start_token_id, normalize_text, max_length):
+    def preprocess(self, tokenizer, config):
+        # get required config variables
+        decoder_start_token_id = config.decoder_start_token_id
+        normalize_text = config.normalize_text
+        max_length = config.max_text_length
+
         if self.streaming:
             # we need to shuffle early in streaming mode
             if hasattr(self, "train_dataset"):
