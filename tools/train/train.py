@@ -558,6 +558,35 @@ def main():
     )
     num_params = model.num_params
 
+    logger.info("***** Running training *****")
+    logger.info(f"  Num examples = {len_train_dataset}")
+    logger.info(f"  Num Epochs = {num_epochs}")
+    logger.info(
+        f"  Batch size per device = {training_args.per_device_train_batch_size}"
+    )
+    logger.info(f"  Number of devices = {jax.device_count()}")
+    logger.info(
+        f"  Gradient accumulation steps = {training_args.gradient_accumulation_steps}"
+    )
+    logger.info(f"  Batch size per update = {batch_size_per_step}")
+    logger.info(f"  Model parameters = {num_params:,}")
+
+    # create wandb run
+    if jax.process_index() == 0:
+        # set default x-axis as 'train/step'
+        wandb.define_metric("*", step_metric="train/step")
+
+        # add interesting config parameters
+        wandb.config.update(
+            {
+                "len_train_dataset": len_train_dataset,
+                "len_eval_dataset": len_eval_dataset,
+                "batch_size_per_step": batch_size_per_step,
+                "num_params": num_params,
+                "num_devices": jax.device_count(),
+            }
+        )
+
     # Create learning rate schedule
     def create_learning_rate_fn() -> Callable[[int], jnp.array]:
         """Create the learning rate function."""
@@ -915,42 +944,14 @@ def main():
         out_axis_resources=None,
     )
 
-    logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len_train_dataset}")
-    logger.info(f"  Num Epochs = {num_epochs}")
-    logger.info(
-        f"  Batch size per device = {training_args.per_device_train_batch_size}"
-    )
-    logger.info(f"  Number of devices = {jax.device_count()}")
-    logger.info(
-        f"  Gradient accumulation steps = {training_args.gradient_accumulation_steps}"
-    )
-    logger.info(f"  Batch size per update = {batch_size_per_step}")
-    logger.info(f"  Model parameters = {num_params:,}")
-    epochs = tqdm(
-        range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
-    )
-
     # init variables
     last_time = time.perf_counter()
     train_metrics = None
     step = int(state.step)
     metrics_logger = MetricsLogger(step)
-
-    if jax.process_index() == 0:
-        # set default x-axis as 'train/step'
-        wandb.define_metric("*", step_metric="train/step")
-
-        # add interesting config parameters
-        wandb.config.update(
-            {
-                "len_train_dataset": len_train_dataset,
-                "len_eval_dataset": len_eval_dataset,
-                "batch_size_per_step": batch_size_per_step,
-                "num_params": num_params,
-                "num_devices": jax.device_count(),
-            }
-        )
+    epochs = tqdm(
+        range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
+    )
 
     def run_evaluation():
         # ======================== Evaluating ==============================
