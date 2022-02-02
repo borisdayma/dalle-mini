@@ -1,3 +1,5 @@
+# file from: https://github.com/google-research/google-research/blob/master/scalable_shampoo/optax/distributed_shampoo.py
+
 # coding=utf-8
 # Copyright 2022 The Google Research Authors.
 #
@@ -235,7 +237,7 @@ class GraftingType(enum.IntEnum):
     RMSPROP = 3
     RMSPROP_NORMALIZED = 4
     SQRT_N = 5
-    ADAGRAD_NORMALIZED = 5
+    ADAGRAD_NORMALIZED = 6
 
 
 def power_iteration(
