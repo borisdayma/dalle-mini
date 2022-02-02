@@ -34,13 +34,13 @@ import itertools
 from typing import Any, List, NamedTuple
 
 import chex
+from flax import struct
 import jax
+from jax import lax
 import jax.experimental.pjit as pjit
 import jax.numpy as jnp
 import numpy as np
 import optax
-from flax import struct
-from jax import lax
 
 
 # pylint:disable=no-value-for-parameter
@@ -234,6 +234,8 @@ class GraftingType(enum.IntEnum):
     ADAGRAD = 2
     RMSPROP = 3
     RMSPROP_NORMALIZED = 4
+    SQRT_N = 5
+    ADAGRAD_NORMALIZED = 5
 
 
 def power_iteration(
@@ -336,7 +338,7 @@ def matrix_inverse_pth_root(
     _, max_ev = power_iteration(
         matrix=matrix, num_iters=100, error_tolerance=1e-6, precision=precision
     )
-    ridge_epsilon = ridge_epsilon * jnp.maximum(max_ev, 1e-16)
+    ridge_epsilon = ridge_epsilon * jnp.maximum(max_ev, 1e-6)
 
     def _unrolled_mat_pow_1(mat_m):
         """Computes mat_m^1."""
@@ -791,8 +793,7 @@ def distributed_shampoo(
         block = 1024, [1, 2, 768, 1, 2048] --> [2, 768, 2048]
       graft_type: Grafting is a technique to fix the layerwise scale of Shampoo
         optimizer. This allows us to plugin the Shampoo optimizer into settings
-        where SGD/AdaGrad is already well tuned. Available options are:
-          GraftingType.SGD and GraftingType.ADAGRAD.
+        where SGD/AdaGrad is already well tuned.
       nesterov: Nesterov momentum.
       exponent_override: Override the exponent used in matrix inverse.
       batch_axis_name: labeled axis over pmap for data-parallel training the
@@ -823,12 +824,20 @@ def distributed_shampoo(
       a GradientTransformation.
     """
 
+    def _graft_type_has_diagonal_statistics():
+        """Returns True if using diagonal firt order method for grafting."""
+        return graft_type != GraftingType.SGD and graft_type != GraftingType.SQRT_N
+
+    def _graft_type_has_diagonal_momentum_states():
+        """Returns False if using SQRT_N for grafting."""
+        return graft_type != GraftingType.SQRT_N
+
     def quantized_dtype_for_momentum_buffers():
         return jnp.int8 if best_effort_memory_usage_reduction else jnp.float32
 
     # TODO(rohananil): Explore int8-16 quantization with non-linear bucket sizes.
     def quantized_dtype_for_diagonal_statistics_buffers():
-        return jnp.bfloat16 if best_effort_memory_usage_reduction else jnp.float32
+        return jnp.float32
 
     # Preconditioner and statistics are both stores as int16 in this mode.
     # We take out the diagonal to make quantization easier.
@@ -944,13 +953,19 @@ def distributed_shampoo(
                 exponents.extend([exponent] * len(shapes))
 
             diagonal_statistics = []
-            if graft_type != GraftingType.SGD:
+            if _graft_type_has_diagonal_statistics():
                 diagonal_statistics = jnp.zeros_like(param)
+
+            diagonal_momentum = _quantize_momentum([])
+            momentum = _quantize_momentum(jnp.zeros_like(param))
+            if _graft_type_has_diagonal_momentum_states():
+                diagonal_momentum = _quantize_momentum((jnp.zeros_like(param)))
+
             local_stats_flat.append(
                 LocalShardedParameterStats(
                     _quantize_diagonal_statistics(diagonal_statistics),
-                    _quantize_momentum(jnp.zeros_like(param)),
-                    _quantize_momentum(jnp.zeros_like(param)),
+                    diagonal_momentum,
+                    momentum,
                     init_training_metrics(len(sizes)),
                     index_start,
                     sizes,
@@ -1039,7 +1054,7 @@ def distributed_shampoo(
 
             diagonal_statistics_pspec = []
             diagonal_statistics_scale_pspec = []
-            if graft_type != GraftingType.SGD:
+            if _graft_type_has_diagonal_statistics():
                 # Identically shaped param.
                 diagonal_statistics_pspec = param_pspec
                 if quantized_dtype_for_diagonal_statistics_buffers() != jnp.float32:
@@ -1047,14 +1062,16 @@ def distributed_shampoo(
                         _remove_leading_sharding_annotation(param_pspec)
                     )
 
-            m1_pspec = param_pspec
-            m2_pspec = param_pspec
-
+            m1_pspec = []
             m1_scale_pspec = []
-            m2_scale_pspec = []
+            if _graft_type_has_diagonal_momentum_states():
+                m1_pspec = param_pspec
+                if quantized_dtype_for_momentum_buffers() != jnp.float32:
+                    m1_scale_pspec = _remove_leading_sharding_annotation(m1_pspec)
 
+            m2_pspec = param_pspec
+            m2_scale_pspec = []
             if quantized_dtype_for_momentum_buffers() != jnp.float32:
-                m1_scale_pspec = _remove_leading_sharding_annotation(m1_pspec)
                 m2_scale_pspec = _remove_leading_sharding_annotation(m2_pspec)
 
             local_stats_flat.append(
@@ -1130,7 +1147,7 @@ def distributed_shampoo(
 
             diagonal_statistics_shape_and_dtype = []
             diagonal_statistics_scale_shape_and_dtype = []
-            if graft_type != GraftingType.SGD:
+            if _graft_type_has_diagonal_statistics():
                 diagonal_statistics_shape_and_dtype = [list(param.shape), param.dtype]
                 qdtype = quantized_dtype_for_diagonal_statistics_buffers()
                 if qdtype != jnp.float32:
@@ -1140,18 +1157,18 @@ def distributed_shampoo(
                         param.dtype,
                     ]
 
-            m1_shape_and_dtype = [list(param.shape), param.dtype]
-            m2_shape_and_dtype = [list(param.shape), param.dtype]
-
-            m1_scale_shape_and_dtype = []
-            m2_scale_shape_and_dtype = []
-
             qdtype = quantized_dtype_for_momentum_buffers()
-            if qdtype != jnp.float32:
+            m1_shape_and_dtype = []
+            m1_scale_shape_and_dtype = []
+            if _graft_type_has_diagonal_momentum_states():
                 m1_shape_and_dtype = [list(param.shape), qdtype]
-                m2_shape_and_dtype = [list(param.shape), qdtype]
+                if quantized_dtype_for_momentum_buffers() != jnp.float32:
+                    m1_scale_shape_and_dtype = [list(param.shape)[1:], qdtype]
 
-                m1_scale_shape_and_dtype = [list(param.shape)[1:], qdtype]
+            m2_shape_and_dtype = [list(param.shape), param.dtype]
+            m2_scale_shape_and_dtype = []
+            if qdtype != jnp.float32:
+                m2_shape_and_dtype = [list(param.shape), qdtype]
                 m2_scale_shape_and_dtype = [list(param.shape)[1:], qdtype]
 
             local_stats_flat.append(
@@ -1331,14 +1348,20 @@ def distributed_shampoo(
                 preconditioners = [jnp.eye(s[0]) for s in shapes]
 
             diagonal_statistics = []
-            if graft_type != GraftingType.SGD:
+            if _graft_type_has_diagonal_statistics():
                 diagonal_statistics = jnp.zeros_like(param)
+
+            diagonal_momentum = _quantize_momentum([])
+            momentum = _quantize_momentum(jnp.zeros_like(param))
+            if _graft_type_has_diagonal_momentum_states():
+                diagonal_momentum = _quantize_momentum(jnp.zeros_like(param))
+
             return ParameterStats(
                 _quantize_diagonal_statistics(diagonal_statistics),
                 _maybe_quantize_statistics(statistics),
                 _maybe_quantize_preconditioners(preconditioners),
-                _quantize_momentum(jnp.zeros_like(param)),
-                _quantize_momentum(jnp.zeros_like(param)),
+                diagonal_momentum,
+                momentum,
                 init_training_metrics(len(statistics)),
             )
 
@@ -2037,11 +2060,19 @@ def distributed_shampoo(
         )
         sgd_update = grad
         new_diagonal_statistics = state.diagonal_statistics.to_float()
-        if graft_type == GraftingType.ADAGRAD:
+        if (
+            graft_type == GraftingType.ADAGRAD
+            or graft_type == GraftingType.ADAGRAD_NORMALIZED
+        ):
+
+            scaled_grad = grad
+            if graft_type == GraftingType.ADAGRAD_NORMALIZED:
+                scaled_grad = grad / jnp.linalg.norm(grad)
+
             new_diagonal_statistics = state.diagonal_statistics.to_float() + jnp.square(
-                grad
+                scaled_grad
             )
-            adagrad_update = grad / (
+            adagrad_update = scaled_grad / (
                 jnp.sqrt(new_diagonal_statistics) + diagonal_epsilon
             )
             grafting_update = adagrad_update
@@ -2074,8 +2105,10 @@ def distributed_shampoo(
                 rmsprop_update /= clipping_denom
 
             grafting_update = rmsprop_update
-        else:
+        elif graft_type == GraftingType.SGD:
             grafting_update = sgd_update
+        else:
+            grafting_update = jnp.ones_like(sgd_update) * jnp.sign(sgd_update)
 
         precond_grad = grad
         if not _skip_preconditioning(param):
@@ -2098,12 +2131,20 @@ def distributed_shampoo(
             grafting_update_with_wd = grafting_update + weight_decay * param
 
         w = (1.0 - beta1) if moving_average_for_momentum else 1.0
+
         shampoo_update_with_wd_momentum = (
             state.momentum.to_float() * beta1 + w * shampoo_update_with_wd
         )
-        grafting_update_with_wd_momentum = (
-            state.diagonal_momentum.to_float() * beta1 + w * grafting_update_with_wd
-        )
+
+        if _graft_type_has_diagonal_momentum_states():
+            grafting_update_with_wd_momentum = (
+                state.diagonal_momentum.to_float() * beta1 + w * grafting_update_with_wd
+            )
+        else:
+            # Share the momentum buffer
+            grafting_update_with_wd_momentum = (
+                state.momentum.to_float() * beta1 + w * grafting_update_with_wd
+            )
 
         run_shampoo = (step >= start_preconditioning_step).astype(
             grafting_update_with_wd_momentum.dtype
@@ -2119,20 +2160,27 @@ def distributed_shampoo(
             + (1.0 - run_shampoo) * grafting_update_with_wd
         )
 
+        nesterov_momentum_update = momentum_update
         if nesterov:
-            momentum_update = w * wd_update + beta1 * momentum_update
+            nesterov_momentum_update = w * wd_update + beta1 * momentum_update
 
         lr = learning_rate
         if callable(learning_rate):
             lr = learning_rate(step)
-        transformed_update = -1.0 * lr * momentum_update
+        transformed_update = -1.0 * lr * nesterov_momentum_update
+
+        new_diagonal_momentum = grafting_update_with_wd_momentum
+        new_momentum = shampoo_update_with_wd_momentum
+        if not _graft_type_has_diagonal_momentum_states():
+            new_diagonal_momentum = []
+            new_momentum = momentum_update
 
         param_stats = ParameterStats(
             _quantize_diagonal_statistics(new_diagonal_statistics),
             state.statistics,
             state.preconditioners,
-            _quantize_momentum(grafting_update_with_wd_momentum),
-            _quantize_momentum(shampoo_update_with_wd_momentum),
+            _quantize_momentum(new_diagonal_momentum),
+            _quantize_momentum(new_momentum),
             state.training_metrics,
         )
 
