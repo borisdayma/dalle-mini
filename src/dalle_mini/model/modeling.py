@@ -334,22 +334,19 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
 
         # init weights on CPU
         if load_on_cpu:
-            init_fn = jax.jit(
-                self.init_weights, static_argnames="input_shape", backend="cpu"
-            )
+            # init weights on CPU
+            init_fn = jax.jit(self.init_weights, static_argnums=(1,), backend="cpu")
         else:
-            init_fn = self.init_weights
+            init_fn = self.init_weigths
 
         # randomly initialized parameters
+        random_params = self.init_weights(self.key, input_shape)
         if abstract_init:
-            # init the model weights only abstractly, eval_shape will return a pytree
-            # with the structure as weights but without any actual values, this will just contain
-            # the shape information. Weights need to be loaded later.
-            random_params = jax.eval_shape(
-                init_fn, rng=self.key, input_shape=input_shape
-            )
+            # only set shape and dtype, load parameters separately
+            init_fn = partial(init_fn, input_shape=input_shape)
+            random_params = jax.eval_shape(init_fn, self.key)
         else:
-            random_params = init_fn(rng=self.key, input_shape=input_shape)
+            random_params = init_fn(self.key, input_shape)
 
         # save required_params as set
         self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
