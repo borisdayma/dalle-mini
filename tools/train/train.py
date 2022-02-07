@@ -41,6 +41,7 @@ from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import onehot
 from jax.experimental import PartitionSpec, maps
+from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from tqdm import tqdm
 from transformers import HfArgumentParser
@@ -52,6 +53,11 @@ from dalle_mini.model import (
     DalleBartTokenizer,
     set_partitions,
 )
+
+cc.initialize_cache(
+    "/home/boris/dalle-mini/jax_cache", max_cache_size_bytes=5 * 2**30
+)
+
 
 logger = logging.getLogger(__name__)
 
