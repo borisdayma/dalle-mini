@@ -337,7 +337,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
             # init weights on CPU
             init_fn = jax.jit(self.init_weights, static_argnums=(1,), backend="cpu")
         else:
-            init_fn = self.init_weigths
+            init_fn = self.init_weights
 
         # randomly initialized parameters
         random_params = self.init_weights(self.key, input_shape)
