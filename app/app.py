@@ -69,7 +69,7 @@ if prompt != "" or (should_run_again and prompt != ""):
         <div class="st-b7">
         <div class="css-whx05o e13vu3m50">
         <div data-testid="stMarkdownContainer" class="css-1ekf893 e16nr0p30">
-                <img src="https://github.com/borisdayma/dalle-mini/blob/main/app/streamlit/img/loading.gif" width="30"/>
+                <img src="https://raw.githubusercontent.com/borisdayma/dalle-mini/main/app/streamlit/img/loading.gif" width="30"/>
                 Generating predictions for: <b>{prompt}</b>
         </div>
         </div>
