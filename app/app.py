@@ -85,10 +85,11 @@ if prompt != "" or (should_run_again and prompt != ""):
         print(f"Getting selections: {prompt}")
         selected = get_images_from_backend(prompt, backend_url)
 
-        cols = st.columns(4)
+        margin = 0.1  # for better position of zoom in arrow
+        n_columns = 3
+        cols = st.columns([1] + [margin, 1] * (n_columns - 1))
         for i, img in enumerate(selected):
-            cols[i%4].image(img)
-
+            cols[(i % n_columns) * 2].image(img)
         container.markdown(f"**{prompt}**")
         
         set_run_again(st.button('Again!', key='again_button'))
