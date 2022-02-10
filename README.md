@@ -24,35 +24,40 @@ You can create your own pictures with [the demo](https://huggingface.co/spaces/f
 
 Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
 
+## Inference Pipeline
+
+To generate sample predictions and understand the inference pipeline step by step, refer to [`tools/inference/inference_pipeline.ipynb`](tools/inference/inference_pipeline.ipynb).
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/tools/inference/inference_pipeline.ipynb)
+
+## Contributing
+
+Join the community on the [DALLE-Pytorch Discord](https://discord.gg/xBPBXfcFHd).
+Any contribution is welcome, from reporting issues to proposing fixes/improvements or testing the model with cool prompts!
+
+
 ## Development
 
 ### Dependencies Installation
 
 For inference only, use `pip install git+https://github.com/borisdayma/dalle-mini.git`.
 
-For development, clone the repo and use `pip install -e ".[dev]"`. Check style with `make style`.
+For development, clone the repo and use `pip install -e ".[dev]"`.
+Before making a PR, check style with `make style`.
 
-### Training of VQGAN
+### Image Encoder
 
-The VQGAN was trained using [taming-transformers](https://github.com/CompVis/taming-transformers).
+We use a VQGAN from [taming-transformers](https://github.com/CompVis/taming-transformers), which can also be fine-tuned.
 
-We recommend using the latest version available.
+Use [patil-suraj/vqgan-jax](https://github.com/patil-suraj/vqgan-jax) if you want to convert a checkpoint to JAX (does not support Gumbel).
 
-### Conversion of VQGAN to JAX
+Any image encoder that turns an image into a fixed sequence of tokens can be used.
 
-Use [patil-suraj/vqgan-jax](https://github.com/patil-suraj/vqgan-jax).
-
-### Training of Seq2Seq
+### Training of DALL·E mini
 
 Use [`tools/train/train.py`](tools/train/train.py).
 
 You can also adjust the [sweep configuration file](https://docs.wandb.ai/guides/sweeps) if you need to perform a hyperparameter search.
-
-### Inference Pipeline
-
-To generate sample predictions and understand the inference pipeline step by step, refer to [`tools/inference/inference_pipeline.ipynb`](tools/inference/inference_pipeline.ipynb).
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/tools/inference/inference_pipeline.ipynb)
 
 ## FAQ
 
@@ -60,7 +65,7 @@ To generate sample predictions and understand the inference pipeline step by ste
 
 Trained models are on 🤗 Model Hub:
 
-- [VQGAN-f16-16384](https://huggingface.co/flax-community/vqgan_f16_16384) for encoding/decoding images
+- [VQGAN-f16-16384](https://huggingface.co/dalle-mini/vqgan_imagenet_f16_16384) for encoding/decoding images
 - [DALL·E mini](https://huggingface.co/flax-community/dalle-mini) for generating images from a text prompt
 
 ### Where does the logo come from?
@@ -90,11 +95,6 @@ Many thanks to the people who helped make it better:
 
 - the [DALLE-Pytorch](https://discord.gg/xBPBXfcFHd) and [EleutherAI](https://www.eleuther.ai/) communities for testing and exchanging cool ideas
 - [Rohan Anil](https://github.com/rohan-anil) for adding Distributed Shampoo optimizer
-
-### Contributing
-
-Join the community on the [DALLE-Pytorch Discord](https://discord.gg/xBPBXfcFHd).
-Any contribution is welcome, from reporting issues to proposing fixes/improvements or testing the model with cool prompts!
 
 ## Citing DALL·E mini
 
