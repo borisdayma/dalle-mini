@@ -371,7 +371,8 @@ class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationMod
     def setup(self):
         self.model = FlaxBartModule(config=self.config, dtype=self.dtype)
         self.lm_head = nn.Dense(
-            self.config.image_vocab_size + 1,  # image vocab size + 1 for BOS
+            self.config.image_vocab_size
+            + 1,  # image vocab size + 1 for BOS to have same size as decoder inputs (for sharding)
             use_bias=False,
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
@@ -437,6 +438,8 @@ class DalleBart(
     - uses custom FlaxBartPreTrainedModel
     - uses custom FlaxBartForConditionalGenerationModule
     - no bias in decode method
+    - custom prepare_inputs_for_generation using "max_length - 1" to avoid issues
+      related to position embedding during model.generate()
     """
 
     module_class = FlaxBartForConditionalGenerationModule
@@ -572,3 +575,38 @@ class DalleBart(
             outputs = outputs[:1] + (unfreeze(past["cache"]),) + outputs[1:]
 
         return outputs
+
+    def prepare_inputs_for_generation(
+        self,
+        decoder_input_ids,
+        max_length,
+        attention_mask: Optional[jnp.DeviceArray] = None,
+        decoder_attention_mask: Optional[jnp.DeviceArray] = None,
+        encoder_outputs=None,
+        **kwargs,
+    ):
+        # initializing the cache
+        batch_size, seq_length = decoder_input_ids.shape
+
+        past_key_values = self.init_cache(batch_size, max_length - 1, encoder_outputs)
+        # Note that usually one would have to put 0's in the attention_mask for x > input_ids.shape[-1] and x < cache_length.
+        # But since the decoder uses a causal mask, those positions are masked anyways.
+        # Thus we can create a single static attention_mask here, which is more efficient for compilation
+        extended_attention_mask = jnp.ones((batch_size, max_length - 1), dtype="i4")
+        if decoder_attention_mask is not None:
+            position_ids = decoder_attention_mask.cumsum(axis=-1) - 1
+            extended_attention_mask = lax.dynamic_update_slice(
+                extended_attention_mask, decoder_attention_mask, (0, 0)
+            )
+        else:
+            position_ids = jnp.broadcast_to(
+                jnp.arange(seq_length, dtype="i4")[None, :], (batch_size, seq_length)
+            )
+
+        return {
+            "past_key_values": past_key_values,
+            "encoder_outputs": encoder_outputs,
+            "encoder_attention_mask": attention_mask,
+            "decoder_attention_mask": extended_attention_mask,
+            "decoder_position_ids": position_ids,
+        }
