@@ -249,6 +249,9 @@ class TrainingArguments:
             "help": "Number of updates steps to accumulate before performing an update pass."
         },
     )
+    gradient_checkpointing: bool = field(
+        default=False, metadata={"help": "Use gradient checkpointing."}
+    )
 
     learning_rate: float = field(
         default=5e-5, metadata={"help": "The initial learning rate."}
@@ -515,10 +518,8 @@ def main():
             load_on_cpu=True,
         )
 
-    # Load tokenizer
-    tokenizer = DalleBartTokenizer.from_pretrained(
-        model_args.tokenizer_name, use_fast=True
-    )
+    # update model config per training args
+    model.config.gradient_checkpointing = training_args.gradient_checkpointing
 
     # get PartitionSpec for model params (required to be a dict)
     param_spec = set_partitions(model.params)
@@ -526,13 +527,14 @@ def main():
     # convert params to frozen dict
     model._params = freeze(model.params)
 
+    # Load tokenizer
+    tokenizer = DalleBartTokenizer.from_pretrained(
+        model_args.tokenizer_name, use_fast=True
+    )
+
     # Preprocessing the datasets.
     # We need to normalize and tokenize inputs and targets.
-
     dataset.preprocess(tokenizer=tokenizer, config=model.config)
-
-    # no dropout (hardcoded)
-    model.config.dropout = 0.0
 
     # Initialize our training
     dropout_rng = jax.random.PRNGKey(training_args.seed_model)

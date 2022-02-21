@@ -15,16 +15,30 @@
 """ DalleBart model. """
 
 import math
+import os
 from functools import partial
-from typing import Optional, Tuple
+from pickle import UnpicklingError
+from typing import Optional, Tuple, Union
 
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import msgpack.exceptions
 from flax.core.frozen_dict import unfreeze
 from flax.linen import make_causal_mask
-from flax.traverse_util import flatten_dict
+from flax.serialization import from_bytes
+from flax.traverse_util import flatten_dict, unflatten_dict
+from jax import lax
 from jax.random import PRNGKey
+from transformers.configuration_utils import PretrainedConfig
+from transformers.file_utils import (
+    FLAX_WEIGHTS_NAME,
+    WEIGHTS_NAME,
+    cached_path,
+    hf_bucket_url,
+    is_offline_mode,
+    is_remote_url,
+)
 from transformers.modeling_flax_outputs import (
     FlaxCausalLMOutputWithCrossAttentions,
     FlaxSeq2SeqLMOutput,
@@ -300,7 +314,8 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
     - added num_params property
     - config_class replaced to DalleBartConfig
     - __init__ accepts abstract_init which does uses parameter shape to initialize the model
-    - init weights on CPU
+    - init weights on CPU with `load_on_cpu`
+    - restore weights on CPU with custom `from_pretrained`
     """
 
     config_class = DalleBartConfig
@@ -358,6 +373,243 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
             lambda param: param.size, flatten_dict(unfreeze(self.params))
         ).values()
         return sum(list(num_params))
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: Union[str, os.PathLike],
+        dtype: jnp.dtype = jnp.float32,
+        *model_args,
+        **kwargs,
+    ):
+        config = kwargs.pop("config", None)
+        cache_dir = kwargs.pop("cache_dir", None)
+        from_pt = kwargs.pop("from_pt", False)
+        ignore_mismatched_sizes = kwargs.pop("ignore_mismatched_sizes", False)
+        force_download = kwargs.pop("force_download", False)
+        resume_download = kwargs.pop("resume_download", False)
+        proxies = kwargs.pop("proxies", None)
+        local_files_only = kwargs.pop("local_files_only", False)
+        use_auth_token = kwargs.pop("use_auth_token", None)
+        revision = kwargs.pop("revision", None)
+        from_pipeline = kwargs.pop("_from_pipeline", None)
+        from_auto_class = kwargs.pop("_from_auto", False)
+
+        user_agent = {
+            "file_type": "model",
+            "framework": "flax",
+            "from_auto_class": from_auto_class,
+        }
+        if from_pipeline is not None:
+            user_agent["using_pipeline"] = from_pipeline
+
+        if is_offline_mode() and not local_files_only:
+            logger.info("Offline mode: forcing local_files_only=True")
+            local_files_only = True
+
+        # Load config if we don't provide a configuration
+        if not isinstance(config, PretrainedConfig):
+            config_path = (
+                config if config is not None else pretrained_model_name_or_path
+            )
+            config, model_kwargs = cls.config_class.from_pretrained(
+                config_path,
+                cache_dir=cache_dir,
+                return_unused_kwargs=True,
+                force_download=force_download,
+                resume_download=resume_download,
+                proxies=proxies,
+                local_files_only=local_files_only,
+                use_auth_token=use_auth_token,
+                revision=revision,
+                _from_auto=from_auto_class,
+                _from_pipeline=from_pipeline,
+                **kwargs,
+            )
+        else:
+            model_kwargs = kwargs
+
+        # Add the dtype to model_kwargs
+        model_kwargs["dtype"] = dtype
+
+        # Load model
+        if pretrained_model_name_or_path is not None:
+            if os.path.isdir(pretrained_model_name_or_path):
+                if from_pt and os.path.isfile(
+                    os.path.join(pretrained_model_name_or_path, WEIGHTS_NAME)
+                ):
+                    # Load from a PyTorch checkpoint
+                    archive_file = os.path.join(
+                        pretrained_model_name_or_path, WEIGHTS_NAME
+                    )
+                elif os.path.isfile(
+                    os.path.join(pretrained_model_name_or_path, FLAX_WEIGHTS_NAME)
+                ):
+                    # Load from a Flax checkpoint
+                    archive_file = os.path.join(
+                        pretrained_model_name_or_path, FLAX_WEIGHTS_NAME
+                    )
+                else:
+                    raise EnvironmentError(
+                        f"Error no file named {[FLAX_WEIGHTS_NAME, WEIGHTS_NAME]} found in directory "
+                        f"{pretrained_model_name_or_path} or `from_pt` set to False"
+                    )
+            elif os.path.isfile(pretrained_model_name_or_path) or is_remote_url(
+                pretrained_model_name_or_path
+            ):
+                archive_file = pretrained_model_name_or_path
+            else:
+                archive_file = hf_bucket_url(
+                    pretrained_model_name_or_path,
+                    filename=WEIGHTS_NAME if from_pt else FLAX_WEIGHTS_NAME,
+                    revision=revision,
+                )
+
+            # redirect to the cache, if necessary
+            try:
+                resolved_archive_file = cached_path(
+                    archive_file,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    proxies=proxies,
+                    resume_download=resume_download,
+                    local_files_only=local_files_only,
+                    use_auth_token=use_auth_token,
+                    user_agent=user_agent,
+                )
+            except EnvironmentError as err:
+                logger.error(err)
+                msg = (
+                    f"Can't load weights for '{pretrained_model_name_or_path}'. Make sure that:\n\n"
+                    f"- '{pretrained_model_name_or_path}' is a correct model identifier listed on 'https://huggingface.co/models'\n"
+                    f"  (make sure '{pretrained_model_name_or_path}' is not a path to a local directory with something else, in that case)\n\n"
+                    f"- or '{pretrained_model_name_or_path}' is the correct path to a directory containing a file named {WEIGHTS_NAME}.\n\n"
+                )
+                raise EnvironmentError(msg)
+
+            if resolved_archive_file == archive_file:
+                logger.info(f"loading weights file {archive_file}")
+            else:
+                logger.info(
+                    f"loading weights file {archive_file} from cache at {resolved_archive_file}"
+                )
+        else:
+            resolved_archive_file = None
+
+        # init random models
+        model = cls(config, *model_args, **model_kwargs)
+
+        with open(resolved_archive_file, "rb") as state_f:
+            try:
+                state = from_bytes(cls, state_f.read())
+            except (UnpicklingError, msgpack.exceptions.ExtraData) as e:
+                try:
+                    with open(resolved_archive_file) as f:
+                        if f.read().startswith("version"):
+                            raise OSError(
+                                "You seem to have cloned a repository without having git-lfs installed. Please install "
+                                "git-lfs and run `git lfs install` followed by `git lfs pull` in the folder "
+                                "you cloned."
+                            )
+                        else:
+                            raise ValueError from e
+                except (UnicodeDecodeError, ValueError):
+                    raise EnvironmentError(
+                        f"Unable to convert {archive_file} to Flax deserializable object. "
+                    )
+
+        # if model is base model only use model_prefix key
+        if (
+            cls.base_model_prefix not in dict(model.params)
+            and cls.base_model_prefix in state
+        ):
+            state = state[cls.base_model_prefix]
+
+        # if model is head model and we are loading weights from base model
+        # we initialize new params dict with base_model_prefix
+        if (
+            cls.base_model_prefix in dict(model.params)
+            and cls.base_model_prefix not in state
+        ):
+            state = {cls.base_model_prefix: state}
+
+        # flatten dicts
+        state = flatten_dict(state)
+
+        random_state = flatten_dict(unfreeze(model.params))
+
+        missing_keys = model.required_params - set(state.keys())
+        unexpected_keys = set(state.keys()) - model.required_params
+
+        # Mistmatched keys contains tuples key/shape1/shape2 of weights in the checkpoint that have a shape not
+        # matching the weights in the model.
+        mismatched_keys = []
+        for key in state.keys():
+            if key in random_state and state[key].shape != random_state[key].shape:
+                if ignore_mismatched_sizes:
+                    mismatched_keys.append(
+                        (key, state[key].shape, random_state[key].shape)
+                    )
+                    state[key] = random_state[key]
+                else:
+                    raise ValueError(
+                        f"Trying to load the pretrained weight for {key} failed: checkpoint has shape "
+                        f"{state[key].shape} which is incompatible with the model shape {random_state[key].shape}. "
+                        "Using `ignore_mismatched_sizes=True` if you really want to load this checkpoint inside this "
+                        "model."
+                    )
+
+        # add missing keys as random parameters
+        for missing_key in missing_keys:
+            state[missing_key] = random_state[missing_key]
+
+        # remove unexpected keys to not be saved again
+        for unexpected_key in unexpected_keys:
+            del state[unexpected_key]
+
+        if len(unexpected_keys) > 0:
+            logger.warning(
+                f"Some weights of the model checkpoint at {pretrained_model_name_or_path} were not used when "
+                f"initializing {model.__class__.__name__}: {unexpected_keys}\n"
+                f"- This IS expected if you are initializing {model.__class__.__name__} from the checkpoint of a model trained on another task "
+                f"or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).\n"
+                f"- This IS NOT expected if you are initializing {model.__class__.__name__} from the checkpoint of a model that you expect "
+                f"to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model)."
+            )
+        else:
+            logger.info(
+                f"All model checkpoint weights were used when initializing {model.__class__.__name__}.\n"
+            )
+
+        if len(missing_keys) > 0:
+            logger.warning(
+                f"Some weights of {model.__class__.__name__} were not initialized from the model checkpoint at {pretrained_model_name_or_path} "
+                f"and are newly initialized: {missing_keys}\n"
+                f"You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference."
+            )
+        elif len(mismatched_keys) == 0:
+            logger.info(
+                f"All the weights of {model.__class__.__name__} were initialized from the model checkpoint at {pretrained_model_name_or_path}.\n"
+                f"If your task is similar to the task the model of the checkpoint was trained on, "
+                f"you can already use {model.__class__.__name__} for predictions without further training."
+            )
+        if len(mismatched_keys) > 0:
+            mismatched_warning = "\n".join(
+                [
+                    f"- {key}: found shape {shape1} in the checkpoint and {shape2} in the model instantiated"
+                    for key, shape1, shape2 in mismatched_keys
+                ]
+            )
+            logger.warning(
+                f"Some weights of {model.__class__.__name__} were not initialized from the model checkpoint at {pretrained_model_name_or_path} "
+                f"and are newly initialized because the shapes did not match:\n{mismatched_warning}\n"
+                f"You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference."
+            )
+
+        # set correct parameters
+        model.params = unflatten_dict(state)
+
+        return model
 
 
 class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
