@@ -55,7 +55,7 @@ from dalle_mini.model import (
 )
 
 cc.initialize_cache(
-    "/home/boris/dalle-mini/jax_cache", max_cache_size_bytes=5 * 2**30
+    "/home/boris/dalle-mini/jax_cache", max_cache_size_bytes=5 * 2 ** 30
 )
 
 
@@ -104,6 +104,11 @@ class ModelArguments:
     state_artifact: str = field(init=False)
 
     def __post_init__(self):
+        if self.tokenizer_name is None:
+            self.tokenizer_name == self.model_name_or_path
+            assert (
+                self.tokenizer_name is not None
+            ), "Tokenizer name or model name/path needs to be specified"
         if self.restore_state:
             assert self.model_name_or_path is not None and (
                 "/model-" in self.model_name_or_path
@@ -511,15 +516,9 @@ def main():
         )
 
     # Load tokenizer
-    if model_args.tokenizer_name is not None:
-        tokenizer = DalleBartTokenizer.from_pretrained(
-            model_args.tokenizer_name, use_fast=True
-        )
-    else:
-        tokenizer = DalleBartTokenizer.from_pretrained(
-            model_args.model_name_or_path,
-            use_fast=True,
-        )
+    tokenizer = DalleBartTokenizer.from_pretrained(
+        model_args.tokenizer_name, use_fast=True
+    )
 
     # get PartitionSpec for model params (required to be a dict)
     param_spec = set_partitions(model.params)
@@ -531,6 +530,9 @@ def main():
     # We need to normalize and tokenize inputs and targets.
 
     dataset.preprocess(tokenizer=tokenizer, config=model.config)
+
+    # no dropout (hardcoded)
+    model.config.dropout = 0.0
 
     # Initialize our training
     dropout_rng = jax.random.PRNGKey(training_args.seed_model)
