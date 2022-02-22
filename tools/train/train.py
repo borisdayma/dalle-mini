@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -97,11 +98,9 @@ class ModelArguments:
     restore_state: Optional[bool] = field(
         default=False,
         metadata={
-            "help": "Restore optimizer and training state associated with a wandb checkpoint."
+            "help": "Restore optimizer and training state. Can be True (will retrieve associated wandb artifact), a local directory or a Google bucket path."
         },
     )
-
-    state_artifact: str = field(init=False)
 
     def __post_init__(self):
         if self.tokenizer_name is None:
@@ -113,9 +112,28 @@ class ModelArguments:
             assert self.model_name_or_path is not None and (
                 "/model-" in self.model_name_or_path
             ), "Restoring state only available with W&B artifact reference"
-            self.state_artifact = self.model_name_or_path.replace(
-                "/model-", "/state-", 1
-            )
+
+    def get_metadata(self):
+        if self.restore_state:
+            if jax.process_index() == 0:
+                artifact = wandb.run.use_artifact(self.model_name_or_path)
+            else:
+                artifact = wandb.Api().artifact(self.model_name_or_path)
+            return artifact.metadata
+        else:
+            return dict()
+
+    def get_opt_state(self, tmp_dir):
+        if self.restore_state is True:
+            # wandb artifact
+            state_artifact = self.model_name_or_path.replace("/model-", "/state-", 1)
+            if jax.process_index() == 0:
+                artifact = wandb.run.use_artifact(state_artifact)
+            else:
+                artifact = wandb.Api().artifact(state_artifact)
+            artifact_dir = artifact.download(tmp_dir)
+            self.restore_state = Path(artifact_dir) / "opt_state.msgpack"
+        return Path(self.restore_state).open("rb")
 
 
 @dataclass
@@ -521,6 +539,9 @@ def main():
     # update model config per training args
     model.config.gradient_checkpointing = training_args.gradient_checkpointing
 
+    # get model metadata
+    model_metadata = model_args.get_metadata()
+
     # get PartitionSpec for model params (required to be a dict)
     param_spec = set_partitions(model.params)
 
@@ -581,7 +602,7 @@ def main():
     logger.info(f"  Batch size per update = {batch_size_per_step}")
     logger.info(f"  Model parameters = {num_params:,}")
 
-    # create wandb run
+    # set up wandb run
     if jax.process_index() == 0:
         # set default x-axis as 'train/step'
         wandb.define_metric("*", step_metric="train/step")
@@ -605,6 +626,12 @@ def main():
             end_value=training_args.learning_rate,
             transition_steps=training_args.warmup_steps,
         )
+        # offset step when resuming
+        if model_metadata.get("step", 0):
+            warmup_fn = optax.join_schedules(
+                schedules=[optax.constant_schedule(0.0), warmup_fn],
+                boundaries=[model_metadata["step"]],
+            )
         if training_args.lr_decay is None:
             return warmup_fn
         elif training_args.lr_decay == "linear":
@@ -757,20 +784,17 @@ def main():
             )(model.params)
 
         else:
-            # get state files from artifact
-            if jax.process_index() == 0:
-                artifact = wandb.run.use_artifact(model_args.state_artifact)
-            else:
-                artifact = wandb.Api().artifact(model_args.state_artifact)
-            artifact_dir = artifact.download()
-
-            # restore opt_state
-            with (Path(artifact_dir) / "opt_state.msgpack").open("rb") as f:
-                opt_state = from_bytes(opt_state_shape, f.read())
+            # load opt_state
+            with tempfile.TemporaryDirectory() as tmp_dir:  # avoid multiple artifact copies
+                opt_state_file = model_args.get_opt_state(tmp_dir)
+                opt_state = from_bytes(opt_state_shape, opt_state_file.read())
+                opt_state_file.close()
 
             # restore other attributes
-            with (Path(artifact_dir) / "training_state.json").open("r") as f:
-                attr_state = json.load(f)
+            attr_state = {
+                k: model_metadata[k]
+                for k in ["step", "epoch", "train_time", "train_samples"]
+            }
 
             def restore_state(params, opt_state):
                 return TrainState(
