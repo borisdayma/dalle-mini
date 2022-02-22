@@ -135,8 +135,21 @@ class ModelArguments:
                 else:
                     artifact = wandb.Api().artifact(state_artifact)
                 artifact_dir = artifact.download(tmp_dir)
-                self.restore_state = Path(artifact_dir) / "opt_state.msgpack"
-            return Path(self.restore_state).open("rb")
+                if artifact.metadata.get("bucket_path"):
+                    self.restore_state = artifact.metadata["bucket_path"]
+                else:
+                    self.restore_state = Path(artifact_dir) / "opt_state.msgpack"
+
+            if self.restore_state.startswith("gs://"):
+                bucket_path = Path(self.restore_state[5:]) / "opt_state.msgpack"
+                bucket, blob_name = str(bucket_path).split("/", 1)
+                client = storage.Client()
+                bucket = client.bucket(bucket)
+                blob = bucket.blob(blob_name)
+                return blob.download_as_bytes()
+
+            with Path(self.restore_state).open("rb") as f:
+                return f.read()
 
 
 @dataclass
@@ -788,9 +801,7 @@ def main():
 
         else:
             # load opt_state
-            opt_state_file = model_args.get_opt_state()
-            opt_state = from_bytes(opt_state_shape, opt_state_file.read())
-            opt_state_file.close()
+            opt_state = from_bytes(opt_state_shape, model_args.get_opt_state())
 
             # restore other attributes
             attr_state = {
@@ -1060,7 +1071,7 @@ def main():
                 client = storage.Client()
                 bucket = client.bucket(bucket)
                 for filename in Path(output_dir).glob("*"):
-                    blob_name = str(Path(dir_path) / filename.name)
+                    blob_name = str(Path(dir_path) / "model" / filename.name)
                     blob = bucket.blob(blob_name)
                     blob.upload_from_filename(str(filename))
                 tmp_dir.cleanup()
@@ -1068,7 +1079,7 @@ def main():
             # save state
             opt_state = jax.device_get(state.opt_state)
             if use_bucket:
-                blob_name = str(Path(dir_path) / "opt_state.msgpack")
+                blob_name = str(Path(dir_path) / "state" / "opt_state.msgpack")
                 blob = bucket.blob(blob_name)
                 blob.upload_from_file(io.BytesIO(to_bytes(opt_state)))
             else:
@@ -1088,10 +1099,10 @@ def main():
                 metadata["num_params"] = num_params
                 if eval_metrics is not None:
                     metadata["eval"] = eval_metrics
-                if use_bucket:
-                    metadata["bucket_path"] = bucket_path
 
                 # create model artifact
+                if use_bucket:
+                    metadata["bucket_path"] = f"gs://{bucket_path}/model"
                 artifact = wandb.Artifact(
                     name=f"model-{wandb.run.id}",
                     type="DalleBart_model",
@@ -1113,6 +1124,8 @@ def main():
                 wandb.run.log_artifact(artifact)
 
                 # create state artifact
+                if use_bucket:
+                    metadata["bucket_path"] = f"gs://{bucket_path}/state"
                 artifact_state = wandb.Artifact(
                     name=f"state-{wandb.run.id}",
                     type="DalleBart_state",
