@@ -18,7 +18,7 @@ Training DALL·E Mini.
 Script adapted from run_summarization_flax.py
 """
 
-import json
+import io
 import logging
 import os
 import sys
@@ -41,6 +41,7 @@ from flax.core.frozen_dict import FrozenDict, freeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import onehot
+from google.cloud import storage
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
@@ -58,7 +59,6 @@ from dalle_mini.model import (
 cc.initialize_cache(
     "/home/boris/dalle-mini/jax_cache", max_cache_size_bytes=5 * 2 ** 30
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -123,17 +123,20 @@ class ModelArguments:
         else:
             return dict()
 
-    def get_opt_state(self, tmp_dir):
-        if self.restore_state is True:
-            # wandb artifact
-            state_artifact = self.model_name_or_path.replace("/model-", "/state-", 1)
-            if jax.process_index() == 0:
-                artifact = wandb.run.use_artifact(state_artifact)
-            else:
-                artifact = wandb.Api().artifact(state_artifact)
-            artifact_dir = artifact.download(tmp_dir)
-            self.restore_state = Path(artifact_dir) / "opt_state.msgpack"
-        return Path(self.restore_state).open("rb")
+    def get_opt_state(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:  # avoid multiple artifact copies
+            if self.restore_state is True:
+                # wandb artifact
+                state_artifact = self.model_name_or_path.replace(
+                    "/model-", "/state-", 1
+                )
+                if jax.process_index() == 0:
+                    artifact = wandb.run.use_artifact(state_artifact)
+                else:
+                    artifact = wandb.Api().artifact(state_artifact)
+                artifact_dir = artifact.download(tmp_dir)
+                self.restore_state = Path(artifact_dir) / "opt_state.msgpack"
+            return Path(self.restore_state).open("rb")
 
 
 @dataclass
@@ -785,10 +788,9 @@ def main():
 
         else:
             # load opt_state
-            with tempfile.TemporaryDirectory() as tmp_dir:  # avoid multiple artifact copies
-                opt_state_file = model_args.get_opt_state(tmp_dir)
-                opt_state = from_bytes(opt_state_shape, opt_state_file.read())
-                opt_state_file.close()
+            opt_state_file = model_args.get_opt_state()
+            opt_state = from_bytes(opt_state_shape, opt_state_file.read())
+            opt_state_file.close()
 
             # restore other attributes
             attr_state = {
@@ -1034,42 +1036,60 @@ def main():
 
     def run_save_model(state, eval_metrics=None):
         if jax.process_index() == 0:
+
+            output_dir = training_args.output_dir
+            use_bucket = output_dir.startswith("gs://")
+            if use_bucket:
+                bucket_path = Path(output_dir[5:]) / wandb.run.id / f"step_{state.step}"
+                bucket, dir_path = str(bucket_path).split("/", 1)
+                tmp_dir = tempfile.TemporaryDirectory()
+                output_dir = tmp_dir.name
+
+            # save model
             params = jax.device_get(state.params)
-            # save model locally
             model.save_pretrained(
-                training_args.output_dir,
+                output_dir,
                 params=params,
             )
 
             # save tokenizer
-            tokenizer.save_pretrained(training_args.output_dir)
+            tokenizer.save_pretrained(output_dir)
+
+            # copy to bucket
+            if use_bucket:
+                client = storage.Client()
+                bucket = client.bucket(bucket)
+                for filename in Path(output_dir).glob("*"):
+                    blob_name = str(Path(dir_path) / filename.name)
+                    blob = bucket.blob(blob_name)
+                    blob.upload_from_filename(str(filename))
+                tmp_dir.cleanup()
 
             # save state
             opt_state = jax.device_get(state.opt_state)
-            with (Path(training_args.output_dir) / "opt_state.msgpack").open("wb") as f:
-                f.write(to_bytes(opt_state))
-            state_dict = {
-                k: jax.device_get(getattr(state, k)).item()
-                for k in ["step", "epoch", "train_time", "train_samples"]
-            }
-            with (Path(training_args.output_dir) / "training_state.json").open(
-                "w"
-            ) as f:
-                json.dump(
-                    state_dict,
-                    f,
-                )
+            if use_bucket:
+                blob_name = str(Path(dir_path) / "opt_state.msgpack")
+                blob = bucket.blob(blob_name)
+                blob.upload_from_file(io.BytesIO(to_bytes(opt_state)))
+            else:
+                with (Path(output_dir) / "opt_state.msgpack").open("wb") as f:
+                    f.write(to_bytes(opt_state))
 
             # save to W&B
             if training_args.log_model:
                 # save some space
                 c = wandb.wandb_sdk.wandb_artifacts.get_artifacts_cache()
-                c.cleanup(wandb.util.from_human_size("10GB"))
+                c.cleanup(wandb.util.from_human_size("20GB"))
 
-                metadata = dict(state_dict)
+                metadata = {
+                    k: jax.device_get(getattr(state, k)).item()
+                    for k in ["step", "epoch", "train_time", "train_samples"]
+                }
                 metadata["num_params"] = num_params
                 if eval_metrics is not None:
                     metadata["eval"] = eval_metrics
+                if use_bucket:
+                    metadata["bucket_path"] = bucket_path
 
                 # create model artifact
                 artifact = wandb.Artifact(
@@ -1077,16 +1097,19 @@ def main():
                     type="DalleBart_model",
                     metadata=metadata,
                 )
-                for filename in [
-                    "config.json",
-                    "flax_model.msgpack",
-                    "merges.txt",
-                    "special_tokens_map.json",
-                    "tokenizer.json",
-                    "tokenizer_config.json",
-                    "vocab.json",
-                ]:
-                    artifact.add_file(f"{Path(training_args.output_dir) / filename}")
+                if not use_bucket:
+                    for filename in [
+                        "config.json",
+                        "flax_model.msgpack",
+                        "merges.txt",
+                        "special_tokens_map.json",
+                        "tokenizer.json",
+                        "tokenizer_config.json",
+                        "vocab.json",
+                    ]:
+                        artifact.add_file(
+                            f"{Path(training_args.output_dir) / filename}"
+                        )
                 wandb.run.log_artifact(artifact)
 
                 # create state artifact
@@ -1095,9 +1118,9 @@ def main():
                     type="DalleBart_state",
                     metadata=metadata,
                 )
-                for filename in ["opt_state.msgpack", "training_state.json"]:
+                if not use_bucket:
                     artifact_state.add_file(
-                        f"{Path(training_args.output_dir) / filename}"
+                        f"{Path(training_args.output_dir) / 'opt_state.msgpack'}"
                     )
                 wandb.run.log_artifact(artifact_state)
 
