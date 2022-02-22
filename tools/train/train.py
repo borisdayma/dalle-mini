@@ -18,6 +18,7 @@ Training DALL·E Mini.
 Script adapted from run_summarization_flax.py
 """
 
+import copy
 import io
 import logging
 import os
@@ -531,6 +532,8 @@ def main():
     # Set up our new model config
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
+        # initializing params with gradient checkpointing create issues
+        config.gradient_checkpointing = False
     else:
         config = None
 
@@ -553,7 +556,26 @@ def main():
         )
 
     # update model config per training args
+    # Done after initialization of weights to avoid issues with remat
+    # This is still considered correctly during training as function is pjitted
     model.config.gradient_checkpointing = training_args.gradient_checkpointing
+
+    # eval model cannot use remat
+    eval_config = copy.deepcopy(model.config)
+    eval_config.gradient_checkpointing = False
+
+    if training_args.gradient_checkpointing:
+        eval_model = DalleBart(
+            eval_config,
+            seed=training_args.seed_model,
+            dtype=getattr(jnp, model_args.dtype),
+            abstract_init=True,
+            load_on_cpu=True,
+        )
+        del eval_model._params
+        eval_fn = eval_model.__call__
+    else:
+        eval_fn = model.__call__
 
     # get model metadata
     model_metadata = model_args.get_metadata()
@@ -967,7 +989,7 @@ def main():
 
         def compute_eval_loss(batch):
             batch, labels = batch.pop("labels")
-            logits = state.apply_fn(**batch, params=state.params, train=False)[0]
+            logits = eval_fn(**batch, params=state.params, train=False)[0]
             return loss_fn(logits, labels)
 
         # calculate loss independently per dp_device

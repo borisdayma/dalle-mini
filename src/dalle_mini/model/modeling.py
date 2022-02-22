@@ -144,7 +144,7 @@ class FlaxBartEncoderLayerCollection(FlaxBartEncoderLayerCollection):
 
     def setup(self):
         layer_module = (
-            nn.remat(FlaxBartEncoderLayer)
+            nn.remat(FlaxBartEncoderLayer, concrete=True)
             if self.config.gradient_checkpointing
             else FlaxBartEncoderLayer
         )
@@ -211,7 +211,7 @@ class FlaxBartDecoderLayerCollection(FlaxBartDecoderLayerCollection):
 
     def setup(self):
         layer_module = (
-            nn.remat(FlaxBartDecoderLayer)
+            nn.remat(FlaxBartDecoderLayer, concrete=True)
             if self.config.gradient_checkpointing
             else FlaxBartDecoderLayer
         )
