@@ -135,11 +135,12 @@ class ModelArguments:
                     artifact = wandb.run.use_artifact(state_artifact)
                 else:
                     artifact = wandb.Api().artifact(state_artifact)
-                artifact_dir = artifact.download(tmp_dir)
                 if artifact.metadata.get("bucket_path"):
+                    # we will read directly file contents
                     self.restore_state = artifact.metadata["bucket_path"]
                 else:
-                    self.restore_state = Path(artifact_dir) / "opt_state.msgpack"
+                    artifact_dir = artifact.download(tmp_dir)
+                    self.restore_state = str(Path(artifact_dir) / "opt_state.msgpack")
 
             if self.restore_state.startswith("gs://"):
                 bucket_path = Path(self.restore_state[5:]) / "opt_state.msgpack"
@@ -1130,7 +1131,9 @@ def main():
                     type="DalleBart_model",
                     metadata=metadata,
                 )
-                if not use_bucket:
+                if use_bucket:
+                    artifact.add_reference(metadata["bucket_path"])
+                else:
                     for filename in [
                         "config.json",
                         "flax_model.msgpack",
@@ -1153,7 +1156,9 @@ def main():
                     type="DalleBart_state",
                     metadata=metadata,
                 )
-                if not use_bucket:
+                if use_bucket:
+                    artifact_state.add_reference(metadata["bucket_path"])
+                else:
                     artifact_state.add_file(
                         f"{Path(training_args.output_dir) / 'opt_state.msgpack'}"
                     )
