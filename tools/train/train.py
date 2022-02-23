@@ -862,16 +862,20 @@ def main():
     batch_spec = freeze({k: PartitionSpec("batch") for k in keys})
     grad_batch_spec = freeze({k: PartitionSpec(None, "batch") for k in keys})
 
-    # label smoothed cross entropy
+    # define loss
     def loss_fn(logits, labels):
         loss = optax.softmax_cross_entropy(logits, onehot(labels, logits.shape[-1]))
         loss = loss.mean()
         return loss
+    
+    # detect multi-host
+    multi_hosts = jax.process_count() > 1
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
         # we reshape to (gradient_accumulation_steps, dp_devices, ...)
         # allows feeding partial batch size per node for full model parallel
+        logger.info(f"batch shape 878 : {batch['labels'].shape}")
         batch = jax.tree_map(
             lambda x: x.reshape(
                 (
@@ -883,6 +887,7 @@ def main():
             ),
             batch,
         )
+        logger.info(f"batch shape 890 : {batch['labels'].shape}")
         # ensure data is sharded correctly per dp device
         batch = with_sharding_constraint(batch, grad_batch_spec)
 
@@ -906,6 +911,7 @@ def main():
         def loss_and_grad(grad_idx, dropout_rng):
             # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
             minibatch = get_minibatch(batch, grad_idx)
+            logger.info(f"batch shape 914 : {batch['labels'].shape}")
             # calculate loss and grads independently per dp_device
             dropout_rng, _ = jax.random.split(dropout_rng)
             # ensure inputs are sharded per device
@@ -1205,7 +1211,7 @@ def main():
                 )
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
-                logger.info(f"batch shape: {batch['labels'].shape}")
+                logger.info(f"batch shape 1211 : {batch['labels'].shape}")
 
                 # train step
                 state, train_metrics = p_train_step(state, batch, delta_time)
