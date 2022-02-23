@@ -791,7 +791,7 @@ def main():
     mesh_shape = (training_args.dp_devices, training_args.mp_devices)
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
     mesh = maps.Mesh(devices, ("batch", "mp"))
-    logger.info(f"mesh shape: {mesh_shape}")
+    logger.info(f"  Mesh shape: {mesh_shape}")
 
     # define state spec
     state_spec = TrainState(
@@ -874,20 +874,22 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
-        # we reshape to (gradient_accumulation_steps, dp_devices, ...)
+        # we reshape to (gradient_accumulation_steps, dp_devices, ...) only within pjit
         # allows feeding partial batch size per node for full model parallel
         logger.info(f"batch shape 878 : {batch['labels'].shape}")
-        batch = jax.tree_map(
-            lambda x: x.reshape(
-                (
-                    training_args.gradient_accumulation_steps,
-                    training_args.dp_devices,
-                    training_args.per_device_train_batch_size,
-                )
-                + x.shape[2:]
-            ),
-            batch,
-        )
+        if not multi_hosts:
+            # the "vmap trick" does not work in multi-hosts
+            batch = jax.tree_map(
+                lambda x: x.reshape(
+                    (
+                        training_args.gradient_accumulation_steps,
+                        training_args.dp_devices,
+                        training_args.per_device_train_batch_size,
+                    )
+                    + x.shape[2:]
+                ),
+                batch,
+            )
         logger.info(f"batch shape 890 : {batch['labels'].shape}")
         # ensure data is sharded correctly per dp device
         batch = with_sharding_constraint(batch, grad_batch_spec)
@@ -913,24 +915,31 @@ def main():
             # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
             minibatch = get_minibatch(batch, grad_idx)
             logger.info(f"batch shape 914 : {minibatch['labels'].shape}")
-            # calculate loss and grads independently per dp_device
+            # only 1 single rng per grad step, let us handle larger batch size (not sure why)
             dropout_rng, _ = jax.random.split(dropout_rng)
             # ensure inputs are sharded per device
             minibatch = jax.tree_map(
                 lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
                 minibatch,
             )
-            # only 1 single rng per grad step, let us handle larger batch size
-            loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, None), out_axes=(0, 0))(
-                state.params, minibatch, dropout_rng
-            )
-            # ensure outputs are sharded per device
-            loss_grads = jax.tree_map(
-                lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
-                loss_grads,
-            )
-            # average across all devices
-            loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
+            
+            if not multi_hosts:
+                # "vmap trick", calculate loss and grads independently per dp_device
+                # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
+                loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, None), out_axes=(0, 0))(
+                    state.params, minibatch, dropout_rng
+                )
+                # ensure outputs are sharded per device
+                loss_grads = jax.tree_map(
+                    lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
+                    loss_grads,
+                )
+                # average across all devices
+                loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
+            else:
+                # "vmap trick" does not work in multi-hosts and requires too much hbm
+                loss_grads = grad_fn(state.params, minibatch, dropout_rng)
+
             # return loss and grads
             return loss_grads, dropout_rng
 
@@ -1199,7 +1208,7 @@ def main():
                 delta_time = new_time - last_time
                 last_time = new_time
 
-                # reshape data into (gradient_accumulation_steps, dp_devices, batch_per_dp, ...)
+                # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
                 batch = jax.tree_map(
                     lambda x: x.reshape(
                         (
