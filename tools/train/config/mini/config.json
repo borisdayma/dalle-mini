@@ -10,7 +10,7 @@
   "decoder_layerdrop": 0.0,
   "decoder_layers": 12,
   "decoder_start_token_id": 16384,
-  "dropout": 0.1,
+  "dropout": 0.0,
   "encoder_attention_heads": 16,
   "encoder_ffn_dim": 4096,
   "encoder_layerdrop": 0.0,
