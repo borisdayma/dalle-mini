@@ -531,8 +531,6 @@ def main():
     # Set up our new model config
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
-        # initializing params with gradient checkpointing create issues
-        config.gradient_checkpointing = False
     else:
         config = None
 
@@ -545,6 +543,9 @@ def main():
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
             load_on_cpu=True,
+            # initializing params with gradient checkpointing creates issues
+            # we correctly set it later per training_args
+            gradient_checkpointing=False,
         )
     else:
         model = DalleBart(
@@ -552,6 +553,7 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             load_on_cpu=True,
+            gradient_checkpointing=False,
         )
 
     # update model config per training args
@@ -559,11 +561,10 @@ def main():
     # This is still considered correctly during training as function is pjitted
     model.config.gradient_checkpointing = training_args.gradient_checkpointing
 
-    # eval model cannot use remat
-    eval_config = copy.deepcopy(model.config)
-    eval_config.gradient_checkpointing = False
-
     if training_args.gradient_checkpointing:
+        # eval model cannot use remat
+        eval_config = copy.deepcopy(model.config)
+        eval_config.gradient_checkpointing = False
         eval_model = DalleBart(
             eval_config,
             seed=training_args.seed_model,
