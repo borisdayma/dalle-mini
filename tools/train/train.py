@@ -531,6 +531,9 @@ def main():
     # Set up our new model config
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
+        # initializing params with gradient checkpointing creates issues
+        # we correctly set it later per training_args
+        config.gradient_checkpointing = False
     else:
         config = None
 
@@ -553,7 +556,6 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             load_on_cpu=True,
-            gradient_checkpointing=False,
         )
 
     # update model config per training args
