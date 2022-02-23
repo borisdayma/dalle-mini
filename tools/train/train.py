@@ -1205,6 +1205,7 @@ def main():
                 )
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
+                logger.info(f"batch shape: {batch['labels'].shape}")
 
                 # train step
                 state, train_metrics = p_train_step(state, batch, delta_time)
