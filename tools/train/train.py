@@ -688,7 +688,8 @@ def main():
                 staircase=training_args.lr_staircase,
             )
         schedule_fn = optax.join_schedules(
-            schedules=[warmup_fn, decay_fn], boundaries=[training_args.warmup_steps]
+            schedules=[warmup_fn, decay_fn],
+            boundaries=[model_metadata.get("step", 0) + training_args.warmup_steps],
         )
         return schedule_fn
 
