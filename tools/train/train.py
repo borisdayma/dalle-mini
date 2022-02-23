@@ -57,9 +57,7 @@ from dalle_mini.model import (
     set_partitions,
 )
 
-cc.initialize_cache(
-    "/home/boris/dalle-mini/jax_cache", max_cache_size_bytes=5 * 2**30
-)
+cc.initialize_cache("./jax_cache", max_cache_size_bytes=5 * 2**30)
 
 logger = logging.getLogger(__name__)
 
