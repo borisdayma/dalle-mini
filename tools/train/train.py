@@ -791,6 +791,7 @@ def main():
     mesh_shape = (training_args.dp_devices, training_args.mp_devices)
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
     mesh = maps.Mesh(devices, ("batch", "mp"))
+    logger.info(f"mesh shape: {mesh_shape}")
 
     # define state spec
     state_spec = TrainState(
@@ -911,7 +912,7 @@ def main():
         def loss_and_grad(grad_idx, dropout_rng):
             # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
             minibatch = get_minibatch(batch, grad_idx)
-            logger.info(f"batch shape 914 : {batch['labels'].shape}")
+            logger.info(f"batch shape 914 : {minibatch['labels'].shape}")
             # calculate loss and grads independently per dp_device
             dropout_rng, _ = jax.random.split(dropout_rng)
             # ensure inputs are sharded per device
