@@ -368,9 +368,11 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         self.params = random_params
 
     @property
-    def num_params(self):
+    def num_params(self, params=None):
+        if params is None:
+            params = self.params
         num_params = jax.tree_map(
-            lambda param: param.size, flatten_dict(unfreeze(self.params))
+            lambda param: param.size, flatten_dict(unfreeze(params))
         ).values()
         return sum(list(num_params))
 
