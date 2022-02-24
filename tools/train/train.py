@@ -715,8 +715,8 @@ def main():
             graft_type=GraftingType.RMSPROP_NORMALIZED,
             nesterov=False,
             exponent_override=0,
-            statistics_partition_spec=PartitionSpec(None, "batch", None),
-            preconditioner_partition_spec=PartitionSpec("batch", None, None),
+            statistics_partition_spec=PartitionSpec(None, "dp", None),
+            preconditioner_partition_spec=PartitionSpec("dp", None, None),
             num_devices_for_pjit=training_args.dp_devices,
             shard_optimizer_states=True,
             inverse_failure_threshold=0.1,
@@ -779,7 +779,7 @@ def main():
             opt_state_spec = opt_fn.pspec_fn(
                 params=model.params,
                 params_partition_spec=param_spec,
-                partition_spec_for_statistics=PartitionSpec(None, "batch", None),
+                partition_spec_for_statistics=PartitionSpec(None, "dp", None),
             )
         else:
             raise NotImplementedError
@@ -790,7 +790,7 @@ def main():
     # create a mesh
     mesh_shape = (training_args.dp_devices, training_args.mp_devices)
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
-    mesh = maps.Mesh(devices, ("batch", "mp"))
+    mesh = maps.Mesh(devices, ("dp", "mp"))
     logger.info(f"  Mesh shape: {mesh_shape}")
 
     # define state spec
@@ -860,8 +860,8 @@ def main():
 
     # define batch specs
     keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
-    batch_spec = freeze({k: PartitionSpec("batch") for k in keys})
-    grad_batch_spec = freeze({k: PartitionSpec(None, "batch") for k in keys})
+    batch_spec = freeze({k: PartitionSpec("dp") for k in keys})
+    grad_batch_spec = freeze({k: PartitionSpec(None, "dp") for k in keys})
 
     # define loss
     def loss_fn(logits, labels):
@@ -916,7 +916,7 @@ def main():
             dropout_rng, _ = jax.random.split(dropout_rng)
             # ensure inputs are sharded per device
             minibatch = jax.tree_map(
-                lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
+                lambda x: with_sharding_constraint(x, PartitionSpec("dp")),
                 minibatch,
             )
 
@@ -928,7 +928,7 @@ def main():
                 )(state.params, minibatch, dropout_rng)
                 # ensure outputs are sharded per device
                 loss_grads = jax.tree_map(
-                    lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
+                    lambda x: with_sharding_constraint(x, PartitionSpec("dp")),
                     loss_grads,
                 )
                 # average across all devices
@@ -1011,7 +1011,7 @@ def main():
         # calculate loss independently per dp_device
         loss = jax.vmap(compute_eval_loss, in_axes=(0,), out_axes=0)(batch)
         # ensure they are sharded over dp devices
-        loss = with_sharding_constraint(loss, PartitionSpec("batch"))
+        loss = with_sharding_constraint(loss, PartitionSpec("dp"))
         # average across all devices
         loss = jnp.mean(loss)
         return loss
