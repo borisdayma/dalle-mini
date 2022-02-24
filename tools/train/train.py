@@ -545,6 +545,8 @@ def main():
             config=config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
+            abstract_init=True,
+            load_on_cpu=True,
             # initializing params with gradient checkpointing creates issues
             # we correctly set it later per training_args
             gradient_checkpointing=False,
@@ -555,6 +557,7 @@ def main():
             config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
+            load_on_cpu=True,
         )
 
     # update model config per training args
@@ -571,7 +574,6 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
-            load_on_cpu=True,
         )
         del eval_model._params
         eval_fn = eval_model.__call__
@@ -805,37 +807,24 @@ def main():
         tx=optimizer,
     )
 
-    # get true params if not initialized yet
-    def get_params(params):
-        if model_args.model_name_or_path:
-            # model params are correctly loaded
-            return params
-        else:
-            # params have not been initialized yet
-            return model.init_weights()
-
-    # create training state
-    if model_args.model_name_or_path:
-        del model._params  # no need to use any TPU memory
     with maps.mesh(mesh.devices, mesh.axis_names):
+        logger.info("Creating state")
         if not model_args.restore_state:
 
             def init_state(params):
                 return TrainState.create(
                     apply_fn=model.__call__,
                     tx=optimizer,
-                    params=get_params(params),
+                    params=params,
                     dropout_rng=dropout_rng,
                 )
 
             state = pjit(
                 init_state,
-                in_axis_resources=(
-                    param_spec if model_args.model_name_or_path else None,
-                ),
+                in_axis_resources=(param_spec,),
                 out_axis_resources=state_spec,
                 donate_argnums=(0,),
-            )(model.params if model_args.model_name_or_path else None)
+            )(model.params)
 
         else:
             # load opt_state
@@ -851,7 +840,7 @@ def main():
                 return TrainState(
                     apply_fn=model.__call__,
                     tx=optimizer,
-                    params=get_params(params),
+                    params=params,
                     opt_state=opt_state,
                     dropout_rng=dropout_rng,
                     **attr_state,
@@ -868,9 +857,7 @@ def main():
             del opt_state
 
     # free CPU memory
-    if hasattr(model, "_params"):
-        del model._params
-    del opt_state_spec, opt_state_shape
+    del model._params, opt_state_spec, opt_state_shape
 
     # define batch specs
     keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]

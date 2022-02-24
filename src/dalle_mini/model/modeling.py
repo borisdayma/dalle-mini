@@ -326,6 +326,8 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         input_shape: Tuple[int] = (1, 1),
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
+        abstract_init: bool = False,
+        load_on_cpu: bool = False,
         **kwargs,
     ):
         module = self.module_class(config=config, dtype=dtype, **kwargs)
@@ -346,11 +348,13 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         self.dtype = dtype
 
         # get shape of params only
-        fake_params = self.init_weights(self.key, input_shape, abstract_init=True)
+        params = self.init_weights(
+            self.key, input_shape, abstract_init=abstract_init, load_on_cpu=load_on_cpu
+        )
 
         # save required_params as set
-        self._required_params = set(flatten_dict(unfreeze(fake_params)).keys())
-        self.params = fake_params
+        self._required_params = set(flatten_dict(unfreeze(params)).keys())
+        self.params = params
 
     def init_weights(
         self, rng=None, input_shape=(1, 1), abstract_init=False, load_on_cpu=False
