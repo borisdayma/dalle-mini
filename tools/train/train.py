@@ -868,7 +868,7 @@ def main():
         loss = optax.softmax_cross_entropy(logits, onehot(labels, logits.shape[-1]))
         loss = loss.mean()
         return loss
-    
+
     # detect multi-host
     multi_hosts = jax.process_count() > 1
 
@@ -919,13 +919,13 @@ def main():
                 lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
                 minibatch,
             )
-            
+
             if not multi_hosts:
                 # "vmap trick", calculate loss and grads independently per dp_device
                 # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
-                loss_grads = jax.vmap(grad_fn, in_axes=(None, 0, None), out_axes=(0, 0))(
-                    state.params, minibatch, dropout_rng
-                )
+                loss_grads = jax.vmap(
+                    grad_fn, in_axes=(None, 0, None), out_axes=(0, 0)
+                )(state.params, minibatch, dropout_rng)
                 # ensure outputs are sharded per device
                 loss_grads = jax.tree_map(
                     lambda x: with_sharding_constraint(x, PartitionSpec("batch")),
@@ -1035,7 +1035,10 @@ def main():
     step = int(state.step)
     metrics_logger = MetricsLogger(step)
     epochs = tqdm(
-        range(state.epoch, num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0
+        range(state.epoch, num_epochs),
+        desc=f"Epoch ... (1/{num_epochs})",
+        position=0,
+        disable=jax.process_index() > 0,
     )
 
     def run_evaluation():
@@ -1054,6 +1057,7 @@ def main():
                 position=2,
                 leave=False,
                 total=eval_steps,
+                disable=jax.process_index() > 0,
             ):
                 # need to keep only eval_batch_size_per_node items relevant to the node
                 batch = jax.tree_map(
@@ -1199,6 +1203,7 @@ def main():
                 position=1,
                 leave=False,
                 total=steps_per_epoch,
+                disable=jax.process_index() > 0,
             ):
                 # calculate delta time (we have a lag of one step but it's ok)
                 new_time = time.perf_counter()
