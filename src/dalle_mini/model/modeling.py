@@ -326,8 +326,6 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         input_shape: Tuple[int] = (1, 1),
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
-        abstract_init: bool = False,
-        load_on_cpu: bool = False,
         **kwargs,
     ):
         module = self.module_class(config=config, dtype=dtype, **kwargs)
@@ -347,25 +345,28 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         self.key = PRNGKey(seed)
         self.dtype = dtype
 
-        # init weights on CPU
-        if load_on_cpu:
-            # init weights on CPU
-            init_fn = jax.jit(self.init_weights, static_argnums=(1,), backend="cpu")
-        else:
-            init_fn = self.init_weights
+        # get shape of params only
+        fake_params = self.init_weights(self.key, input_shape, abstract_init=True)
 
-        # randomly initialized parameters
-        random_params = self.init_weights(self.key, input_shape)
+        # save required_params as set
+        self._required_params = set(flatten_dict(unfreeze(fake_params)).keys())
+        self.params = fake_params
+
+    def init_weights(
+        self, rng=None, input_shape=(1, 1), abstract_init=False, load_on_cpu=False
+    ):
+        if rng is None:
+            rng = self.key
+        init_fn = super().init_weights
+        if load_on_cpu:
+            init_fn = jax.jit(init_fn, static_argnums=(1,), backend="cpu")
         if abstract_init:
             # only set shape and dtype, load parameters separately
             init_fn = partial(init_fn, input_shape=input_shape)
-            random_params = jax.eval_shape(init_fn, self.key)
+            params = jax.eval_shape(init_fn, rng)
         else:
-            random_params = init_fn(self.key, input_shape)
-
-        # save required_params as set
-        self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
-        self.params = random_params
+            params = init_fn(rng, input_shape)
+        return params
 
     @property
     def num_params(self, params=None):

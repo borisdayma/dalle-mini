@@ -57,7 +57,7 @@ from dalle_mini.model import (
     set_partitions,
 )
 
-cc.initialize_cache("./jax_cache", max_cache_size_bytes=5 * 2**30)
+cc.initialize_cache("./jax_cache", max_cache_size_bytes=10 * 2 ** 30)
 
 logger = logging.getLogger(__name__)
 
@@ -539,23 +539,22 @@ def main():
 
     # Load or create new model
     if model_args.model_name_or_path:
+        # model.params is on CPU (as numpy arrays)
         model = DalleBart.from_pretrained(
             model_args.model_name_or_path,
             config=config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            abstract_init=True,
-            load_on_cpu=True,
             # initializing params with gradient checkpointing creates issues
             # we correctly set it later per training_args
             gradient_checkpointing=False,
         )
     else:
+        # model.params contains only the shape
         model = DalleBart(
             config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            load_on_cpu=True,
         )
 
     # update model config per training args
@@ -806,7 +805,18 @@ def main():
         tx=optimizer,
     )
 
+    # get true params if not initialized yet
+    def get_params(params):
+        if model_args.model_name_or_path:
+            # model params are correctly loaded
+            return params
+        else:
+            # params have not been initialized yet
+            return model.init_weights()
+
     # create training state
+    if model_args.model_name_or_path:
+        del model._params  # no need to use any TPU memory
     with maps.mesh(mesh.devices, mesh.axis_names):
         if not model_args.restore_state:
 
@@ -814,16 +824,18 @@ def main():
                 return TrainState.create(
                     apply_fn=model.__call__,
                     tx=optimizer,
-                    params=params,
+                    params=get_params(params),
                     dropout_rng=dropout_rng,
                 )
 
             state = pjit(
                 init_state,
-                in_axis_resources=(param_spec,),
+                in_axis_resources=(
+                    param_spec if model_args.model_name_or_path else None,
+                ),
                 out_axis_resources=state_spec,
                 donate_argnums=(0,),
-            )(model.params)
+            )(model.params if model_args.model_name_or_path else None)
 
         else:
             # load opt_state
@@ -839,7 +851,7 @@ def main():
                 return TrainState(
                     apply_fn=model.__call__,
                     tx=optimizer,
-                    params=params,
+                    params=get_params(params),
                     opt_state=opt_state,
                     dropout_rng=dropout_rng,
                     **attr_state,
@@ -855,8 +867,10 @@ def main():
             # remove opt_state from CPU
             del opt_state
 
-    # free memory
-    del model._params, opt_state_spec, opt_state_shape
+    # free CPU memory
+    if hasattr(model, "_params"):
+        del model._params
+    del opt_state_spec, opt_state_shape
 
     # define batch specs
     keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
