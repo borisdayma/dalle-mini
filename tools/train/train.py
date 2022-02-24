@@ -620,7 +620,7 @@ def main():
     eval_batch_size_per_step = eval_batch_size_per_node * jax.process_count()
     len_train_dataset, len_eval_dataset = dataset.length
     steps_per_epoch = (
-        len_train_dataset // batch_size_per_step
+        len_train_dataset // batch_size_per_node
         if len_train_dataset is not None
         else None
     )
