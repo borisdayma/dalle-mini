@@ -193,8 +193,8 @@ class Dataset:
             while (self.multi_hosts and split == "train") or first_loop:
                 # in multi-host, we run forever (no epoch) as hosts need to stop
                 # at the same time and training data may not be split equally
-                # For validation data we put the entire set on each host as we could lose
-                # too many samples on pods
+                # For validation data we put the entire batch on each host and then
+                # keep only the one specific to each host (could be improved but not necessary)
                 if epoch is not None:
                     assert split == "train"
                     # reshuffle training data at each epoch
