@@ -28,6 +28,5 @@
   "pad_token_id": 16385,
   "scale_embedding": false,
   "tie_word_embeddings": false,
-  "transformers_version": "4.13.0.dev0",
   "use_cache": true
 }
