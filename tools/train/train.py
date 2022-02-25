@@ -45,7 +45,7 @@ from flax.training.common_utils import onehot
 from google.cloud import storage
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
-from jax.experimental.pjit import pjit
+from jax.experimental.pjit import pjit, with_sharding_constraint
 from tqdm import tqdm
 from transformers import HfArgumentParser
 
@@ -914,6 +914,8 @@ def main():
                 loss_grads = jax.vmap(
                     grad_fn, in_axes=(None, 0, None), out_axes=(0, 0)
                 )(state.params, minibatch, dropout_rng)
+                # ensure they are sharded over dp devices
+                loss_grads = with_sharding_constraint(loss_grads, PartitionSpec("dp"))
                 # average across all devices
                 loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
             else:
@@ -1188,7 +1190,8 @@ def main():
                     (batch_size_per_node_per_grad_step,)
                     if multi_hosts
                     else (
-                        training_args.dp_devices,  # local dp devices
+                        jax.local_device_count()
+                        // training_args.mp_devices,  # local dp devices
                         training_args.per_device_train_batch_size,
                     )
                 )
