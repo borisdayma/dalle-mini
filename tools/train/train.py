@@ -557,25 +557,21 @@ def main():
             abstract_init=True,
         )
 
-    # update model config per training args
-    # Done after initialization of weights to avoid issues with remat
-    # This is still considered correctly during training as function is pjitted
-    model.config.gradient_checkpointing = training_args.gradient_checkpointing
-
+    # define model eval and train functions
+    eval_fn = model.__call__
     if training_args.gradient_checkpointing:
-        # eval model cannot use remat
-        eval_config = copy.deepcopy(model.config)
-        eval_config.gradient_checkpointing = False
-        eval_model = DalleBart(
-            eval_config,
+        remat_config = copy.deepcopy(model.config)
+        remat_config.gradient_checkpointing = True
+        remat_model = DalleBart(
+            remat_config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
         )
-        del eval_model._params
-        eval_fn = eval_model.__call__
+        del remat_model._params
+        train_fn = remat_model.__call__
     else:
-        eval_fn = model.__call__
+        train_fn = model.__call__
 
     # get model metadata
     model_metadata = model_args.get_metadata()
@@ -800,7 +796,7 @@ def main():
         epoch=None,
         train_time=None,
         train_samples=None,
-        apply_fn=model.__call__,
+        apply_fn=train_fn,
         tx=optimizer,
     )
 
@@ -819,7 +815,7 @@ def main():
 
             def init_state(params):
                 return TrainState.create(
-                    apply_fn=model.__call__,
+                    apply_fn=train_fn,
                     tx=optimizer,
                     params=get_params(params),
                     dropout_rng=dropout_rng,
@@ -846,7 +842,7 @@ def main():
 
             def restore_state(params, opt_state):
                 return TrainState(
-                    apply_fn=model.__call__,
+                    apply_fn=train_fn,
                     tx=optimizer,
                     params=get_params(params),
                     opt_state=opt_state,
