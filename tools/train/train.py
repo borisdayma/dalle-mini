@@ -545,7 +545,6 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
-            load_on_cpu=True,
             # initializing params with gradient checkpointing creates issues
             # we correctly set it later per training_args
             gradient_checkpointing=False,
@@ -555,7 +554,7 @@ def main():
             config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            load_on_cpu=True,
+            abstract_init=True,
         )
 
     # update model config per training args
@@ -572,7 +571,6 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
-            load_on_cpu=True,
         )
         del eval_model._params
         eval_fn = eval_model.__call__
@@ -806,24 +804,35 @@ def main():
         tx=optimizer,
     )
 
+    # get true params if not initialized yet
+    def get_params(params):
+        if model_args.model_name_or_path:
+            # model params are correctly loaded
+            return params
+        else:
+            # params have not been initialized yet
+            return model.init_weights()
+
     with maps.mesh(mesh.devices, mesh.axis_names):
-        logger.info("Creating state")
+        logger.info("  Creating state")
         if not model_args.restore_state:
 
             def init_state(params):
                 return TrainState.create(
                     apply_fn=model.__call__,
                     tx=optimizer,
-                    params=params,
+                    params=get_params(params),
                     dropout_rng=dropout_rng,
                 )
 
             state = pjit(
                 init_state,
-                in_axis_resources=(param_spec,),
+                in_axis_resources=(
+                    param_spec if model_args.model_name_or_path else None,
+                ),
                 out_axis_resources=state_spec,
                 donate_argnums=(0,),
-            )(model.params)
+            )(model.params if model_args.model_name_or_path else None)
 
         else:
             # load opt_state
@@ -839,7 +848,7 @@ def main():
                 return TrainState(
                     apply_fn=model.__call__,
                     tx=optimizer,
-                    params=params,
+                    params=get_params(params),
                     opt_state=opt_state,
                     dropout_rng=dropout_rng,
                     **attr_state,
@@ -847,10 +856,13 @@ def main():
 
             state = pjit(
                 restore_state,
-                in_axis_resources=(param_spec, opt_state_spec),
+                in_axis_resources=(
+                    param_spec if model_args.model_name_or_path else None,
+                    opt_state_spec,
+                ),
                 out_axis_resources=state_spec,
                 donate_argnums=(0, 1),
-            )(model.params, opt_state)
+            )(model.params if model_args.model_name_or_path else None, opt_state)
 
             # remove opt_state from CPU
             del opt_state
