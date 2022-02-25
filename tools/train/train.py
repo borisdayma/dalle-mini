@@ -566,9 +566,8 @@ def main():
             remat_config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            abstract_init=True,
+            init_weights=False,
         )
-        del remat_model._params
         train_fn = remat_model.__call__
     else:
         train_fn = model.__call__
