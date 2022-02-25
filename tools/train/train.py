@@ -765,7 +765,7 @@ def main():
     with maps.mesh(mesh.devices, mesh.axis_names):
         logger.info("  Creating state")
 
-        def init_state(params):
+        def init_state():
             params = model.init_weights()
             return TrainState.create(
                 apply_fn=model.__call__,
@@ -776,10 +776,9 @@ def main():
 
         state = pjit(
             init_state,
-            in_axis_resources=(param_spec if model_args.model_name_or_path else None,),
+            in_axis_resources=None,
             out_axis_resources=state_spec,
-            donate_argnums=(0,),
-        )(model.params if model_args.model_name_or_path else None)
+        )()
 
     # free CPU memory
     del model._params, opt_state_spec, opt_state_shape
