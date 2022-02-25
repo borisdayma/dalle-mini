@@ -1195,6 +1195,7 @@ def main():
                     )
                 wandb.run.log_artifact(artifact_state)
 
+    logger.info("  Starting Training")
     with maps.mesh(mesh.devices, mesh.axis_names):
         for epoch in epochs:
             state.replace(epoch=epoch)
