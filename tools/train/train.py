@@ -45,7 +45,7 @@ from flax.training.common_utils import onehot
 from google.cloud import storage
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
-from jax.experimental.pjit import pjit, with_sharding_constraint
+from jax.experimental.pjit import pjit
 from tqdm import tqdm
 from transformers import HfArgumentParser
 
@@ -878,6 +878,7 @@ def main():
 
     # detect multi-host
     multi_hosts = jax.process_count() > 1
+    multi_hosts = False  # use vmap trick on pod
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
@@ -906,11 +907,6 @@ def main():
             )
             # only 1 single rng per grad step, let us handle larger batch size (not sure why)
             dropout_rng, _ = jax.random.split(dropout_rng)
-            # ensure inputs are sharded per device
-            minibatch = jax.tree_map(
-                lambda x: with_sharding_constraint(x, PartitionSpec("dp")),
-                minibatch,
-            )
 
             if not multi_hosts:
                 # "vmap trick", calculate loss and grads independently per dp_device
@@ -918,11 +914,6 @@ def main():
                 loss_grads = jax.vmap(
                     grad_fn, in_axes=(None, 0, None), out_axes=(0, 0)
                 )(state.params, minibatch, dropout_rng)
-                # ensure outputs are sharded per device
-                loss_grads = jax.tree_map(
-                    lambda x: with_sharding_constraint(x, PartitionSpec("dp")),
-                    loss_grads,
-                )
                 # average across all devices
                 loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
             else:
@@ -981,31 +972,12 @@ def main():
 
     # Define eval fn
     def eval_step(state, batch):
-        # we reshape to (dp_devices, ...)
-        batch = jax.tree_map(
-            lambda x: x.reshape(
-                (
-                    training_args.dp_devices,
-                    training_args.per_device_eval_batch_size,
-                )
-                + x.shape[1:]
-            ),
-            batch,
-        )
-        # ensure data is sharded correctly per dp device
-        batch = with_sharding_constraint(batch, batch_spec)
-
         def compute_eval_loss(batch):
             batch, labels = batch.pop("labels")
             logits = eval_fn(**batch, params=state.params, train=False)[0]
             return loss_fn(logits, labels)
 
-        # calculate loss independently per dp_device
-        loss = jax.vmap(compute_eval_loss, in_axes=(0,), out_axes=0)(batch)
-        # ensure they are sharded over dp devices
-        loss = with_sharding_constraint(loss, PartitionSpec("dp"))
-        # average across all devices
-        loss = jnp.mean(loss)
+        loss = compute_eval_loss(batch)
         return loss
 
     # Create parallel version of the train and eval step
