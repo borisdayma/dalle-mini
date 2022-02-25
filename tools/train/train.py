@@ -539,7 +539,6 @@ def main():
 
     # Load or create new model
     if model_args.model_name_or_path:
-        # model.params is on CPU (as numpy arrays)
         model = DalleBart.from_pretrained(
             model_args.model_name_or_path,
             config=config,
@@ -552,7 +551,6 @@ def main():
             gradient_checkpointing=False,
         )
     else:
-        # model.params contains only the shape
         model = DalleBart(
             config,
             seed=training_args.seed_model,
@@ -574,6 +572,7 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
+            load_on_cpu=True,
         )
         del eval_model._params
         eval_fn = eval_model.__call__
