@@ -881,23 +881,6 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
-        # we reshape to (gradient_accumulation_steps, dp_devices, ...) only within pjit
-        # allows feeding partial batch size per node for full model parallel
-        if not multi_hosts:
-            # the "vmap trick" does not work in multi-hosts
-            batch = jax.tree_map(
-                lambda x: x.reshape(
-                    (
-                        training_args.gradient_accumulation_steps,
-                        training_args.dp_devices,
-                        training_args.per_device_train_batch_size,
-                    )
-                    + x.shape[2:]
-                ),
-                batch,
-            )
-        # ensure data is sharded correctly per dp device
-        batch = with_sharding_constraint(batch, grad_batch_spec)
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
@@ -917,8 +900,10 @@ def main():
         grad_fn = jax.value_and_grad(compute_loss)
 
         def loss_and_grad(grad_idx, dropout_rng):
-            # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
-            minibatch = get_minibatch(batch, grad_idx)
+            # minibatch at grad_idx for gradient accumulation (None otherwise)
+            minibatch = (
+                get_minibatch(batch, grad_idx) if grad_idx is not None else batch
+            )
             # only 1 single rng per grad step, let us handle larger batch size (not sure why)
             dropout_rng, _ = jax.random.split(dropout_rng)
             # ensure inputs are sharded per device
@@ -948,7 +933,7 @@ def main():
             return loss_grads, dropout_rng
 
         if training_args.gradient_accumulation_steps == 1:
-            loss_grad, dropout_rng = loss_and_grad(0, state.dropout_rng)
+            loss_grad, dropout_rng = loss_and_grad(None, state.dropout_rng)
         else:
             # create initial state for cumul_minibatch_step loop
             init_minibatch_step = (
@@ -1026,7 +1011,13 @@ def main():
     # Create parallel version of the train and eval step
     p_train_step = pjit(
         train_step,
-        in_axis_resources=(state_spec, grad_batch_spec, None),
+        in_axis_resources=(
+            state_spec,
+            grad_batch_spec
+            if training_args.gradient_accumulation_steps > 1
+            else batch_spec,
+            None,
+        ),
         out_axis_resources=(state_spec, None),
         donate_argnums=(0,),
     )
@@ -1218,15 +1209,25 @@ def main():
                 delta_time = new_time - last_time
                 last_time = new_time
 
-                # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
+                # set correct shape to batch
+                # - add grad_step dim if gradient_accumulation_steps > 1
+                # - split per dp device if not multi-host for vmap trick (does not work in multi-host)
+                bs_shape = (
+                    (batch_size_per_node_per_grad_step,)
+                    if multi_hosts
+                    else (
+                        training_args.dp_devices,  # local dp devices
+                        training_args.per_device_train_batch_size,
+                    )
+                )
+                if training_args.gradient_accumulation_steps > 1:
+                    # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
+                    # to avoid any data redistribution when sharding
+                    bs_shape = (training_args.gradient_accumulation_steps,) + bs_shape
+
+                # reshape batch
                 batch = jax.tree_map(
-                    lambda x: x.reshape(
-                        (
-                            training_args.gradient_accumulation_steps,
-                            batch_size_per_node_per_grad_step,
-                        )
-                        + x.shape[1:]
-                    ),
+                    lambda x: x.reshape(bs_shape + x.shape[1:]),
                     batch,
                 )
                 # freeze batch to pass safely to jax transforms
