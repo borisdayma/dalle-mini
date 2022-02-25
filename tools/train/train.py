@@ -866,9 +866,8 @@ def main():
     del model._params, opt_state_spec, opt_state_shape
 
     # define batch specs
-    keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
-    batch_spec = freeze({k: PartitionSpec("dp") for k in keys})
-    grad_batch_spec = freeze({k: PartitionSpec(None, "dp") for k in keys})
+    batch_spec = PartitionSpec("dp")
+    grad_batch_spec = PartitionSpec(None, "dp")
 
     # define loss
     def loss_fn(logits, labels):
