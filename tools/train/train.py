@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2021-2022 The HuggingFace & DALL·E Mini Team All rights reserved.
+# Copyright 2021-2022 The HuggingFace & DALL·E Mini team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -799,8 +799,8 @@ def main():
         tx=optimizer,
     )
 
-    # get true params if not initialized yet
-    def get_params(params):
+    # init params if not available yet
+    def maybe_init_params(params):
         if model_args.model_name_or_path:
             # model params are correctly loaded
             return params
@@ -816,7 +816,7 @@ def main():
                 return TrainState.create(
                     apply_fn=train_fn,
                     tx=optimizer,
-                    params=get_params(params),
+                    params=maybe_init_params(params),
                     dropout_rng=dropout_rng,
                 )
 
@@ -843,7 +843,7 @@ def main():
                 return TrainState(
                     apply_fn=train_fn,
                     tx=optimizer,
-                    params=get_params(params),
+                    params=maybe_init_params(params),
                     opt_state=opt_state,
                     dropout_rng=dropout_rng,
                     **attr_state,
@@ -919,7 +919,6 @@ def main():
         def loss_and_grad(grad_idx, dropout_rng):
             # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
             minibatch = get_minibatch(batch, grad_idx)
-            logger.info(f'  minibatch["labels"].shape {minibatch["labels"].shape}')
             # only 1 single rng per grad step, let us handle larger batch size (not sure why)
             dropout_rng, _ = jax.random.split(dropout_rng)
             # ensure inputs are sharded per device
@@ -1191,7 +1190,7 @@ def main():
                     )
                 wandb.run.log_artifact(artifact_state)
 
-    logger.info("  Starting Training")
+    logger.info("  Ready to start training")
     with maps.mesh(mesh.devices, mesh.axis_names):
         for epoch in epochs:
             state.replace(epoch=epoch)
@@ -1232,12 +1231,9 @@ def main():
                 )
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
-                logger.info(f'  batch["labels"].shape {batch["labels"].shape}')
 
                 # train step
-                logger.info(f"  before p_train_step")
                 state, train_metrics = p_train_step(state, batch, delta_time)
-                logger.info(f"  after p_train_step")
                 step += 1
 
                 if step % training_args.logging_steps == 0 and jax.process_index() == 0:
