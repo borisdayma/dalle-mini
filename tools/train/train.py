@@ -776,7 +776,7 @@ def main():
 
     # define batch specs
     keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
-    batch_spec = freeze({k: PartitionSpec("dp") for k in keys})
+    batch_spec = PartitionSpec(("dp", "mp"))
 
     # define loss
     def loss_fn(logits, labels):
@@ -787,9 +787,9 @@ def main():
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
         def compute_loss(params, batch, dropout_rng):
-            batch, labels = batch.pop("labels")
+            inputs, labels = batch.pop("labels")
             logits = state.apply_fn(
-                **batch, params=params, dropout_rng=dropout_rng, train=True
+                **inputs, params=params, dropout_rng=dropout_rng, train=True
             )[0]
             return loss_fn(logits, labels)
 
@@ -847,7 +847,7 @@ def main():
         train_step,
         in_axis_resources=(state_spec, batch_spec, None),
         out_axis_resources=(state_spec, None),
-        donate_argnums=(0,),
+        donate_argnums=(0, 1),
     )
     p_eval_step = pjit(
         eval_step,
@@ -1040,6 +1040,19 @@ def main():
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
                 logger.info(f'  batch["labels"].shape {batch["labels"].shape}')
+
+                f1 = pjit(
+                    lambda x: x,
+                    in_axis_resources=None,
+                    out_axis_resources=PartitionSpec("dp"),
+                )
+                f2 = pjit(
+                    lambda x: x,
+                    in_axis_resources=PartitionSpec("dp"),
+                    out_axis_resources=PartitionSpec("dp"),
+                )
+                batch_test = f1(batch)
+                print("test")
 
                 # train step
                 logger.info(f"  before p_train_step")
