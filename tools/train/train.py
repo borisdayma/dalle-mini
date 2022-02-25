@@ -877,7 +877,6 @@ def main():
 
     # "vmap trick" works only on single node (memory issues on pod, not sure why)
     use_vmap_trick = jax.process_count() == 1
-    use_vmap_trick = True
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
