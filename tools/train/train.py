@@ -875,9 +875,9 @@ def main():
         loss = loss.mean()
         return loss
 
-    # detect multi-host
-    multi_hosts = jax.process_count() > 1
-    multi_hosts = False  # use vmap trick on pod
+    # "vmap trick" works only on single node (memory issues on pod, not sure why)
+    use_vmap_trick = jax.process_count() == 1
+    use_vmap_trick = True
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
@@ -907,7 +907,7 @@ def main():
             # only 1 single rng per grad step, let us handle larger batch size (not sure why)
             dropout_rng, _ = jax.random.split(dropout_rng)
 
-            if not multi_hosts:
+            if use_vmap_trick:
                 # "vmap trick", calculate loss and grads independently per dp_device
                 # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
                 loss_grads = jax.vmap(
@@ -1187,7 +1187,7 @@ def main():
                 # - split per dp device if not multi-host for vmap trick (does not work in multi-host)
                 bs_shape = (
                     (batch_size_per_node_per_grad_step,)
-                    if multi_hosts
+                    if not use_vmap_trick
                     else (
                         jax.local_device_count()
                         // training_args.mp_devices,  # local dp devices
