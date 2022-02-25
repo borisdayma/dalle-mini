@@ -541,9 +541,6 @@ def main():
             abstract_init=True,
         )
 
-    # get model metadata
-    model_metadata = model_args.get_metadata()
-
     # get PartitionSpec for model params (required to be a dict)
     param_spec = set_partitions(model.params)
 
@@ -622,12 +619,6 @@ def main():
             end_value=training_args.learning_rate,
             transition_steps=training_args.warmup_steps,
         )
-        # offset step when resuming
-        if model_metadata.get("step", 0):
-            warmup_fn = optax.join_schedules(
-                schedules=[optax.constant_schedule(0.0), warmup_fn],
-                boundaries=[model_metadata["step"]],
-            )
         if training_args.lr_decay is None:
             return warmup_fn
         elif training_args.lr_decay == "linear":
@@ -648,7 +639,7 @@ def main():
             )
         schedule_fn = optax.join_schedules(
             schedules=[warmup_fn, decay_fn],
-            boundaries=[model_metadata.get("step", 0) + training_args.warmup_steps],
+            boundaries=[training_args.warmup_steps],
         )
         return schedule_fn
 
@@ -762,7 +753,7 @@ def main():
         tx=optimizer,
     )
 
-    with maps.mesh(mesh.devices, mesh.axis_names):
+    with maps.mesh(devices, mesh.axis_names):
         logger.info("  Creating state")
 
         def init_state():
@@ -781,7 +772,7 @@ def main():
         )()
 
     # free CPU memory
-    del model._params, opt_state_spec, opt_state_shape
+    # del model._params, opt_state_spec, opt_state_shape
 
     # define batch specs
     keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
@@ -1019,7 +1010,7 @@ def main():
                 wandb.run.log_artifact(artifact_state)
 
     logger.info("  Starting Training")
-    with maps.mesh(mesh.devices, mesh.axis_names):
+    with maps.mesh(devices, mesh.axis_names):
         for epoch in epochs:
             state.replace(epoch=epoch)
             # ======================== Training ================================
