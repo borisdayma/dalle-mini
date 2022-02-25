@@ -841,24 +841,18 @@ def main():
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
         def compute_loss(params, batch, dropout_rng):
-            # batch has dim (batch_size, ...)
             batch, labels = batch.pop("labels")
             logits = state.apply_fn(
                 **batch, params=params, dropout_rng=dropout_rng, train=True
             )[0]
             return loss_fn(logits, labels)
 
+        # get gradients
         grad_fn = jax.value_and_grad(compute_loss)
-
-        def loss_and_grad(grad_idx, dropout_rng):
-            dropout_rng, _ = jax.random.split(dropout_rng)
-            # return loss and grads
-            loss_grads = grad_fn(state.params, batch, dropout_rng)
-            return loss_grads, dropout_rng
+        dropout_rng, _ = jax.random.split(state.dropout_rng)
+        loss, grads = grad_fn(state.params, batch, dropout_rng)
 
         # update state
-        loss_grad, dropout_rng = loss_and_grad(0, state.dropout_rng)
-        loss, grads = loss_grad
         state = state.apply_gradients(
             grads=grads,
             dropout_rng=dropout_rng,
