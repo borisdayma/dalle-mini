@@ -18,7 +18,7 @@
   "encoder_vocab_size": 50264,
   "eos_token_id": 16385,
   "image_length": 256,
-  "image_vocab_size": 16385,
+  "image_vocab_size": 16391,
   "init_std": 0.01,
   "is_encoder_decoder": true,
   "max_text_length": 64,
