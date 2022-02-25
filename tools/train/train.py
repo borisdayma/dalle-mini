@@ -919,6 +919,7 @@ def main():
         def loss_and_grad(grad_idx, dropout_rng):
             # minibatch at grad_idx, shape (dp_devices, per_device_train_batch_size, ...)
             minibatch = get_minibatch(batch, grad_idx)
+            logger.info(f'  minibatch["labels"].shape {minibatch["labels"].shape}')
             # only 1 single rng per grad step, let us handle larger batch size (not sure why)
             dropout_rng, _ = jax.random.split(dropout_rng)
             # ensure inputs are sharded per device
@@ -1231,9 +1232,12 @@ def main():
                 )
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
+                logger.info(f'  batch["labels"].shape {batch["labels"].shape}')
 
                 # train step
+                logger.info(f"  before p_train_step")
                 state, train_metrics = p_train_step(state, batch, delta_time)
+                logger.info(f"  after p_train_step")
                 step += 1
 
                 if step % training_args.logging_steps == 0 and jax.process_index() == 0:
