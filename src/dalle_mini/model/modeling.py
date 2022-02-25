@@ -348,13 +348,13 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         self.dtype = dtype
 
         # get shape of params only
-        params = self.init_weights(
+        random_params = self.init_weights(
             self.key, input_shape, abstract_init=abstract_init, load_on_cpu=load_on_cpu
         )
 
         # save required_params as set
-        self._required_params = set(flatten_dict(unfreeze(params)).keys())
-        self.params = params
+        self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
+        self.params = random_params
 
     def init_weights(
         self, rng=None, input_shape=(1, 1), abstract_init=False, load_on_cpu=False
@@ -373,11 +373,9 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         return params
 
     @property
-    def num_params(self, params=None):
-        if params is None:
-            params = self.params
+    def num_params(self):
         num_params = jax.tree_map(
-            lambda param: param.size, flatten_dict(unfreeze(params))
+            lambda param: param.size, flatten_dict(unfreeze(self.params))
         ).values()
         return sum(list(num_params))
 
