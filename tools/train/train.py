@@ -762,68 +762,24 @@ def main():
         tx=optimizer,
     )
 
-    # get true params if not initialized yet
-    def get_params(params):
-        if model_args.model_name_or_path:
-            # model params are correctly loaded
-            return params
-        else:
-            # params have not been initialized yet
-            return model.init_weights()
-
     with maps.mesh(mesh.devices, mesh.axis_names):
         logger.info("  Creating state")
-        if not model_args.restore_state:
 
-            def init_state(params):
-                return TrainState.create(
-                    apply_fn=model.__call__,
-                    tx=optimizer,
-                    params=get_params(params),
-                    dropout_rng=dropout_rng,
-                )
+        def init_state(params):
+            params = model.init_weights()
+            return TrainState.create(
+                apply_fn=model.__call__,
+                tx=optimizer,
+                params=params,
+                dropout_rng=dropout_rng,
+            )
 
-            state = pjit(
-                init_state,
-                in_axis_resources=(
-                    param_spec if model_args.model_name_or_path else None,
-                ),
-                out_axis_resources=state_spec,
-                donate_argnums=(0,),
-            )(model.params if model_args.model_name_or_path else None)
-
-        else:
-            # load opt_state
-            opt_state = from_bytes(opt_state_shape, model_args.get_opt_state())
-
-            # restore other attributes
-            attr_state = {
-                k: model_metadata[k]
-                for k in ["step", "epoch", "train_time", "train_samples"]
-            }
-
-            def restore_state(params, opt_state):
-                return TrainState(
-                    apply_fn=model.__call__,
-                    tx=optimizer,
-                    params=get_params(params),
-                    opt_state=opt_state,
-                    dropout_rng=dropout_rng,
-                    **attr_state,
-                )
-
-            state = pjit(
-                restore_state,
-                in_axis_resources=(
-                    param_spec if model_args.model_name_or_path else None,
-                    opt_state_spec,
-                ),
-                out_axis_resources=state_spec,
-                donate_argnums=(0, 1),
-            )(model.params if model_args.model_name_or_path else None, opt_state)
-
-            # remove opt_state from CPU
-            del opt_state
+        state = pjit(
+            init_state,
+            in_axis_resources=(param_spec if model_args.model_name_or_path else None,),
+            out_axis_resources=state_spec,
+            donate_argnums=(0,),
+        )(model.params if model_args.model_name_or_path else None)
 
     # free CPU memory
     del model._params, opt_state_spec, opt_state_shape
