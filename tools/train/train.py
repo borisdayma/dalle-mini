@@ -777,6 +777,7 @@ def main():
     # define batch specs
     keys = ["attention_mask", "decoder_input_ids", "input_ids", "labels"]
     batch_spec = PartitionSpec(("dp", "mp"))
+    batch_spec = PartitionSpec("dp")
 
     # define loss
     def loss_fn(logits, labels):
@@ -786,6 +787,8 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
+        logger.info(f'  in train step {batch["labels"].shape}')
+
         def compute_loss(params, batch, dropout_rng):
             inputs, labels = batch.pop("labels")
             logits = state.apply_fn(
@@ -1041,23 +1044,27 @@ def main():
                 batch = freeze(batch)
                 logger.info(f'  batch["labels"].shape {batch["labels"].shape}')
 
-                f1 = pjit(
+                f = pjit(
                     lambda x: x,
-                    in_axis_resources=None,
-                    out_axis_resources=PartitionSpec("dp"),
+                    in_axis_resources=batch_spec,
+                    out_axis_resources=batch_spec,
                 )
                 f2 = pjit(
                     lambda x: x,
                     in_axis_resources=PartitionSpec("dp"),
                     out_axis_resources=PartitionSpec("dp"),
                 )
-                batch_test = f1(batch)
+                # move batch to correct devices
+                batch = f(batch)
                 print("test")
+                logger.info(batch["labels"].device_buffers[0].shape)
+                logger.info(batch["labels"].device_buffers)
 
                 # train step
                 logger.info(f"  before p_train_step")
                 state, train_metrics = p_train_step(state, batch, delta_time)
                 logger.info(f"  after p_train_step")
+                brea
                 step += 1
 
                 if step % training_args.logging_steps == 0 and jax.process_index() == 0:
