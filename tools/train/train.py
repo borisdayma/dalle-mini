@@ -919,52 +919,52 @@ def main():
                 # ensure they are sharded over dp devices
                 loss_grads = with_sharding_constraint(loss_grads, batch_spec)
                 # average across all devices
-                loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
+                loss, grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
             else:
                 # "vmap trick" does not work in multi-hosts and requires too much hbm
-                loss_grads = grad_fn(state.params, minibatch, dropout_rng)
-
+                loss, grads = grad_fn(state.params, minibatch, dropout_rng)
+            # ensure grads are sharded
+            grads = with_sharding_constraint(grads, param_spec)
             # return loss and grads
-            return loss_grads, dropout_rng
+            return loss, grads, dropout_rng
 
         if training_args.gradient_accumulation_steps == 1:
-            loss_grad, dropout_rng = loss_and_grad(None, state.dropout_rng)
+            loss, grads, dropout_rng = loss_and_grad(None, state.dropout_rng)
         else:
             # create initial state for cumul_minibatch_step loop
             init_minibatch_step = (
-                (
-                    0.0,
-                    with_sharding_constraint(
-                        jax.tree_map(jnp.zeros_like, state.params), param_spec
-                    ),
+                0.0,
+                with_sharding_constraint(
+                    jax.tree_map(jnp.zeros_like, state.params), param_spec
                 ),
                 state.dropout_rng,
             )
 
             # accumulate gradients
             def cumul_minibatch_step(grad_idx, cumul_loss_grad_dropout):
-                cumul_loss_grad, dropout_rng = cumul_loss_grad_dropout
-                loss_grad, dropout_rng = loss_and_grad(grad_idx, dropout_rng)
-                cumul_loss, cumul_grad = jax.tree_map(
-                    jnp.add, cumul_loss_grad, loss_grad
+                cumul_loss, cumul_grads, dropout_rng = cumul_loss_grad_dropout
+                loss, grads, dropout_rng = loss_and_grad(grad_idx, dropout_rng)
+                cumul_loss, cumul_grads = jax.tree_map(
+                    jnp.add, (cumul_loss, cumul_grads), (loss, grads)
                 )
-                cumul_grad = with_sharding_constraint(cumul_grad, param_spec)
-                return (cumul_loss, cumul_grad), dropout_rng
+                cumul_grads = with_sharding_constraint(cumul_grads, param_spec)
+                return cumul_loss, cumul_grads, dropout_rng
 
             # loop over gradients
-            loss_grad, dropout_rng = jax.lax.fori_loop(
+            loss, grads, dropout_rng = jax.lax.fori_loop(
                 0,
                 training_args.gradient_accumulation_steps,
                 cumul_minibatch_step,
                 init_minibatch_step,
             )
+            grads = with_sharding_constraint(grads, param_spec)
             # sum -> mean
-            loss_grad = jax.tree_map(
-                lambda x: x / training_args.gradient_accumulation_steps, loss_grad
+            loss, grads = jax.tree_map(
+                lambda x: x / training_args.gradient_accumulation_steps, (loss, grads)
             )
 
         # update state
-        loss, grads = loss_grad
+        grads = with_sharding_constraint(grads, param_spec)
         state = state.apply_gradients(
             grads=grads,
             dropout_rng=dropout_rng,
