@@ -880,6 +880,7 @@ def main():
     # - memory issues on pod
     # - failure in model parallel
     use_vmap_trick = jax.process_count() == 1 and training_args.dp_devices == 1
+    use_vmap_trick = False
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
