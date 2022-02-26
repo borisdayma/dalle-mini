@@ -877,7 +877,6 @@ def main():
 
     # "vmap trick" does not work on the pod
     use_vmap_trick = jax.process_count() == 1
-    use_vmap_trick = True
 
     # make grad_param_spec for vmap
     if use_vmap_trick:
@@ -926,6 +925,7 @@ def main():
                 loss = with_sharding_constraint(loss, batch_spec)
                 grads = with_sharding_constraint(grads, grad_param_spec)
                 # average across all devices
+                # Note: we could average per device only after gradient accumulation, right before params update
                 loss, grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), (loss, grads))
             else:
                 # "vmap trick" does not work in multi-hosts and requires too much hbm
