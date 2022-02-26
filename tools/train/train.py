@@ -855,9 +855,11 @@ def main():
     del model._params, opt_state_spec, opt_state_shape
 
     # define batch specs
-    # need to be sharded across every device in input otherwise 2D parallel does not work
-    batch_spec = PartitionSpec(("dp", "mp"))
-    grad_batch_spec = PartitionSpec(None, ("dp", "mp"))
+    # inputs need to be sharded across every device in input otherwise 2D parallel does not work
+    batch_input_spec = PartitionSpec(("dp", "mp"))
+    grad_batch_input_spec = PartitionSpec(None, ("dp", "mp"))
+    batch_spec = PartitionSpec("dp")
+    grad_batch_spec = PartitionSpec(None, "dp")
 
     # define loss
     def loss_fn(logits, labels):
@@ -873,6 +875,14 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
+
+        # correctly distribute batch
+        batch = with_sharding_constraint(
+            batch,
+            batch_spec
+            if training_args.gradient_accumulation_steps == 1
+            else grad_batch_spec,
+        )
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
@@ -896,6 +906,8 @@ def main():
             minibatch = (
                 get_minibatch(batch, grad_idx) if grad_idx is not None else batch
             )
+            # ensure it is sharded properly
+            minibatch = with_sharding_constraint(minibatch, batch_spec)
             # only 1 single rng per grad step, let us handle larger batch size (not sure why)
             dropout_rng, _ = jax.random.split(dropout_rng)
 
@@ -906,7 +918,7 @@ def main():
                     grad_fn, in_axes=(None, 0, None), out_axes=(0, 0)
                 )(state.params, minibatch, dropout_rng)
                 # ensure they are sharded over dp devices
-                loss_grads = with_sharding_constraint(loss_grads, PartitionSpec("dp"))
+                loss_grads = with_sharding_constraint(loss_grads, batch_spec)
                 # average across all devices
                 loss_grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
             else:
@@ -978,9 +990,9 @@ def main():
         train_step,
         in_axis_resources=(
             state_spec,
-            grad_batch_spec
+            grad_batch_input_spec
             if training_args.gradient_accumulation_steps > 1
-            else batch_spec,
+            else batch_input_spec,
             None,
         ),
         out_axis_resources=(state_spec, None),
@@ -988,7 +1000,7 @@ def main():
     )
     p_eval_step = pjit(
         eval_step,
-        in_axis_resources=(state_spec, batch_spec),
+        in_axis_resources=(state_spec, batch_input_spec),
         out_axis_resources=None,
     )
 
