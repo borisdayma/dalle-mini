@@ -554,7 +554,7 @@ def main():
             config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            load_on_cpu=True,
+            abstract_init=True,
         )
 
     # define model eval and train functions
@@ -799,6 +799,15 @@ def main():
         tx=optimizer,
     )
 
+    # init params if not available yet
+    def maybe_init_params(params):
+        if model_args.model_name_or_path:
+            # model params are correctly loaded
+            return params
+        else:
+            # params have not been initialized yet
+            return model.init_weights()
+
     with maps.mesh(mesh.devices, mesh.axis_names):
         logger.info("  Creating state")
         if not model_args.restore_state:
@@ -807,16 +816,18 @@ def main():
                 return TrainState.create(
                     apply_fn=train_fn,
                     tx=optimizer,
-                    params=params,
+                    params=maybe_init_params(params),
                     dropout_rng=dropout_rng,
                 )
 
             state = pjit(
                 init_state,
-                in_axis_resources=(param_spec,),
+                in_axis_resources=(param_spec,)
+                if model_args.model_name_or_path
+                else None,
                 out_axis_resources=state_spec,
                 donate_argnums=(0,),
-            )(model.params)
+            )(model.params if model_args.model_name_or_path else None)
 
         else:
             # load opt_state
@@ -856,10 +867,8 @@ def main():
 
     # define batch specs
     # inputs need to be sharded across every device in input otherwise 2D parallel does not work
-    batch_input_spec = PartitionSpec(("dp", "mp"))
-    grad_batch_input_spec = PartitionSpec(None, ("dp", "mp"))
-    batch_spec = PartitionSpec("dp")
-    grad_batch_spec = PartitionSpec(None, "dp")
+    batch_spec = PartitionSpec(("dp", "mp"))
+    grad_batch_spec = PartitionSpec(None, ("dp", "mp"))
 
     # define loss
     def loss_fn(logits, labels):
@@ -871,18 +880,9 @@ def main():
     # - memory issues on pod
     # - failure in model parallel
     use_vmap_trick = jax.process_count() == 1 and training_args.dp_devices == 1
-    use_vmap_trick = False
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
-
-        # correctly distribute batch
-        batch = with_sharding_constraint(
-            batch,
-            batch_spec
-            if training_args.gradient_accumulation_steps == 1
-            else grad_batch_spec,
-        )
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
@@ -990,9 +990,9 @@ def main():
         train_step,
         in_axis_resources=(
             state_spec,
-            grad_batch_input_spec
+            grad_batch_spec
             if training_args.gradient_accumulation_steps > 1
-            else batch_input_spec,
+            else batch_spec,
             None,
         ),
         out_axis_resources=(state_spec, None),
@@ -1000,7 +1000,7 @@ def main():
     )
     p_eval_step = pjit(
         eval_step,
-        in_axis_resources=(state_spec, batch_input_spec),
+        in_axis_resources=(state_spec, batch_spec),
         out_axis_resources=None,
     )
 
