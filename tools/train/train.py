@@ -994,7 +994,15 @@ def main():
             logits = eval_fn(**batch, params=state.params, train=False)[0]
             return loss_fn(logits, labels)
 
-        loss = compute_eval_loss(batch)
+        if use_vmap_trick:
+            loss = jax.vmap(compute_eval_loss)(batch)
+            # ensure they are sharded correctly
+            loss = with_sharding_constraint(loss, batch_spec)
+            # average across all devices
+            loss = jnp.mean(loss)
+        else:
+            loss = compute_eval_loss(batch)
+
         return loss
 
     # Create parallel version of the train and eval step
@@ -1054,6 +1062,17 @@ def main():
                     batch,
                 )
                 batch = jax.tree_map(lambda x: x[jax.process_index()], batch)
+
+                # add dp dimension when using "vmap trick"
+                if use_vmap_trick:
+                    bs_shape = (
+                        jax.local_device_count() // training_args.mp_devices,
+                        training_args.per_device_eval_batch_size,
+                    )
+                    batch = jax.tree_map(
+                        lambda x: x.reshape(bs_shape + x.shape[1:]), batch
+                    )
+
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
                 # accumulate losses async
