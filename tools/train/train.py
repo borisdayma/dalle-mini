@@ -876,8 +876,10 @@ def main():
         loss = loss.mean()
         return loss
 
-    # "vmap trick" works only on single node (memory issues on pod, not sure why)
-    use_vmap_trick = jax.process_count() == 1
+    # "vmap trick" does not work in some conditions
+    # - memory issues on pod
+    # - failure in model parallel
+    use_vmap_trick = jax.process_count() == 1 and training_args.dp_devices == 1
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
