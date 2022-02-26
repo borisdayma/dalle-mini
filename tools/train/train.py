@@ -878,7 +878,14 @@ def main():
 
     # "vmap trick" does not work on the pod
     use_vmap_trick = jax.process_count() == 1
-    # use_vmap_trick = True
+    use_vmap_trick = True
+
+    # make grad_param_spec for vmap
+    if use_vmap_trick:
+        grad_param_spec = jax.tree_map(
+            lambda x: PartitionSpec(*("dp",) + (x if x is not None else (None,))),
+            param_spec,
+        )
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
@@ -913,13 +920,14 @@ def main():
             if use_vmap_trick:
                 # "vmap trick", calculate loss and grads independently per dp_device
                 # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
-                loss_grads = jax.vmap(
+                loss, grads = jax.vmap(
                     grad_fn, in_axes=(None, 0, None), out_axes=(0, 0)
                 )(state.params, minibatch, dropout_rng)
-                # ensure they are sharded over dp devices
-                loss_grads = with_sharding_constraint(loss_grads, batch_spec)
+                # ensure they are sharded correctly
+                loss = with_sharding_constraint(loss, batch_spec)
+                grads = with_sharding_constraint(grads, grad_param_spec)
                 # average across all devices
-                loss, grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_grads)
+                loss, grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), (loss, grads))
             else:
                 # "vmap trick" does not work in multi-hosts and requires too much hbm
                 loss, grads = grad_fn(state.params, minibatch, dropout_rng)
