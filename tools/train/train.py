@@ -867,8 +867,8 @@ def main():
 
     # define batch specs
     # inputs need to be sharded across every device in input otherwise 2D parallel does not work
-    batch_spec = PartitionSpec(("dp", "mp"))
-    grad_batch_spec = PartitionSpec(None, ("dp", "mp"))
+    batch_spec = PartitionSpec("dp")
+    grad_batch_spec = PartitionSpec(None, "dp")
 
     # define loss
     def loss_fn(logits, labels):
@@ -876,10 +876,9 @@ def main():
         loss = loss.mean()
         return loss
 
-    # "vmap trick" does not work in some conditions
-    # - memory issues on pod
-    # - failure in model parallel
-    use_vmap_trick = jax.process_count() == 1 and training_args.dp_devices == 1
+    # "vmap trick" does not work on the pod
+    use_vmap_trick = jax.process_count() == 1
+    use_vmap_trick = True
 
     # Define gradient update step fn
     def train_step(state, batch, delta_time):
@@ -935,7 +934,9 @@ def main():
             init_minibatch_step = (
                 (
                     0.0,
-                    jax.tree_map(jnp.zeros_like, state.params),
+                    with_sharding_constraint(
+                        jax.tree_map(jnp.zeros_like, state.params), param_spec
+                    ),
                 ),
                 state.dropout_rng,
             )
@@ -944,8 +945,11 @@ def main():
             def cumul_minibatch_step(grad_idx, cumul_loss_grad_dropout):
                 cumul_loss_grad, dropout_rng = cumul_loss_grad_dropout
                 loss_grad, dropout_rng = loss_and_grad(grad_idx, dropout_rng)
-                cumul_loss_grad = jax.tree_map(jnp.add, cumul_loss_grad, loss_grad)
-                return cumul_loss_grad, dropout_rng
+                cumul_loss, cumul_grad = jax.tree_map(
+                    jnp.add, cumul_loss_grad, loss_grad
+                )
+                cumul_grad = with_sharding_constraint(cumul_grad, param_spec)
+                return (cumul_loss, cumul_grad), dropout_rng
 
             # loop over gradients
             loss_grad, dropout_rng = jax.lax.fori_loop(
