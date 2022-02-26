@@ -866,7 +866,6 @@ def main():
     del model._params, opt_state_spec, opt_state_shape
 
     # define batch specs
-    # inputs need to be sharded across every device in input otherwise 2D parallel does not work
     batch_spec = PartitionSpec("dp")
     grad_batch_spec = PartitionSpec(None, "dp")
 
