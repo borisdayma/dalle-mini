@@ -700,7 +700,7 @@ def main():
             beta1=training_args.beta1,
             beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
-            matrix_epsilon=1e-8,
+            matrix_epsilon=1e-6,
             start_preconditioning_step=training_args.start_preconditioning_step,
             preconditioning_compute_steps=training_args.preconditioning_compute_steps,
             statistics_compute_steps=1,
