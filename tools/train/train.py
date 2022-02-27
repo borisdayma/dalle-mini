@@ -626,7 +626,7 @@ def main():
     logger.info(f"  Num examples = {len_train_dataset}")
     logger.info(f"  Num Epochs = {num_epochs}")
     logger.info(
-        f"  Batch size per device = {training_args.per_device_train_batch_size}"
+        f"  Batch size per dp device = {training_args.per_device_train_batch_size}"
     )
     logger.info(f"  Number of devices = {jax.device_count()}")
     logger.info(
