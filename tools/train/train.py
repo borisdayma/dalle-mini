@@ -314,10 +314,6 @@ class TrainingArguments:
         default=1024,
         metadata={"help": "Chunked size for large layers with Distributed Shampoo."},
     )
-    start_preconditioning_step: int = field(
-        default=100,
-        metadata={"help": "Number of steps before starting to update preconditioner."},
-    )
     preconditioning_compute_steps: int = field(
         default=10, metadata={"help": "Number of steps to update preconditioner."}
     )
@@ -701,7 +697,9 @@ def main():
             beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
             matrix_epsilon=1e-6,
-            start_preconditioning_step=training_args.start_preconditioning_step,
+            start_preconditioning_step=max(
+                training_args.preconditioning_compute_steps + 1, 101
+            ),
             preconditioning_compute_steps=training_args.preconditioning_compute_steps,
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
