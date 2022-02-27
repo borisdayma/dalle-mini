@@ -875,8 +875,8 @@ def main():
         loss = loss.mean()
         return loss
 
-    # "vmap trick" does not work on the pod
-    use_vmap_trick = jax.process_count() == 1
+    # "vmap trick" avoids a crash when mp_devices > 1 (not sure why it happens)
+    # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
     use_vmap_trick = True
 
     # make grad_param_spec for vmap
@@ -918,7 +918,6 @@ def main():
 
             if use_vmap_trick:
                 # "vmap trick", calculate loss and grads independently per dp_device
-                # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
                 loss, grads = jax.vmap(
                     grad_fn, in_axes=(None, 0, None), out_axes=(0, 0)
                 )(state.params, minibatch, dropout_rng)
