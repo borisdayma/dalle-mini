@@ -203,6 +203,12 @@ class DataTrainingArguments:
             "help": "Whether to shard data files by host in multi-host environments."
         },
     )
+    blank_caption_prob: Optional[float] = field(
+        default=0.0,
+        metadata={
+            "help": "Probability of removing some captions for classifier-free guidance."
+        },
+    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
