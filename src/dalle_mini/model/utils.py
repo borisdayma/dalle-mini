@@ -22,14 +22,7 @@ class PretrainedFromWandbMixin:
                     artifact = wandb.run.use_artifact(pretrained_model_name_or_path)
                 else:
                     artifact = wandb.Api().artifact(pretrained_model_name_or_path)
-                if artifact.metadata.get("bucket_path"):
-                    pretrained_model_name_or_path = artifact.metadata["bucket_path"]
-                else:
-                    pretrained_model_name_or_path = artifact.download(tmp_dir)
-
-            if pretrained_model_name_or_path.startswith("gs://"):
-                copy_blobs(pretrained_model_name_or_path, tmp_dir)
-                pretrained_model_name_or_path = tmp_dir
+                pretrained_model_name_or_path = artifact.download(tmp_dir)
 
             return super(PretrainedFromWandbMixin, cls).from_pretrained(
                 pretrained_model_name_or_path, *model_args, **kwargs
