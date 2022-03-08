@@ -169,7 +169,7 @@ class Dataset:
                         getattr(self, ds).map(
                             partial_preprocess_function,
                             batched=True,
-                            remove_columns=getattr(ds, "column_names"),
+                            remove_columns=["caption"],
                         )
                         if self.streaming
                         else getattr(self, ds).map(
