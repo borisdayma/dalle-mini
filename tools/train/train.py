@@ -37,7 +37,6 @@ import optax
 import transformers
 import wandb
 from datasets import Dataset
-from scalable_shampoo.distributed_shampoo import GraftingType, distributed_shampoo
 from flax.core.frozen_dict import FrozenDict, freeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
@@ -46,6 +45,7 @@ from google.cloud import storage
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
+from scalable_shampoo.distributed_shampoo import GraftingType, distributed_shampoo
 from tqdm import tqdm
 from transformers import HfArgumentParser
 
@@ -331,7 +331,8 @@ class TrainingArguments:
         default="rmsprop_normalized",
         metadata={
             "help": "The type of grafting to use. Can be 'rmsprop_normalized' (default), 'rmsprop', 'adagrad', 'adagrad_normalized', 'sgd' or 'sqrt_n'"
-        })
+        },
+    )
     optim_quantized: bool = field(
         default=False,
         metadata={
@@ -420,11 +421,28 @@ class TrainingArguments:
     dp_devices: int = field(init=False)
 
     def __post_init__(self):
+        if self.assert_TPU_available:
+            assert (
+                jax.local_device_count() == 8
+            ), "TPUs in use, please check running processes"
         assert self.optim in [
             "distributed_shampoo",
             "adam",
             "adafactor",
         ], f"Selected optimizer not supported: {self.optim}"
+        assert self.graft_type in [
+            "rmsprop_normalized",
+            "rmsprop",
+            "adagrad",
+            "adagrad_normalized",
+            "sgd",
+            "sqrt_n",
+        ], f"Selected graft type not supported: {self.graft_type}"
+        assert self.lr_decay in [
+            None,
+            "linear",
+            "exponential",
+        ], f"Selected learning rate decay not supported: {self.lr_decay}"
         if self.per_device_eval_batch_size is None:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
         if (
@@ -437,6 +455,9 @@ class TrainingArguments:
                 f"Output directory ({self.output_dir}) already exists and is not empty."
                 "Use --overwrite_output_dir to overcome."
             )
+        assert (
+            self.mp_devices > 0
+        ), f"Number of devices for model parallelism must be > 0"
         assert (
             jax.device_count() % self.mp_devices == 0
         ), f"Number of available devices ({jax.device_count()} must be divisible by number of devices used for model parallelism ({self.mp_devices})."
@@ -521,10 +542,6 @@ def main():
 
     logger.info(f"Local TPUs: {jax.local_device_count()}")
     logger.info(f"Global TPUs: {jax.device_count()}")
-    if training_args.assert_TPU_available:
-        assert (
-            jax.local_device_count() == 8
-        ), "TPUs in use, please check running processes"
 
     # Set up wandb run
     if jax.process_index() == 0:
@@ -702,12 +719,12 @@ def main():
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         graft_type = {
-            'sgd': GraftingType.SGD,
-            'adagrad': GraftingType.ADAGRAD,
-            'rmsprop': GraftingType.RMSPROP,
-            'rmsprop_normalized': GraftingType.RMSPROP_NORMALIZED,
-            'sqrt_n': GraftingType.SQRT_N,
-            'adagrad_normalized': GraftingType.ADAGRAD_NORMALIZED,
+            "sgd": GraftingType.SGD,
+            "adagrad": GraftingType.ADAGRAD,
+            "rmsprop": GraftingType.RMSPROP,
+            "rmsprop_normalized": GraftingType.RMSPROP_NORMALIZED,
+            "sqrt_n": GraftingType.SQRT_N,
+            "adagrad_normalized": GraftingType.ADAGRAD_NORMALIZED,
         }[training_args.graft_type]
         optimizer = distributed_shampoo(
             learning_rate_fn,
