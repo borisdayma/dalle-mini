@@ -327,6 +327,11 @@ class TrainingArguments:
         default=4096,
         metadata={"help": "Max size for preconditioning with Distributed Shampoo."},
     )
+    graft_type: str = field(
+        default="rmsprop_normalized",
+        metadata={
+            "help": "The type of grafting to use. Can be 'rmsprop_normalized' (default), 'rmsprop', 'adagrad', 'adagrad_normalized', 'sgd' or 'sqrt_n'"
+        })
     optim_quantized: bool = field(
         default=False,
         metadata={
@@ -696,6 +701,14 @@ def main():
     # create adam optimizer
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
+        graft_type = {
+            'sgd': GraftingType.SGD,
+            'adagrad': GraftingType.ADAGRAD,
+            'rmsprop': GraftingType.RMSPROP,
+            'rmsprop_normalized': GraftingType.RMSPROP_NORMALIZED,
+            'sqrt_n': GraftingType.SQRT_N,
+            'adagrad_normalized': GraftingType.ADAGRAD_NORMALIZED,
+        }[training_args.graft_type]
         optimizer = distributed_shampoo(
             learning_rate_fn,
             block_size=training_args.block_size,
@@ -709,7 +722,7 @@ def main():
             preconditioning_compute_steps=training_args.preconditioning_compute_steps,
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
-            graft_type=GraftingType.RMSPROP_NORMALIZED,
+            graft_type=graft_type,
             nesterov=False,
             exponent_override=0,
             statistics_partition_spec=PartitionSpec(None, "dp", None),
