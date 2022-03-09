@@ -37,7 +37,7 @@ import optax
 import transformers
 import wandb
 from datasets import Dataset
-from distributed_shampoo import GraftingType, distributed_shampoo
+from scalable_shampoo.distributed_shampoo import GraftingType, distributed_shampoo
 from flax.core.frozen_dict import FrozenDict, freeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
