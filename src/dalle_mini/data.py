@@ -27,6 +27,7 @@ class Dataset:
     do_eval: bool = True
     seed_dataset: int = None
     shard_by_host: bool = False
+    blank_caption_prob: float = 0.0
     train_dataset: Dataset = field(init=False)
     eval_dataset: Dataset = field(init=False)
     rng_dataset: jnp.ndarray = field(init=False)
@@ -34,6 +35,11 @@ class Dataset:
 
     def __post_init__(self):
         self.multi_hosts = jax.process_count() > 1
+        # feed blank captions only in streaming mode for now
+        if self.blank_caption_prob:
+            assert (
+                self.streaming is True
+            ), "blank_caption_prob can only be used in streaming mode"
         # define data_files
         if self.train_file is not None or self.validation_file is not None:
             # accept braceexpand notation
@@ -101,6 +107,25 @@ class Dataset:
                 self.seed_dataset = np.random.get_state()[1][0]
             self.rng_dataset = jax.random.PRNGKey(self.seed_dataset)
 
+        # blank captions
+        if self.blank_caption_prob:
+            partial_blank_caption_function = partial(
+                blank_caption_function,
+                text_column=self.text_column,
+                blank_caption_prob=self.blank_caption_prob,
+            )
+            if hasattr(self, "train_dataset"):
+                self.train_dataset = (
+                    self.train_dataset.map(partial_blank_caption_function)
+                    if self.streaming
+                    else self.train_dataset.map(
+                        partial_blank_caption_function,
+                        num_proc=self.preprocessing_num_workers,
+                        load_from_cache_file=False,
+                        desc="Blanking some captions",
+                    )
+                )
+
         # normalize text
         if normalize_text:
             text_normalizer = TextNormalizer()
@@ -144,6 +169,10 @@ class Dataset:
                         getattr(self, ds).map(
                             partial_preprocess_function,
                             batched=True,
+                            remove_columns=[
+                                self.text_column,
+                                self.encoding_column,
+                            ],
                         )
                         if self.streaming
                         else getattr(self, ds).map(
@@ -193,8 +222,8 @@ class Dataset:
             while (self.multi_hosts and split == "train") or first_loop:
                 # in multi-host, we run forever (no epoch) as hosts need to stop
                 # at the same time and training data may not be split equally
-                # For validation data we put the entire set on each host as we could lose
-                # too many samples on pods
+                # For validation data we put the entire batch on each host and then
+                # keep only the one specific to each host (could be improved but not necessary)
                 if epoch is not None:
                     assert split == "train"
                     # reshuffle training data at each epoch
@@ -250,6 +279,12 @@ def shift_tokens_right(input_ids: np.array, decoder_start_token_id: int):
     shifted_input_ids[:, 1:] = input_ids[:, :-1]
     shifted_input_ids[:, 0] = decoder_start_token_id
     return shifted_input_ids
+
+
+def blank_caption_function(example, text_column, blank_caption_prob):
+    if blank_caption_prob and np.random.rand() < blank_caption_prob:
+        example[text_column] = ""
+    return example
 
 
 def normalize_function(example, text_column, text_normalizer):

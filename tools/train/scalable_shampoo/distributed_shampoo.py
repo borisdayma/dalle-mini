@@ -1,5 +1,3 @@
-# file from: https://github.com/google-research/google-research/blob/master/scalable_shampoo/optax/distributed_shampoo.py
-
 # coding=utf-8
 # Copyright 2022 The Google Research Authors.
 #
@@ -44,107 +42,12 @@ import optax
 from flax import struct
 from jax import lax
 
+from .quantization_utils import QuantizedValue
 
-# pylint:disable=no-value-for-parameter
-@struct.dataclass
-class QuantizedValue:
-    """State associated with quantized value."""
-
-    quantized: chex.Array
-    diagonal: chex.Array  # Diagonal (if extract_diagonal is set)
-    bucket_size: chex.Array
-    quantized_dtype: jnp.dtype = struct.field(
-        pytree_node=False
-    )  # Dtype for the quantized value.
-    extract_diagonal: bool = struct.field(pytree_node=False)  # In case its centered.
-    shape: Any = struct.field(pytree_node=False)  # Shape of the tensor.
-
-    @classmethod
-    def from_float_value(cls, fvalue, quantized_dtype, extract_diagonal=False):
-        if isinstance(fvalue, list) and not fvalue:
-            return QuantizedValue([], [], [], quantized_dtype, extract_diagonal, [])
-        quantized, diagonal_fvalue, bucket_size = QuantizedValue.quantize(
-            fvalue, quantized_dtype, extract_diagonal
-        )
-        return QuantizedValue(
-            quantized,
-            diagonal_fvalue,
-            bucket_size,
-            quantized_dtype,
-            extract_diagonal,
-            list(quantized.shape),
-        )
-
-    # Quantization is from Lingvo JAX optimizers.
-    # We extend it for int16 quantization of PSD matrices.
-    @classmethod
-    def quantize(cls, fvalue, quantized_dtype, extract_diagonal=False):
-        """Returns quantized value and the bucket."""
-        if quantized_dtype == jnp.float32:
-            return fvalue, [], []
-        elif quantized_dtype == jnp.bfloat16:
-            return fvalue.astype(jnp.bfloat16), [], []
-
-        float_dtype = fvalue.dtype
-        if quantized_dtype == jnp.int8:
-            # value -128 is not used.
-            num_buckets = jnp.array(127.0, dtype=float_dtype)
-        elif quantized_dtype == jnp.int16:
-            # value -32768 is not used.
-            num_buckets = jnp.array(32767.0, dtype=float_dtype)
-        else:
-            raise ValueError(f"Quantized dtype {quantized_dtype} not supported.")
-        # max value is mapped to num_buckets
-
-        if extract_diagonal and fvalue.ndim != 2:
-            raise ValueError(
-                f"Input array {fvalue} must be 2D to work with extract_diagonal."
-            )
-
-        diagonal_fvalue = []
-        if extract_diagonal:
-            diagonal_fvalue = jnp.diag(fvalue)
-            # Remove the diagonal entries.
-            fvalue = fvalue - jnp.diag(diagonal_fvalue)
-
-        # TODO(rohananil): Extend this by making use of information about the blocks
-        # SM3 style which will be useful for diagonal statistics
-        # We first decide the scale.
-        if fvalue.ndim < 1:
-            raise ValueError(
-                f"Input array {fvalue} must have a strictly positive number of "
-                "dimensions."
-            )
-
-        max_abs = jnp.max(jnp.abs(fvalue), axis=0)
-        bucket_size = max_abs / num_buckets
-        bs_expanded = bucket_size[jnp.newaxis, Ellipsis]
-        # To avoid divide by 0.0
-        bs_nonzero = jnp.where(
-            bs_expanded > 0.0, bs_expanded, jnp.ones_like(bs_expanded)
-        )
-        ratio = fvalue / bs_nonzero
-        # We use rounding to remove bias.
-        quantized = jnp.round(ratio)
-        return quantized.astype(quantized_dtype), diagonal_fvalue, bucket_size
-
-    def to_float(self):
-        """Returns the float value."""
-        if isinstance(self.quantized, list) and not self.quantized:
-            return self.quantized
-
-        if self.quantized_dtype == jnp.float32:
-            return self.quantized
-
-        if self.quantized_dtype == jnp.bfloat16:
-            return self.quantized.astype(jnp.float32)
-
-        float_dtype = self.bucket_size.dtype
-        bucket_size = self.bucket_size[jnp.newaxis, Ellipsis]
-        val = self.quantized.astype(float_dtype) * bucket_size
-        if self.extract_diagonal:
-            val += jnp.diag(self.diagonal)
-        return val
+# Dtype for inverse-pth root routine
+# Switch to f64 if you have hardware that supports it. Enable the jax flag
+# jax_enable_x64 for this to work, otherwise it will default to float32.
+_MAT_INV_PTH_ROOT_DTYPE = jnp.float64
 
 
 @struct.dataclass
@@ -193,24 +96,21 @@ class LocalShardedParameterStats:
 
 
 def init_training_metrics(num_statistics):
-    if num_statistics:
-        return TrainingMetrics(jnp.zeros([num_statistics], jnp.float32))
-    else:
-        return TrainingMetrics([])
+    # Since the downstream apis expect a jnp.array - we create a dummy one if
+    # num_statistics=0.
+    n = 1 if not num_statistics else num_statistics
+    return TrainingMetrics(jnp.zeros([n], jnp.float32))
 
 
 def init_training_metrics_shapes(num_statistics):
-    if num_statistics:
-        return TrainingMetrics([[num_statistics], jnp.float32])
-    else:
-        return TrainingMetrics([None, jnp.float32])
+    # Since the downstream apis expect a jnp.array - we create a dummy one if
+    # num_statistics=0.
+    n = 1 if not num_statistics else num_statistics
+    return TrainingMetrics([[n], jnp.float32])
 
 
-def init_training_metrics_pspec(num_statistics):
-    if num_statistics:
-        return TrainingMetrics(pjit.PartitionSpec())
-    else:
-        return TrainingMetrics(None)
+def init_training_metrics_pspec():
+    return TrainingMetrics(pjit.PartitionSpec())
 
 
 class ShardedShampooStats(NamedTuple):
@@ -296,6 +196,30 @@ def power_iteration(
     return v_out, s_out
 
 
+def mat_power(mat_m, p, precision=lax.Precision.HIGHEST):
+    """A simple matrix power method. M^p where p can be TracedValue."""
+    power = jnp.eye(mat_m.shape[0], dtype=_MAT_INV_PTH_ROOT_DTYPE)
+
+    def _iter_condition(state):
+        i, _, _ = state
+        return i > 0
+
+    def _iter_body(state):
+        i, power, mat = state
+
+        power = jax.lax.cond(
+            i % 2 == 1,
+            lambda: jnp.matmul(mat, power, precision=precision),
+            lambda: power,
+        )
+        i //= 2
+        mat = jnp.matmul(mat, mat, precision=precision)
+        return i, power, mat
+
+    _, result, _ = lax.while_loop(_iter_condition, _iter_body, (p, power, mat_m))
+    return result
+
+
 def matrix_inverse_pth_root(
     matrix,
     p,
@@ -332,56 +256,18 @@ def matrix_inverse_pth_root(
 
     assert matrix.shape[0] == matrix.shape[1]
 
-    # We use float32 for the matrix inverse pth root.
-    # Switch to f64 if you have hardware that supports it.
+    # We use _MAT_INV_PTH_ROOT_DTYPE for the matrix inverse pth root.
+    # Switch to f64 if you have hardware that supports it. Enable the jax flag
+    # jax_enable_x64 for this to work.
     matrix_size = matrix.shape[0]
-    alpha = jnp.asarray(-1.0 / p, jnp.float32)
-    identity = jnp.eye(matrix_size, dtype=jnp.float32)
+    orig_dtype = matrix.dtype
+    matrix = matrix.astype(_MAT_INV_PTH_ROOT_DTYPE)
+    alpha = jnp.asarray(-1.0 / p, _MAT_INV_PTH_ROOT_DTYPE)
+    identity = jnp.eye(matrix_size, dtype=_MAT_INV_PTH_ROOT_DTYPE)
     _, max_ev = power_iteration(
         matrix=matrix, num_iters=100, error_tolerance=1e-6, precision=precision
     )
     ridge_epsilon = ridge_epsilon * jnp.maximum(max_ev, 1e-6)
-
-    def _unrolled_mat_pow_1(mat_m):
-        """Computes mat_m^1."""
-        return mat_m
-
-    def _unrolled_mat_pow_2(mat_m):
-        """Computes mat_m^2."""
-        return jnp.matmul(mat_m, mat_m, precision=precision)
-
-    def _unrolled_mat_pow_4(mat_m):
-        """Computes mat_m^4."""
-        mat_pow_2 = _unrolled_mat_pow_2(mat_m)
-        return jnp.matmul(mat_pow_2, mat_pow_2, precision=precision)
-
-    def _unrolled_mat_pow_8(mat_m):
-        """Computes mat_m^4."""
-        mat_pow_4 = _unrolled_mat_pow_4(mat_m)
-        return jnp.matmul(mat_pow_4, mat_pow_4, precision=precision)
-
-    def mat_power(mat_m, p):
-        """Computes mat_m^p, for p == 1, 2, 4 or 8.
-
-        Args:
-          mat_m: a square matrix
-          p: a positive integer
-
-        Returns:
-          mat_m^p
-        """
-        # We unrolled the loop for performance reasons.
-        exponent = jnp.round(jnp.log2(p))
-        return lax.switch(
-            jnp.asarray(exponent, jnp.int32),
-            [
-                _unrolled_mat_pow_1,
-                _unrolled_mat_pow_2,
-                _unrolled_mat_pow_4,
-                _unrolled_mat_pow_8,
-            ],
-            (mat_m),
-        )
 
     def _iter_condition(state):
         (i, unused_mat_m, unused_mat_h, unused_old_mat_h, error, run_step) = state
@@ -412,10 +298,10 @@ def matrix_inverse_pth_root(
         _, mat_m, mat_h, old_mat_h, error, convergence = lax.while_loop(
             _iter_condition, _iter_body, init_state
         )
-        error = jnp.max(jnp.abs(mat_m - identity))
+        error = jnp.max(jnp.abs(mat_m - identity)).astype(jnp.float32)
         is_converged = jnp.asarray(convergence, old_mat_h.dtype)
         resultant_mat_h = is_converged * mat_h + (1 - is_converged) * old_mat_h
-        resultant_mat_h = jnp.asarray(resultant_mat_h, matrix.dtype)
+        resultant_mat_h = jnp.asarray(resultant_mat_h, orig_dtype)
     return resultant_mat_h, error
 
 
@@ -433,6 +319,9 @@ def merge_small_dims(shape_to_merge, max_dim):
     Returns:
       Merged shape.
     """
+    if shape_to_merge and np.all(np.array(shape_to_merge) == 1):
+        return [1]
+
     resulting_shape = []
     product = 1
     for d in shape_to_merge:
@@ -975,16 +864,22 @@ def distributed_shampoo(
             )
 
         local_stats = jax.tree_unflatten(treedef, local_stats_flat)
+        to_pad = -len(padded_statistics) % num_devices_for_pjit
+        if max_size == 0:
+            to_pad = num_devices_for_pjit
+            max_size = block_size
+            stat_dtype = jnp.float32
+        else:
+            stat_dtype = padded_statistics[0].dtype
         # Pad the statistics and preconditioner matrices to be a multiple of
         # num devices.
         # TODO(rohananil): Relax to only the size of the mesh axis where the dim
         # is split on.
-        to_pad = -len(padded_statistics) % num_devices_for_pjit
         padded_statistics.extend(
-            [jnp.eye(max_size, dtype=padded_statistics[0].dtype) for _ in range(to_pad)]
+            [jnp.eye(max_size, dtype=stat_dtype) for _ in range(to_pad)]
         )
         padded_preconditioners.extend(
-            [jnp.eye(max_size, dtype=padded_statistics[0].dtype) for _ in range(to_pad)]
+            [jnp.eye(max_size, dtype=stat_dtype) for _ in range(to_pad)]
         )
         exponents.extend([1 for _ in range(to_pad)])
         global_stats = GlobalShardedParameterStats(
@@ -1016,7 +911,7 @@ def distributed_shampoo(
         if pspec and len(pspec) > 1:
             return pjit.PartitionSpec(*pspec[1:])
         else:
-            return None
+            return []
 
     def sharded_init_partition_spec_fn(
         params, params_partition_spec, partition_spec_for_statistics
@@ -1102,7 +997,7 @@ def distributed_shampoo(
                         False,
                         list(param.shape),
                     ),
-                    init_training_metrics_pspec(len(sizes)),
+                    init_training_metrics_pspec(),
                     index_start,
                     sizes,
                 )
@@ -1209,6 +1104,9 @@ def distributed_shampoo(
         max_statistics_size = _max_statistics_size_from_params(params_flat)
         to_pad = -num_statistics % num_devices_for_pjit
         num_statistics += to_pad
+        if num_statistics == 0:
+            num_statistics = num_devices_for_pjit
+            max_statistics_size = block_size
         statistics_shape = [num_statistics, max_statistics_size, max_statistics_size]
         global_stats = GlobalShardedParameterStats(
             [statistics_shape, jnp.float32],
@@ -2069,7 +1967,7 @@ def distributed_shampoo(
 
             scaled_grad = grad
             if graft_type == GraftingType.ADAGRAD_NORMALIZED:
-                scaled_grad = grad / jnp.linalg.norm(grad)
+                scaled_grad = grad / (jnp.linalg.norm(grad) + 1e-16)
 
             new_diagonal_statistics = state.diagonal_statistics.to_float() + jnp.square(
                 scaled_grad
@@ -2085,7 +1983,7 @@ def distributed_shampoo(
 
             scaled_grad = grad
             if graft_type == GraftingType.RMSPROP_NORMALIZED:
-                scaled_grad = grad / jnp.linalg.norm(grad)
+                scaled_grad = grad / (jnp.linalg.norm(grad) + 1e-16)
 
             w1 = beta2
             w2 = beta2 if beta2 == 1.0 else (1.0 - beta2)
@@ -2212,7 +2110,6 @@ def distributed_shampoo(
         new_stats_flat = _compute_preconditioners(
             new_stats_flat, params_flat, state.count
         )
-
         outputs = jax.tree_multimap(
             lambda g, s, p: _transform_grad(g, s, p, state.count),
             grads_flat,

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2021 The Fairseq Authors and The Google Flax Team Authors And The HuggingFace Inc. team and the DalleBart team. All rights reserved.
+# Copyright 2021-2022 The Fairseq Authors and The Google Flax Team Authors And The HuggingFace Inc. team and & DALL·E Mini team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -328,6 +328,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         dtype: jnp.dtype = jnp.float32,
         abstract_init: bool = False,
         load_on_cpu: bool = False,
+        init_weights: bool = True,
         **kwargs,
     ):
         module = self.module_class(config=config, dtype=dtype, **kwargs)
@@ -347,25 +348,34 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         self.key = PRNGKey(seed)
         self.dtype = dtype
 
-        # init weights on CPU
-        if load_on_cpu:
-            # init weights on CPU
-            init_fn = jax.jit(self.init_weights, static_argnums=(1,), backend="cpu")
-        else:
-            init_fn = self.init_weights
+        if init_weights:
+            # get shape of params only
+            random_params = self.init_weights(
+                self.key,
+                input_shape,
+                abstract_init=abstract_init,
+                load_on_cpu=load_on_cpu,
+            )
 
-        # randomly initialized parameters
-        random_params = self.init_weights(self.key, input_shape)
+            # save required_params as set
+            self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
+            self.params = random_params
+
+    def init_weights(
+        self, rng=None, input_shape=(1, 1), abstract_init=False, load_on_cpu=False
+    ):
+        if rng is None:
+            rng = self.key
+        init_fn = super().init_weights
+        if load_on_cpu:
+            init_fn = jax.jit(init_fn, static_argnums=(1,), backend="cpu")
         if abstract_init:
             # only set shape and dtype, load parameters separately
             init_fn = partial(init_fn, input_shape=input_shape)
-            random_params = jax.eval_shape(init_fn, self.key)
+            params = jax.eval_shape(init_fn, rng)
         else:
-            random_params = init_fn(self.key, input_shape)
-
-        # save required_params as set
-        self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
-        self.params = random_params
+            params = init_fn(rng, input_shape)
+        return params
 
     @property
     def num_params(self):
