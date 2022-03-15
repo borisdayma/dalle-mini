@@ -7,7 +7,7 @@ import numpy as np
 from braceexpand import braceexpand
 from datasets import Dataset, load_dataset
 
-from .text import TextNormalizer
+from .model import TextNormalizer
 
 
 @dataclass
@@ -41,6 +41,7 @@ class Dataset:
     def __post_init__(self):
         self.multi_hosts = jax.process_count() > 1
         # feed blank captions only in streaming mode for now
+        # otherwise dataset could be cached with same blanked captions
         if self.blank_caption_prob:
             assert (
                 self.streaming is True
