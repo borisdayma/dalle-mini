@@ -940,6 +940,9 @@ class DalleBart(
                 "`decoder_start_token_id` has to be defined for encoder-decoder generation."
             )
 
+        do_sample = do_sample if do_sample is not None else self.config.do_sample
+        num_beams = num_beams if num_beams is not None else self.config.num_beams
+
         if self.config.is_encoder_decoder:
             # add encoder_outputs to model_kwargs
             if model_kwargs.get("encoder_outputs") is None:
@@ -975,9 +978,6 @@ class DalleBart(
             input_ids = (
                 jnp.ones((input_ids.shape[0], 1), dtype="i4") * decoder_start_token_id
             )
-
-        do_sample = do_sample if do_sample is not None else self.config.do_sample
-        num_beams = num_beams if num_beams is not None else self.config.num_beams
 
         if not do_sample and num_beams == 1:
             logits_processor = self._get_logits_processor(
