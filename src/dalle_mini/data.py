@@ -7,7 +7,7 @@ import numpy as np
 from braceexpand import braceexpand
 from datasets import Dataset, load_dataset
 
-from .model import TextNormalizer
+from .model.text import TextNormalizer
 
 
 @dataclass
@@ -28,7 +28,7 @@ class Dataset:
     seed_dataset: int = None
     shard_by_host: bool = False
     blank_caption_prob: float = 0.0
-    clip_score_column = "clip_score"
+    clip_score_column: str = "clip_score"
     min_clip_score: float = None
     max_clip_score: float = None
     filter_column: str = None
@@ -262,8 +262,8 @@ class Dataset:
                     dataset.set_epoch(epoch)
                     epoch += 1
                 for item in dataset:
-                    for k, v in item.items():
-                        batch[k].append(v)
+                    for k in keys:
+                        batch[k].append(item[k])
                     if len(batch[keys[0]]) == batch_size:
                         batch = {k: jnp.array(v) for k, v in batch.items()}
                         yield batch
