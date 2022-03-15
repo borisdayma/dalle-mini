@@ -1,8 +1,8 @@
 """ DalleBart processor """
 
-from .tokenizer import DalleBartTokenizer
 from .configuration import DalleBartConfig
 from .text import TextNormalizer
+from .tokenizer import DalleBartTokenizer
 from .utils import PretrainedFromWandbMixin
 
 
