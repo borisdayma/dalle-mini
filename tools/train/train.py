@@ -103,7 +103,7 @@ class ModelArguments:
 
     def __post_init__(self):
         if self.tokenizer_name is None:
-            self.tokenizer_name == self.model_name_or_path
+            self.tokenizer_name = self.model_name_or_path
             assert (
                 self.tokenizer_name is not None
             ), "Tokenizer name or model name/path needs to be specified"
@@ -213,11 +213,11 @@ class DataTrainingArguments:
         default="clip_score",
         metadata={"help": "Column that containts clip score for filtering."},
     )
-    min_clip_score: Optional[str] = field(
+    min_clip_score: Optional[float] = field(
         default=None,
         metadata={"help": "Minimum clip score required."},
     )
-    max_clip_score: Optional[str] = field(
+    max_clip_score: Optional[float] = field(
         default=None,
         metadata={"help": "Maximum clip score required."},
     )
