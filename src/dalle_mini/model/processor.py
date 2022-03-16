@@ -46,10 +46,6 @@ class DalleBartProcessorBase:
 
     @classmethod
     def from_pretrained(cls, *args, **kwargs):
-        # debug: show args and kwargs
-        print(f"args: {args}")
-        print(f"kwargs: {kwargs}")
-
         tokenizer = DalleBartTokenizer.from_pretrained(*args, **kwargs)
         config = DalleBartConfig.from_pretrained(*args, **kwargs)
         return cls(tokenizer, config.normalize_text, config.max_text_length)
