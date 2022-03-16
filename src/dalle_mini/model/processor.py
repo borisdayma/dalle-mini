@@ -1,5 +1,7 @@
 """ DalleBart processor """
 
+import jax.numpy as jnp
+
 from .configuration import DalleBartConfig
 from .text import TextNormalizer
 from .tokenizer import DalleBartTokenizer
@@ -40,8 +42,9 @@ class DalleBartProcessorBase:
             max_length=self.max_text_length,
         ).data
         # tokens used only with super conditioning
-        res["input_ids_uncond"] = self.input_ids_uncond
-        res["attention_mask_uncond"] = self.attention_mask_uncond
+        n = len(text)
+        res["input_ids_uncond"] = jnp.repeat(self.input_ids_uncond, n, axis=0)
+        res["attention_mask_uncond"] = jnp.repeat(self.attention_mask_uncond, n, axis=0)
         return res
 
     @classmethod
