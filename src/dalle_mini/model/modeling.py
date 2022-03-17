@@ -1161,9 +1161,7 @@ class DalleBart(
             # apply top_k, top_k, temperature
             logits = logits_warper(logits, logits, state.cur_len)
 
-            next_token = jax.random.categorical(
-                prng_key, model_outputs.logits[:, -1], axis=-1
-            )
+            next_token = jax.random.categorical(prng_key, logits, axis=-1)
 
             next_is_sent_finished = state.is_sent_finished | (
                 next_token == eos_token_id
