@@ -35,7 +35,6 @@ To generate sample predictions and understand the inference pipeline step by ste
 Join the community on the [DALLE-Pytorch Discord](https://discord.gg/xBPBXfcFHd).
 Any contribution is welcome, from reporting issues to proposing fixes/improvements or testing the model with cool prompts!
 
-
 ## Development
 
 ### Dependencies Installation
@@ -95,6 +94,7 @@ Many thanks to the people who helped make it better:
 
 - the [DALLE-Pytorch](https://discord.gg/xBPBXfcFHd) and [EleutherAI](https://www.eleuther.ai/) communities for testing and exchanging cool ideas
 - [Rohan Anil](https://github.com/rohan-anil) for adding Distributed Shampoo optimizer
+- [Katherine Crowson](https://github.com/crowsonkb) for [super conditioning](https://twitter.com/RiversHaveWings/status/1478093658716966912)
 
 ## Citing DALL·E mini
 
