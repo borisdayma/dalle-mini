@@ -18,8 +18,9 @@ import math
 import os
 from functools import partial
 from pickle import UnpicklingError
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
+import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -39,6 +40,7 @@ from transformers.file_utils import (
     is_offline_mode,
     is_remote_url,
 )
+from transformers.generation_flax_utils import FlaxSampleOutput
 from transformers.modeling_flax_outputs import (
     FlaxCausalLMOutputWithCrossAttentions,
     FlaxSeq2SeqLMOutput,
@@ -691,6 +693,17 @@ class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationMod
         )
 
 
+@flax.struct.dataclass
+class SampleState:
+    cur_len: jnp.ndarray
+    sequences: jnp.ndarray
+    running_token: jnp.ndarray
+    is_sent_finished: jnp.ndarray
+    prng_key: jnp.ndarray
+    model_kwargs: Dict[str, jnp.ndarray]
+    model_kwargs_uncond: Dict[str, jnp.ndarray]
+
+
 class DalleBart(
     PretrainedFromWandbMixin, FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration
 ):
@@ -702,6 +715,7 @@ class DalleBart(
     - no bias in decode method
     - custom prepare_inputs_for_generation using "max_length - 1" to avoid issues
       related to position embedding during model.generate()
+    - custom generate method to allow super conditions
     """
 
     module_class = FlaxBartForConditionalGenerationModule
@@ -872,3 +886,325 @@ class DalleBart(
             "decoder_attention_mask": extended_attention_mask,
             "decoder_position_ids": position_ids,
         }
+
+    def generate(
+        self,
+        input_ids: jnp.ndarray,
+        attention_mask: Optional[jnp.ndarray] = None,
+        max_length: Optional[int] = None,
+        pad_token_id: Optional[int] = None,
+        bos_token_id: Optional[int] = None,
+        eos_token_id: Optional[int] = None,
+        decoder_start_token_id: Optional[int] = None,
+        do_sample: Optional[bool] = None,
+        prng_key: Optional[jnp.ndarray] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        temperature: Optional[float] = None,
+        num_beams: Optional[int] = None,
+        no_repeat_ngram_size: Optional[int] = None,
+        min_length: Optional[int] = None,
+        forced_bos_token_id: Optional[int] = None,
+        forced_eos_token_id: Optional[int] = None,
+        length_penalty: Optional[float] = None,
+        early_stopping: Optional[bool] = None,
+        trace: bool = True,
+        params: Optional[Dict[str, jnp.ndarray]] = None,
+        condition_scale: Optional[float] = 1.0,
+        input_ids_uncond: Optional[jnp.ndarray] = None,
+        attention_mask_uncond: Optional[jnp.ndarray] = None,
+        **model_kwargs,
+    ):
+        """Edit: Allow super conditioning."""
+
+        # set init values
+        max_length = max_length if max_length is not None else self.config.max_length
+        bos_token_id = (
+            bos_token_id if bos_token_id is not None else self.config.bos_token_id
+        )
+        pad_token_id = (
+            pad_token_id if pad_token_id is not None else self.config.pad_token_id
+        )
+        eos_token_id = (
+            eos_token_id if eos_token_id is not None else self.config.eos_token_id
+        )
+        decoder_start_token_id = (
+            decoder_start_token_id
+            if decoder_start_token_id
+            else self.config.decoder_start_token_id
+        )
+        prng_key = prng_key if prng_key is not None else jax.random.PRNGKey(0)
+
+        if decoder_start_token_id is None and self.config.is_encoder_decoder:
+            raise ValueError(
+                "`decoder_start_token_id` has to be defined for encoder-decoder generation."
+            )
+
+        do_sample = do_sample if do_sample is not None else self.config.do_sample
+        num_beams = num_beams if num_beams is not None else self.config.num_beams
+
+        if self.config.is_encoder_decoder:
+            # add encoder_outputs to model_kwargs
+            if model_kwargs.get("encoder_outputs") is None:
+                model_kwargs_input = dict(model_kwargs)
+                model_kwargs = self._prepare_encoder_decoder_kwargs_for_generation(
+                    input_ids,
+                    params,
+                    {"attention_mask": attention_mask, **model_kwargs_input},
+                )
+                if condition_scale != 1.0:
+                    assert (
+                        input_ids_uncond is not None
+                    ), "`input_ids_uncond` has to be defined for super conditioning."
+                    assert (
+                        do_sample is True
+                    ), "`do_sample` has to be True for super conditioning."
+                    assert (
+                        num_beams == 1
+                    ), "`num_beams` has to be 1 for super conditioning."
+                    model_kwargs_uncond = (
+                        self._prepare_encoder_decoder_kwargs_for_generation(
+                            input_ids_uncond,
+                            params,
+                            {
+                                "attention_mask": attention_mask_uncond,
+                                **model_kwargs_input,
+                            },
+                        )
+                    )
+                else:
+                    model_kwargs_uncond = None
+            # prepare decoder_input_ids for generation
+            input_ids = (
+                jnp.ones((input_ids.shape[0], 1), dtype="i4") * decoder_start_token_id
+            )
+
+        if not do_sample and num_beams == 1:
+            logits_processor = self._get_logits_processor(
+                no_repeat_ngram_size,
+                min_length,
+                max_length,
+                eos_token_id,
+                forced_bos_token_id,
+                forced_eos_token_id,
+            )
+            return self._greedy_search(
+                input_ids,
+                max_length,
+                pad_token_id,
+                eos_token_id,
+                logits_processor=logits_processor,
+                trace=trace,
+                params=params,
+                model_kwargs=model_kwargs,
+            )
+        elif do_sample and num_beams == 1:
+            logits_warper = self._get_logits_warper(
+                top_k=top_k, top_p=top_p, temperature=temperature
+            )
+            logits_processor = self._get_logits_processor(
+                no_repeat_ngram_size,
+                min_length,
+                max_length,
+                eos_token_id,
+                forced_bos_token_id,
+                forced_eos_token_id,
+            )
+            return self._sample(
+                input_ids,
+                max_length,
+                pad_token_id,
+                eos_token_id,
+                prng_key,
+                logits_warper=logits_warper,
+                logits_processor=logits_processor,
+                trace=trace,
+                params=params,
+                model_kwargs=model_kwargs,
+                condition_scale=condition_scale,
+                model_kwargs_uncond=model_kwargs_uncond,
+            )
+        elif not do_sample and num_beams > 1:
+            # broadcast input_ids & encoder_outputs
+            input_ids = self._expand_to_num_beams(input_ids, num_beams=num_beams)
+
+            if "encoder_outputs" in model_kwargs:
+                model_kwargs["encoder_outputs"][
+                    "last_hidden_state"
+                ] = self._expand_to_num_beams(
+                    model_kwargs["encoder_outputs"]["last_hidden_state"],
+                    num_beams=num_beams,
+                )
+
+            if "attention_mask" in model_kwargs:
+                model_kwargs["attention_mask"] = self._expand_to_num_beams(
+                    model_kwargs["attention_mask"], num_beams=num_beams
+                )
+
+            logits_processor = self._get_logits_processor(
+                no_repeat_ngram_size,
+                min_length,
+                max_length,
+                eos_token_id,
+                forced_bos_token_id,
+                forced_eos_token_id,
+            )
+
+            return self._beam_search(
+                input_ids,
+                max_length,
+                pad_token_id,
+                eos_token_id,
+                length_penalty=length_penalty,
+                early_stopping=early_stopping,
+                logits_processor=logits_processor,
+                trace=trace,
+                params=params,
+                model_kwargs=model_kwargs,
+            )
+        else:
+            raise NotImplementedError("`Beam sampling is currently not implemented.")
+
+    def _sample(
+        self,
+        input_ids: None,
+        max_length: Optional[int] = None,
+        pad_token_id: Optional[int] = None,
+        eos_token_id: Optional[int] = None,
+        prng_key: Optional[jnp.ndarray] = None,
+        logits_processor=None,
+        logits_warper=None,
+        trace: bool = True,
+        params: Optional[Dict[str, jnp.ndarray]] = None,
+        model_kwargs: Optional[Dict[str, jnp.ndarray]] = None,
+        condition_scale: float = 1.0,
+        model_kwargs_uncond: Optional[Dict[str, jnp.ndarray]] = None,
+    ):
+        # init values
+        max_length = max_length if max_length is not None else self.config.max_length
+        pad_token_id = (
+            pad_token_id if pad_token_id is not None else self.config.pad_token_id
+        )
+        eos_token_id = (
+            eos_token_id if eos_token_id is not None else self.config.eos_token_id
+        )
+        prng_key = prng_key if prng_key is not None else jax.random.PRNGKey(0)
+
+        batch_size, cur_len = input_ids.shape
+
+        eos_token_id = jnp.array(eos_token_id)
+        pad_token_id = jnp.array(pad_token_id)
+        cur_len = jnp.array(cur_len)
+
+        # per batch-item holding current token in loop.
+        sequences = jnp.full((batch_size, max_length), pad_token_id, dtype=jnp.int32)
+        sequences = lax.dynamic_update_slice(sequences, input_ids, (0, 0))
+
+        # per batch-item state bit indicating if sentence has finished.
+        is_sent_finished = jnp.zeros((batch_size,), dtype=jnp.bool_)
+
+        # For Seq2Seq generation, we only need to use the decoder instead of the whole model in generation loop
+        # and pass it the `encoder_outputs`, which are part of the `model_kwargs`.
+        model = self.decode if self.config.is_encoder_decoder else self
+
+        # initialize model specific kwargs
+        model_kwargs = self.prepare_inputs_for_generation(
+            input_ids, max_length, **model_kwargs
+        )
+        if condition_scale != 1.0:
+            model_kwargs_uncond = self.prepare_inputs_for_generation(
+                input_ids, max_length, **model_kwargs_uncond
+            )
+
+        # initialize state
+        state = SampleState(
+            cur_len=cur_len,
+            sequences=sequences,
+            running_token=input_ids,
+            is_sent_finished=is_sent_finished,
+            prng_key=prng_key,
+            model_kwargs=model_kwargs,
+            model_kwargs_uncond=model_kwargs_uncond,
+        )
+
+        def sample_search_cond_fn(state):
+            """state termination condition fn."""
+            has_reached_max_length = state.cur_len == max_length
+            all_sequence_finished = jnp.all(state.is_sent_finished)
+            finish_generation = jnp.logical_or(
+                has_reached_max_length, all_sequence_finished
+            )
+            return ~finish_generation
+
+        def sample_search_body_fn(state):
+            """state update fn."""
+            prng_key, prng_key_next = jax.random.split(state.prng_key)
+            model_outputs = model(
+                state.running_token, params=params, **state.model_kwargs
+            )
+
+            logits = model_outputs.logits[:, -1]
+
+            # perform super conditioning
+            # Source: @RiversHaveWings - https://twitter.com/RiversHaveWings/status/1478093658716966912?s=20&t=xdm-wZ61Wf7OLnE_NJHZ1w
+            if condition_scale != 1.0:
+                model_outputs_uncond = model(
+                    state.running_token, params=params, **state.model_kwargs_uncond
+                )
+                logits_uncond = model_outputs_uncond.logits[:, -1]
+                logits = logits_uncond + condition_scale * (logits - logits_uncond)
+            else:
+                model_outputs_uncond = None
+
+            # apply min_length, ...
+            logits = logits_processor(state.sequences, logits, state.cur_len)
+            # apply top_k, top_k, temperature
+            logits = logits_warper(logits, logits, state.cur_len)
+
+            next_token = jax.random.categorical(prng_key, logits, axis=-1)
+
+            next_is_sent_finished = state.is_sent_finished | (
+                next_token == eos_token_id
+            )
+            next_token = (
+                next_token * ~next_is_sent_finished
+                + pad_token_id * next_is_sent_finished
+            )
+            next_token = next_token[:, None]
+
+            next_sequences = lax.dynamic_update_slice(
+                state.sequences, next_token, (0, state.cur_len)
+            )
+            next_model_kwargs = self.update_inputs_for_generation(
+                model_outputs, state.model_kwargs
+            )
+            next_model_kwargs_uncond = (
+                self.update_inputs_for_generation(
+                    model_outputs_uncond, state.model_kwargs_uncond
+                )
+                if condition_scale != 1.0
+                else None
+            )
+
+            return SampleState(
+                cur_len=state.cur_len + 1,
+                sequences=next_sequences,
+                running_token=next_token,
+                is_sent_finished=next_is_sent_finished,
+                model_kwargs=next_model_kwargs,
+                model_kwargs_uncond=next_model_kwargs_uncond,
+                prng_key=prng_key_next,
+            )
+
+        # The very first prompt often has sequence length > 1, so run outside of `lax.while_loop` to comply with TPU
+        if input_ids.shape[1] > 1:
+            state = sample_search_body_fn(state)
+
+        if not trace:
+            state = self._run_loop_in_debug(
+                sample_search_cond_fn, sample_search_body_fn, state
+            )
+        else:
+            state = lax.while_loop(sample_search_cond_fn, sample_search_body_fn, state)
+
+        return FlaxSampleOutput(sequences=state.sequences)

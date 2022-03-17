@@ -7,7 +7,7 @@ import numpy as np
 from braceexpand import braceexpand
 from datasets import Dataset, load_dataset
 
-from .text import TextNormalizer
+from .model.text import TextNormalizer
 
 
 @dataclass
@@ -28,6 +28,11 @@ class Dataset:
     seed_dataset: int = None
     shard_by_host: bool = False
     blank_caption_prob: float = 0.0
+    clip_score_column: str = "clip_score"
+    min_clip_score: float = None
+    max_clip_score: float = None
+    filter_column: str = None
+    filter_value: str = None
     train_dataset: Dataset = field(init=False)
     eval_dataset: Dataset = field(init=False)
     rng_dataset: jnp.ndarray = field(init=False)
@@ -36,6 +41,7 @@ class Dataset:
     def __post_init__(self):
         self.multi_hosts = jax.process_count() > 1
         # feed blank captions only in streaming mode for now
+        # otherwise dataset could be cached with same blanked captions
         if self.blank_caption_prob:
             assert (
                 self.streaming is True
@@ -107,23 +113,30 @@ class Dataset:
                 self.seed_dataset = np.random.get_state()[1][0]
             self.rng_dataset = jax.random.PRNGKey(self.seed_dataset)
 
-        # blank captions
-        if self.blank_caption_prob:
-            partial_blank_caption_function = partial(
-                blank_caption_function,
-                text_column=self.text_column,
-                blank_caption_prob=self.blank_caption_prob,
-            )
-            if hasattr(self, "train_dataset"):
-                self.train_dataset = (
-                    self.train_dataset.map(partial_blank_caption_function)
-                    if self.streaming
-                    else self.train_dataset.map(
-                        partial_blank_caption_function,
-                        num_proc=self.preprocessing_num_workers,
-                        load_from_cache_file=False,
-                        desc="Blanking some captions",
-                    )
+        # filter data
+        partial_filter_function = partial(
+            filter_function,
+            filter_column=self.filter_column,
+            filter_value=self.filter_value,
+            clip_score_column=self.clip_score_column,
+            min_clip_score=self.min_clip_score,
+            max_clip_score=self.max_clip_score,
+        )
+        for ds in ["train_dataset", "eval_dataset"]:
+            if hasattr(self, ds):
+                setattr(
+                    self,
+                    ds,
+                    (
+                        getattr(self, ds).filter(partial_filter_function)
+                        if self.streaming
+                        else getattr(self, ds).filter(
+                            partial_filter_function,
+                            num_proc=self.preprocessing_num_workers,
+                            load_from_cache_file=not self.overwrite_cache,
+                            desc="Filtering datasets",
+                        )
+                    ),
                 )
 
         # normalize text
@@ -150,6 +163,25 @@ class Dataset:
                             )
                         ),
                     )
+
+        # blank captions
+        if self.blank_caption_prob:
+            partial_blank_caption_function = partial(
+                blank_caption_function,
+                text_column=self.text_column,
+                blank_caption_prob=self.blank_caption_prob,
+            )
+            if hasattr(self, "train_dataset"):
+                self.train_dataset = (
+                    self.train_dataset.map(partial_blank_caption_function)
+                    if self.streaming
+                    else self.train_dataset.map(
+                        partial_blank_caption_function,
+                        num_proc=self.preprocessing_num_workers,
+                        load_from_cache_file=False,
+                        desc="Blanking some captions",
+                    )
+                )
 
         # preprocess
         partial_preprocess_function = partial(
@@ -230,8 +262,8 @@ class Dataset:
                     dataset.set_epoch(epoch)
                     epoch += 1
                 for item in dataset:
-                    for k, v in item.items():
-                        batch[k].append(v)
+                    for k in keys:
+                        batch[k].append(item[k])
                     if len(batch[keys[0]]) == batch_size:
                         batch = {k: jnp.array(v) for k, v in batch.items()}
                         yield batch
@@ -290,6 +322,23 @@ def blank_caption_function(example, text_column, blank_caption_prob):
 def normalize_function(example, text_column, text_normalizer):
     example[text_column] = text_normalizer(example[text_column])
     return example
+
+
+def filter_function(
+    example,
+    min_clip_score,
+    max_clip_score,
+    clip_score_column,
+    filter_column,
+    filter_value,
+):
+    if min_clip_score is not None and example[clip_score_column] < min_clip_score:
+        return False
+    if max_clip_score is not None and example[clip_score_column] > max_clip_score:
+        return False
+    if filter_column is not None and example[filter_column] != filter_value:
+        return False
+    return True
 
 
 def preprocess_function(
