@@ -1044,26 +1044,6 @@ def main():
 
         grads = with_sharding_constraint(grads, param_spec)
 
-        # get norm and histogram of grads
-        def maybe_fn(fn, val):
-            """Call fn only if it is a logging step"""
-            zeros = jax.tree_map(lambda x: jnp.zeros_like(x), fn(val))
-            return jax.lax.cond(
-                state.step % training_args.logging_steps == 0, fn, lambda _: zeros, val
-            )
-
-        def norm(val):
-            return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
-
-        gradients_norm = maybe_fn(norm, grads)
-
-        if training_args.log_histograms:
-
-            def histogram(val):
-                return jax.tree_map(lambda x: jnp.histogram(x, density=True), val)
-
-            gradients_hist = maybe_fn(histogram, grads)
-
         # update state
         state = state.apply_gradients(
             grads=grads,
@@ -1072,8 +1052,23 @@ def main():
             train_samples=state.train_samples + batch_size_per_step,
         )
 
-        # get norm and histogram of params
-        params_norm = maybe_fn(norm, state.params)
+        # get norm and histogram of grads and params
+        zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
+
+        def maybe_fn(fn, val, zeros):
+            """Call fn only if it is a logging step"""
+            return jax.lax.cond(
+                state.step % training_args.logging_steps == 0,
+                fn,
+                lambda _: zeros,
+                val,
+            )
+
+        def norm(val):
+            return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
+
+        gradients_norm = maybe_fn(norm, grads, zeros_norm)
+        params_norm = maybe_fn(norm, state.params, zeros_norm)
 
         metrics = {
             "loss": loss,
@@ -1083,7 +1078,15 @@ def main():
         }
 
         if training_args.log_histograms:
-            params_hist = maybe_fn(histogram, state.params)
+            zeros_hist = jax.tree_map(
+                lambda _: jnp.histogram(jnp.zeros(1), density=True), state.params
+            )
+
+            def histogram(val):
+                return jax.tree_map(lambda x: jnp.histogram(x, density=True), val)
+
+            gradients_hist = maybe_fn(histogram, grads, zeros_hist)
+            params_hist = maybe_fn(histogram, state.params, zeros_hist)
 
             metrics.update(
                 {
