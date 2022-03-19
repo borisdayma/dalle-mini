@@ -58,7 +58,5 @@ def set_partitions(in_dict):
     for k, v in result.items():
         if v == _unmatched:
             print(f"Unmatched -> {k}")
-        else:
-            print(f"Matched -> {k}")
     assert _unmatched not in result.values(), "Incomplete partition spec."
     return freeze(unflatten_dict(result))
