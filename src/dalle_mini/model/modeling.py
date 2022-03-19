@@ -101,40 +101,73 @@ class FlaxBartAttention(FlaxBartAttention):
             )
 
 
-class FlaxBartEncoderLayer(FlaxBartEncoderLayer):
+class FlaxBartEncoderLayer(nn.Module):
     """
     Edits:
     - no bias
     - use custom FlaxBartAttention
+    - use Sandwich-LN per Cogview
     """
 
-    def setup(self) -> None:
-        self.embed_dim = self.config.d_model
-        self.self_attn = FlaxBartAttention(
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32
+
+    @nn.compact
+    def __call__(
+        self,
+        hidden_states: jnp.ndarray,
+        attention_mask: jnp.ndarray,
+        output_attentions: bool = True,
+        deterministic: bool = True,
+    ) -> Tuple[jnp.ndarray]:
+
+        embed_dim = self.config.d_model
+        residual = hidden_states
+        hidden_states, attn_weights = FlaxBartAttention(
             config=self.config,
-            embed_dim=self.embed_dim,
+            embed_dim=embed_dim,
             num_heads=self.config.encoder_attention_heads,
             dropout=self.config.attention_dropout,
             bias=False,
             dtype=self.dtype,
+        )(hidden_states=hidden_states, attention_mask=attention_mask)
+
+        hidden_states = nn.Dropout(rate=self.config.dropout)(
+            hidden_states, deterministic=deterministic
         )
-        self.self_attn_layer_norm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
-        self.dropout_layer = nn.Dropout(rate=self.config.dropout)
-        self.activation_fn = ACT2FN[self.config.activation_function]
-        self.activation_dropout_layer = nn.Dropout(rate=self.config.activation_dropout)
-        self.fc1 = nn.Dense(
-            self.config.encoder_ffn_dim,
+        hidden_states = residual + hidden_states
+        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+
+        residual = hidden_states
+        hidden_states = ACT2FN[self.config.activation_function](
+            nn.Dense(
+                self.config.encoder_ffn_dim,
+                dtype=self.dtype,
+                use_bias=False,
+                kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            )(hidden_states)
+        )
+        hidden_states = nn.Dropout(rate=self.config.activation_dropout)(
+            hidden_states, deterministic=deterministic
+        )
+        hidden_states = nn.Dense(
+            embed_dim,
             dtype=self.dtype,
             use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )(hidden_states)
+        hidden_states = nn.Dropout(rate=self.config.dropout)(
+            hidden_states, deterministic=deterministic
         )
-        self.fc2 = nn.Dense(
-            self.embed_dim,
-            dtype=self.dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
-        )
-        self.final_layer_norm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+        hidden_states = residual + hidden_states
+        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (attn_weights,)
+
+        return outputs
 
 
 class FlaxBartEncoderLayerCollection(FlaxBartEncoderLayerCollection):
@@ -162,6 +195,7 @@ class FlaxBartDecoderLayer(FlaxBartDecoderLayer):
     Edits:
     - no bias
     - uses custom FlaxBartAttention
+    - use Sandwich-LN per Cogview
     """
 
     def setup(self) -> None:
