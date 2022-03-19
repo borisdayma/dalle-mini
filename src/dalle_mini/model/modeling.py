@@ -49,10 +49,8 @@ from transformers.modeling_flax_utils import ACT2FN
 from transformers.models.bart.modeling_flax_bart import (
     FlaxBartAttention,
     FlaxBartDecoder,
-    FlaxBartDecoderLayer,
     FlaxBartDecoderLayerCollection,
     FlaxBartEncoder,
-    FlaxBartEncoderLayer,
     FlaxBartEncoderLayerCollection,
     FlaxBartForConditionalGeneration,
     FlaxBartForConditionalGenerationModule,
