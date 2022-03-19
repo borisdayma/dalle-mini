@@ -880,7 +880,7 @@ def main():
             # params have not been initialized yet
             return model.init_weights()
 
-    with maps.mesh(mesh.devices, mesh.axis_names):
+    with mesh:
         logger.info("  Creating state")
         if not model_args.restore_state:
 
@@ -1300,7 +1300,7 @@ def main():
                 wandb.run.log_artifact(artifact_state)
 
     logger.info("  Ready to start training")
-    with maps.mesh(mesh.devices, mesh.axis_names):
+    with mesh:
         for epoch in epochs:
             state.replace(epoch=epoch)
             # ======================== Training ================================
