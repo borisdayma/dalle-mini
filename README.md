@@ -100,20 +100,20 @@ Many thanks to the people who helped make it better:
 
 If you find DALL·E mini useful in your research or wish to refer, please use the following BibTeX entry.
 
-```
+```text
 @misc{Dayma_DALL·E_Mini_2021,
-author = {Dayma, Boris and Patil, Suraj and Cuenca, Pedro and Saifullah, Khalid and Abraham, Tanishq and Lê Khắc, Phúc and Melas, Luke and Ghosh, Ritobrata},
-doi = {10.5281/zenodo.5146400},
-month = {7},
-title = {DALL·E Mini},
-url = {https://github.com/borisdayma/dalle-mini},
-year = {2021}
+      author = {Dayma, Boris and Patil, Suraj and Cuenca, Pedro and Saifullah, Khalid and Abraham, Tanishq and Lê Khắc, Phúc and Melas, Luke and Ghosh, Ritobrata},
+      doi = {10.5281/zenodo.5146400},
+      month = {7},
+      title = {DALL·E Mini},
+      url = {https://github.com/borisdayma/dalle-mini},
+      year = {2021}
 }
 ```
 
 ## References
 
-```
+```text
 @misc{ramesh2021zeroshot,
       title={Zero-Shot Text-to-Image Generation}, 
       author={Aditya Ramesh and Mikhail Pavlov and Gabriel Goh and Scott Gray and Chelsea Voss and Alec Radford and Mark Chen and Ilya Sutskever},
@@ -124,7 +124,7 @@ year = {2021}
 }
 ```
 
-```
+```text
 @misc{esser2021taming,
       title={Taming Transformers for High-Resolution Image Synthesis}, 
       author={Patrick Esser and Robin Rombach and Björn Ommer},
@@ -135,7 +135,7 @@ year = {2021}
 }
 ```
 
-```
+```text
 @misc{lewis2019bart,
       title={BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension}, 
       author={Mike Lewis and Yinhan Liu and Naman Goyal and Marjan Ghazvininejad and Abdelrahman Mohamed and Omer Levy and Ves Stoyanov and Luke Zettlemoyer},
@@ -146,7 +146,7 @@ year = {2021}
 }
 ```
 
-```
+```text
 @misc{radford2021learning,
       title={Learning Transferable Visual Models From Natural Language Supervision}, 
       author={Alec Radford and Jong Wook Kim and Chris Hallacy and Aditya Ramesh and Gabriel Goh and Sandhini Agarwal and Girish Sastry and Amanda Askell and Pamela Mishkin and Jack Clark and Gretchen Krueger and Ilya Sutskever},
@@ -157,7 +157,7 @@ year = {2021}
 }
 ```
 
-```
+```text
 @misc{anil2021scalable,
       title={Scalable Second Order Optimization for Deep Learning},
       author={Rohan Anil and Vineet Gupta and Tomer Koren and Kevin Regan and Yoram Singer},
@@ -166,4 +166,12 @@ year = {2021}
       archivePrefix={arXiv},
       primaryClass={cs.LG}
 }
+```
+
+```text
+@article{ding2021cogview,
+         title={CogView: Mastering Text-to-Image Generation via Transformers},
+         author={Ding, Ming and Yang, Zhuoyi and Hong, Wenyi and Zheng, Wendi and Zhou, Chang and Yin, Da and Lin, Junyang and Zou, Xu and Shao, Zhou and Yang, Hongxia and Tang, Jie},
+         journal={arXiv preprint arXiv:2105.13290},
+         year={2021}
 ```
