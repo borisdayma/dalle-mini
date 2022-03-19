@@ -67,6 +67,9 @@ from .utils import PretrainedFromWandbMixin
 logger = logging.get_logger(__name__)
 
 
+id_fn = lambda x: x
+
+
 class FlaxBartAttention(FlaxBartAttention):
     """
     Edits:
@@ -101,75 +104,90 @@ class FlaxBartAttention(FlaxBartAttention):
             )
 
 
-class FlaxBartEncoderLayer(nn.Module):
-    """
-    Edits:
-    - no bias
-    - use custom FlaxBartAttention
-    - use Sandwich-LN per Cogview
-    """
+def createFlaxBartEncoderLayer(do_remat=False):
 
-    config: DalleBartConfig
-    dtype: jnp.dtype = jnp.float32
+    if do_remat:
+        transform = partial(nn.remat, concrete=True)
+    else:
+        transform = id_fn
 
-    @nn.compact
-    def __call__(
-        self,
-        hidden_states: jnp.ndarray,
-        attention_mask: jnp.ndarray,
-        output_attentions: bool = True,
-        deterministic: bool = True,
-    ) -> Tuple[jnp.ndarray]:
+    class FlaxBartEncoderLayer(nn.Module):
+        """
+        Edits:
+        - no bias
+        - use custom FlaxBartAttention
+        - use Sandwich-LN per Cogview
+        """
 
-        embed_dim = self.config.d_model
-        residual = hidden_states
-        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-        hidden_states, attn_weights = FlaxBartAttention(
-            config=self.config,
-            embed_dim=embed_dim,
-            num_heads=self.config.encoder_attention_heads,
-            dropout=self.config.attention_dropout,
-            bias=False,
-            dtype=self.dtype,
-        )(hidden_states=hidden_states, attention_mask=attention_mask)
+        config: DalleBartConfig
+        dtype: jnp.dtype = jnp.float32
 
-        hidden_states = nn.Dropout(rate=self.config.dropout)(
-            hidden_states, deterministic=deterministic
-        )
-        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-        hidden_states = residual + hidden_states
+        def setup(self):
+            if self.config.gradient_checkpointing:
+                self.do_remat = partial(nn.remat, concrete=True)
+            self.do_remat = lambda x: x
 
-        residual = hidden_states
-        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-        hidden_states = ACT2FN[self.config.activation_function](
-            nn.Dense(
-                self.config.encoder_ffn_dim,
+        @transform
+        @nn.compact
+        def __call__(
+            self,
+            hidden_states: jnp.ndarray,
+            attention_mask: jnp.ndarray,
+            output_attentions: bool = True,
+            deterministic: bool = True,
+        ) -> Tuple[jnp.ndarray]:
+
+            embed_dim = self.config.d_model
+            residual = hidden_states
+            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            hidden_states, attn_weights = FlaxBartAttention(
+                config=self.config,
+                embed_dim=embed_dim,
+                num_heads=self.config.encoder_attention_heads,
+                dropout=self.config.attention_dropout,
+                bias=False,
+                dtype=self.dtype,
+            )(hidden_states=hidden_states, attention_mask=attention_mask)
+
+            hidden_states = nn.Dropout(rate=self.config.dropout)(
+                hidden_states, deterministic=deterministic
+            )
+            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            hidden_states = residual + hidden_states
+
+            residual = hidden_states
+            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            hidden_states = ACT2FN[self.config.activation_function](
+                nn.Dense(
+                    self.config.encoder_ffn_dim,
+                    dtype=self.dtype,
+                    use_bias=False,
+                    kernel_init=jax.nn.initializers.normal(self.config.init_std),
+                )(hidden_states)
+            )
+            hidden_states = nn.Dropout(rate=self.config.activation_dropout)(
+                hidden_states, deterministic=deterministic
+            )
+            hidden_states = nn.Dense(
+                embed_dim,
                 dtype=self.dtype,
                 use_bias=False,
                 kernel_init=jax.nn.initializers.normal(self.config.init_std),
             )(hidden_states)
-        )
-        hidden_states = nn.Dropout(rate=self.config.activation_dropout)(
-            hidden_states, deterministic=deterministic
-        )
-        hidden_states = nn.Dense(
-            embed_dim,
-            dtype=self.dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
-        )(hidden_states)
-        hidden_states = nn.Dropout(rate=self.config.dropout)(
-            hidden_states, deterministic=deterministic
-        )
-        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-        hidden_states = residual + hidden_states
+            hidden_states = nn.Dropout(rate=self.config.dropout)(
+                hidden_states, deterministic=deterministic
+            )
+            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,)
+            outputs = (hidden_states,)
 
-        if output_attentions:
-            outputs += (attn_weights,)
+            if output_attentions:
+                outputs += (attn_weights,)
 
-        return outputs
+            return outputs
+
+    return FlaxBartEncoderLayer
 
 
 class FlaxBartEncoderLayerCollection(FlaxBartEncoderLayerCollection):
@@ -180,81 +198,63 @@ class FlaxBartEncoderLayerCollection(FlaxBartEncoderLayerCollection):
     """
 
     def setup(self):
-        layer_module = (
-            nn.remat(FlaxBartEncoderLayer, concrete=True)
-            if self.config.gradient_checkpointing
-            else FlaxBartEncoderLayer
-        )
         self.layers = [
-            layer_module(self.config, name=str(i), dtype=self.dtype)
+            createFlaxBartEncoderLayer(self.config.gradient_checkpointing)(
+                self.config, name=str(i), dtype=self.dtype
+            )
             for i in range(self.config.encoder_layers)
         ]
         self.layerdrop = self.config.encoder_layerdrop
 
 
-class FlaxBartDecoderLayer(nn.Module):
-    """
-    Edits:
-    - no bias
-    - use custom FlaxBartAttention
-    - use Sandwich-LN per Cogview
-    """
+def createFlaxBartDecoderLayer(do_remat=False):
 
-    config: DalleBartConfig
-    dtype: jnp.dtype = jnp.float32
+    if do_remat:
+        transform = partial(nn.remat, concrete=True)
+    else:
+        transform = id_fn
 
-    @nn.compact
-    def __call__(
-        self,
-        hidden_states: jnp.ndarray,
-        attention_mask: jnp.ndarray,
-        encoder_hidden_states: Optional[jnp.ndarray] = None,
-        encoder_attention_mask: Optional[jnp.ndarray] = None,
-        init_cache: bool = False,
-        output_attentions: bool = True,
-        deterministic: bool = True,
-    ) -> Tuple[jnp.ndarray]:
+    class FlaxBartDecoderLayer(nn.Module):
+        """
+        Edits:
+        - no bias
+        - use custom FlaxBartAttention
+        - use Sandwich-LN per Cogview
+        """
 
-        embed_dim = self.config.d_model
-        residual = hidden_states
+        config: DalleBartConfig
+        dtype: jnp.dtype = jnp.float32
 
-        # Self Attention
-        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-        hidden_states, attn_weights = FlaxBartAttention(
-            config=self.config,
-            embed_dim=embed_dim,
-            num_heads=self.config.decoder_attention_heads,
-            dropout=self.config.attention_dropout,
-            causal=True,
-            bias=False,
-            dtype=self.dtype,
-        )(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            init_cache=init_cache,
-        )
-        hidden_states = nn.Dropout(rate=self.config.dropout)(
-            hidden_states, deterministic=deterministic
-        )
-        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-        hidden_states = residual + hidden_states
+        @transform
+        @nn.compact
+        def __call__(
+            self,
+            hidden_states: jnp.ndarray,
+            attention_mask: jnp.ndarray,
+            encoder_hidden_states: Optional[jnp.ndarray] = None,
+            encoder_attention_mask: Optional[jnp.ndarray] = None,
+            init_cache: bool = False,
+            output_attentions: bool = True,
+            deterministic: bool = True,
+        ) -> Tuple[jnp.ndarray]:
 
-        # Cross Attention
-        cross_attn_weights = None
-        if encoder_hidden_states is not None:
+            embed_dim = self.config.d_model
             residual = hidden_states
+
+            # Self Attention
             hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-            hidden_states, cross_attn_weights = FlaxBartAttention(
+            hidden_states, attn_weights = FlaxBartAttention(
                 config=self.config,
                 embed_dim=embed_dim,
                 num_heads=self.config.decoder_attention_heads,
                 dropout=self.config.attention_dropout,
+                causal=True,
                 bias=False,
                 dtype=self.dtype,
             )(
                 hidden_states=hidden_states,
-                key_value_states=encoder_hidden_states,
-                attention_mask=encoder_attention_mask,
+                attention_mask=attention_mask,
+                init_cache=init_cache,
             )
             hidden_states = nn.Dropout(rate=self.config.dropout)(
                 hidden_states, deterministic=deterministic
@@ -262,38 +262,67 @@ class FlaxBartDecoderLayer(nn.Module):
             hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
             hidden_states = residual + hidden_states
 
-        # Feed forward
-        residual = hidden_states
-        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-        hidden_states = ACT2FN[self.config.activation_function](
-            nn.Dense(
-                self.config.encoder_ffn_dim,
+            # Cross Attention
+            cross_attn_weights = None
+            if encoder_hidden_states is not None:
+                residual = hidden_states
+                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
+                    hidden_states
+                )
+                hidden_states, cross_attn_weights = FlaxBartAttention(
+                    config=self.config,
+                    embed_dim=embed_dim,
+                    num_heads=self.config.decoder_attention_heads,
+                    dropout=self.config.attention_dropout,
+                    bias=False,
+                    dtype=self.dtype,
+                )(
+                    hidden_states=hidden_states,
+                    key_value_states=encoder_hidden_states,
+                    attention_mask=encoder_attention_mask,
+                )
+                hidden_states = nn.Dropout(rate=self.config.dropout)(
+                    hidden_states, deterministic=deterministic
+                )
+                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
+                    hidden_states
+                )
+                hidden_states = residual + hidden_states
+
+            # Feed forward
+            residual = hidden_states
+            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            hidden_states = ACT2FN[self.config.activation_function](
+                nn.Dense(
+                    self.config.encoder_ffn_dim,
+                    dtype=self.dtype,
+                    use_bias=False,
+                    kernel_init=jax.nn.initializers.normal(self.config.init_std),
+                )(hidden_states)
+            )
+            hidden_states = nn.Dropout(rate=self.config.activation_dropout)(
+                hidden_states, deterministic=deterministic
+            )
+            hidden_states = nn.Dense(
+                embed_dim,
                 dtype=self.dtype,
                 use_bias=False,
                 kernel_init=jax.nn.initializers.normal(self.config.init_std),
             )(hidden_states)
-        )
-        hidden_states = nn.Dropout(rate=self.config.activation_dropout)(
-            hidden_states, deterministic=deterministic
-        )
-        hidden_states = nn.Dense(
-            embed_dim,
-            dtype=self.dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
-        )(hidden_states)
-        hidden_states = nn.Dropout(rate=self.config.dropout)(
-            hidden_states, deterministic=deterministic
-        )
-        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-        hidden_states = residual + hidden_states
+            hidden_states = nn.Dropout(rate=self.config.dropout)(
+                hidden_states, deterministic=deterministic
+            )
+            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,)
+            outputs = (hidden_states,)
 
-        if output_attentions:
-            outputs += (attn_weights, cross_attn_weights)
+            if output_attentions:
+                outputs += (attn_weights, cross_attn_weights)
 
-        return outputs
+            return outputs
+
+    return FlaxBartDecoderLayer
 
 
 class FlaxBartDecoderLayerCollection(FlaxBartDecoderLayerCollection):
@@ -304,13 +333,10 @@ class FlaxBartDecoderLayerCollection(FlaxBartDecoderLayerCollection):
     """
 
     def setup(self):
-        layer_module = (
-            nn.remat(FlaxBartDecoderLayer, concrete=True)
-            if self.config.gradient_checkpointing
-            else FlaxBartDecoderLayer
-        )
         self.layers = [
-            layer_module(self.config, name=str(i), dtype=self.dtype)
+            createFlaxBartDecoderLayer(self.config.gradient_checkpointing)(
+                self.config, name=str(i), dtype=self.dtype
+            )
             for i in range(self.config.decoder_layers)
         ]
         self.layerdrop = self.config.decoder_layerdrop
