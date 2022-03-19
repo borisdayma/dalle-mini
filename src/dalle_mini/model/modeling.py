@@ -123,6 +123,7 @@ class FlaxBartEncoderLayer(nn.Module):
 
         embed_dim = self.config.d_model
         residual = hidden_states
+        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
         hidden_states, attn_weights = FlaxBartAttention(
             config=self.config,
             embed_dim=embed_dim,
@@ -135,10 +136,11 @@ class FlaxBartEncoderLayer(nn.Module):
         hidden_states = nn.Dropout(rate=self.config.dropout)(
             hidden_states, deterministic=deterministic
         )
-        hidden_states = residual + hidden_states
         hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+        hidden_states = residual + hidden_states
 
         residual = hidden_states
+        hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
         hidden_states = ACT2FN[self.config.activation_function](
             nn.Dense(
                 self.config.encoder_ffn_dim,
@@ -159,8 +161,8 @@ class FlaxBartEncoderLayer(nn.Module):
         hidden_states = nn.Dropout(rate=self.config.dropout)(
             hidden_states, deterministic=deterministic
         )
-        hidden_states = residual + hidden_states
         hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+        hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
 
