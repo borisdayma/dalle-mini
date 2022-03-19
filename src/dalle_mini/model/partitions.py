@@ -38,20 +38,14 @@ def _get_partition_rules():
         # embeddings
         ((r"embed_positions", "embedding"), P("mp", None)),
         ((r"embed_tokens", "embedding"), P("mp", None)),
-        # self-attention
-        ((r"self_attn", "(q_proj|k_proj|v_proj)", "kernel"), P(None, "mp")),
-        ((r"self_attn", "out_proj", "kernel"), P("mp", None)),
-        # enc-dec attention
-        ((r"encoder_attn", "(q_proj|k_proj|v_proj)", "kernel"), P(None, "mp")),
-        ((r"encoder_attn", "out_proj", "kernel"), P("mp", None)),
+        # attention
+        (("(q_proj|k_proj|v_proj)", "kernel"), P(None, "mp")),
+        (("out_proj", "kernel"), P("mp", None)),
         # FFN
-        ((r"fc1", "kernel"), P(None, "mp")),
-        ((r"fc2", "kernel"), P("mp", None)),
+        ((r"Dense_0", "kernel"), P(None, "mp")),
+        ((r"Dense_1", "kernel"), P("mp", None)),
         # layer norms
-        ((r"layernorm_embedding", "(bias|scale)"), None),
-        ((r"self_attn_layer_norm", "(bias|scale)"), None),
-        ((r"encoder_attn_layer_norm", "(bias|scale)"), None),
-        ((r"final_layer_norm", "(bias|scale)"), None),
+        (("(bias|scale)",), None),
         ((r"lm_head", "kernel"), P(None, "mp")),
     ]
 
@@ -63,6 +57,8 @@ def set_partitions(in_dict):
     result = {k: replace(k, v) for k, v in initd.items()}
     for k, v in result.items():
         if v == _unmatched:
-            print(k)
+            print(f"Unmatched -> {k}")
+        else:
+            print(f"Matched -> {k}")
     assert _unmatched not in result.values(), "Incomplete partition spec."
     return freeze(unflatten_dict(result))
