@@ -898,7 +898,7 @@ def main():
                 if model_args.model_name_or_path
                 else None,
                 out_axis_resources=state_spec,
-                donate_argnums=(0,) if model_args.model_name_or_path else (),
+                donate_argnums=(0,),
             )(model.params if model_args.model_name_or_path else None)
 
         else:
