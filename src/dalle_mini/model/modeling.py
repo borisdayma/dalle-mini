@@ -102,6 +102,47 @@ class FlaxBartAttention(FlaxBartAttention):
             )
 
 
+class GLU(nn.Module):
+    """From "GLU Variants Improve Transformer" by https://arxiv.org/abs/2002.05202"""
+
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32
+
+    @nn.compact
+    def call(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+        x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+        w = nn.Dense(
+            self.config.encoder_ffn_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        w = ACT2FN[self.config.activation_function](w)
+        v = nn.Dense(
+            self.config.encoder_ffn_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        x = w * v
+        x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+        x = nn.Dropout(rate=self.config.activation_dropout)(
+            x, deterministic=deterministic
+        )
+
+        x = nn.Dense(
+            self.config.encoder_ffn_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+        x = nn.Dropout(rate=self.config.activation_dropout)(
+            x, deterministic=deterministic
+        )
+        return x
+
+
 def createFlaxBartEncoderLayer(do_remat=False):
 
     if do_remat:
@@ -119,11 +160,6 @@ def createFlaxBartEncoderLayer(do_remat=False):
 
         config: DalleBartConfig
         dtype: jnp.dtype = jnp.float32
-
-        def setup(self):
-            if self.config.gradient_checkpointing:
-                self.do_remat = partial(nn.remat, concrete=True)
-            self.do_remat = lambda x: x
 
         @transform
         @nn.compact
@@ -154,28 +190,9 @@ def createFlaxBartEncoderLayer(do_remat=False):
             hidden_states = residual + hidden_states
 
             residual = hidden_states
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-            hidden_states = ACT2FN[self.config.activation_function](
-                nn.Dense(
-                    self.config.encoder_ffn_dim,
-                    dtype=self.dtype,
-                    use_bias=False,
-                    kernel_init=jax.nn.initializers.normal(self.config.init_std),
-                )(hidden_states)
-            )
-            hidden_states = nn.Dropout(rate=self.config.activation_dropout)(
+            hidden_states = GLU(self.config, self.dtype)(
                 hidden_states, deterministic=deterministic
             )
-            hidden_states = nn.Dense(
-                embed_dim,
-                dtype=self.dtype,
-                use_bias=False,
-                kernel_init=jax.nn.initializers.normal(self.config.init_std),
-            )(hidden_states)
-            hidden_states = nn.Dropout(rate=self.config.dropout)(
-                hidden_states, deterministic=deterministic
-            )
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
             hidden_states = residual + hidden_states
 
             outputs = (hidden_states,)
@@ -289,28 +306,9 @@ def createFlaxBartDecoderLayer(do_remat=False):
 
             # Feed forward
             residual = hidden_states
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
-            hidden_states = ACT2FN[self.config.activation_function](
-                nn.Dense(
-                    self.config.encoder_ffn_dim,
-                    dtype=self.dtype,
-                    use_bias=False,
-                    kernel_init=jax.nn.initializers.normal(self.config.init_std),
-                )(hidden_states)
-            )
-            hidden_states = nn.Dropout(rate=self.config.activation_dropout)(
+            hidden_states = GLU(self.config, self.dtype)(
                 hidden_states, deterministic=deterministic
             )
-            hidden_states = nn.Dense(
-                embed_dim,
-                dtype=self.dtype,
-                use_bias=False,
-                kernel_init=jax.nn.initializers.normal(self.config.init_std),
-            )(hidden_states)
-            hidden_states = nn.Dropout(rate=self.config.dropout)(
-                hidden_states, deterministic=deterministic
-            )
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
             hidden_states = residual + hidden_states
 
             outputs = (hidden_states,)
