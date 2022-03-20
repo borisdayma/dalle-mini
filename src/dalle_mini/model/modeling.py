@@ -215,20 +215,21 @@ class GLU(nn.Module):
     """From "GLU Variants Improve Transformer" by https://arxiv.org/abs/2002.05202"""
 
     config: DalleBartConfig
+    ffn_dim: int
     dtype: jnp.dtype = jnp.float32
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
         x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
         w = nn.Dense(
-            self.config.encoder_ffn_dim,
+            self.ffn_dim,
             dtype=self.dtype,
             use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )(x)
         w = ACT2FN[self.config.activation_function](w)
         v = nn.Dense(
-            self.config.encoder_ffn_dim,
+            self.ffn_dim,
             dtype=self.dtype,
             use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
@@ -240,7 +241,7 @@ class GLU(nn.Module):
         )
 
         x = nn.Dense(
-            self.config.encoder_ffn_dim,
+            self.config.embed_dim,
             dtype=self.dtype,
             use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
@@ -295,9 +296,11 @@ def createFlaxBartEncoderLayer(do_remat=False):
             hidden_states = residual + hidden_states
 
             residual = hidden_states
-            hidden_states = GLU(config=self.config, dtype=self.dtype)(
-                hidden_states, deterministic=deterministic
-            )
+            hidden_states = GLU(
+                config=self.config,
+                ffn_dim=self.config.encoder_ffn_dim,
+                dtype=self.dtype,
+            )(hidden_states, deterministic=deterministic)
             hidden_states = residual + hidden_states
 
             outputs = (hidden_states,)
@@ -410,9 +413,11 @@ def createFlaxBartDecoderLayer(do_remat=False):
 
             # Feed forward
             residual = hidden_states
-            hidden_states = GLU(config=self.config, dtype=self.dtype)(
-                hidden_states, deterministic=deterministic
-            )
+            hidden_states = GLU(
+                config=self.config,
+                ffn_dim=self.config.decoder_ffn_dim,
+                dtype=self.dtype,
+            )(hidden_states, deterministic=deterministic)
             hidden_states = residual + hidden_states
 
             outputs = (hidden_states,)
