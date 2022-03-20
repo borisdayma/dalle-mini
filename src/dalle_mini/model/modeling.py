@@ -26,7 +26,8 @@ import jax
 import jax.numpy as jnp
 import msgpack.exceptions
 from flax.core.frozen_dict import unfreeze
-from flax.linen import make_causal_mask
+from flax.linen import make_causal_mask, combine_masks
+from flax.linen.attention import dot_product_attention_weights
 from flax.serialization import from_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jax import lax
@@ -72,6 +73,7 @@ class FlaxBartAttention(FlaxBartAttention):
     """
     Edits:
     - causal mask is used only in decoder and considers image_length
+    - scale attention heads per NormFormer paper
     """
 
     def setup(self) -> None:
@@ -95,11 +97,118 @@ class FlaxBartAttention(FlaxBartAttention):
 
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
+        self.head_scale = self.param(
+            "head_scale", jax.nn.initializers.ones, (1, 1, self.num_heads, 1)
+        )
+
         if self.causal:
             # used only in decoder
             self.causal_mask = make_causal_mask(
                 jnp.ones((1, self.config.image_length), dtype="bool"), dtype="bool"
             )
+
+    def __call__(
+        self,
+        hidden_states: jnp.ndarray,
+        key_value_states: Optional[jnp.ndarray] = None,
+        attention_mask: Optional[jnp.ndarray] = None,
+        init_cache: bool = False,
+        deterministic: bool = True,
+    ) -> Tuple[jnp.ndarray]:
+        """Input shape: Batch x Time x Channel"""
+
+        # if key_value_states are provided this layer is used as a cross-attention layer
+        # for the decoder
+        is_cross_attention = key_value_states is not None
+        batch_size = hidden_states.shape[0]
+
+        # get query proj
+        query_states = self.q_proj(hidden_states)
+        # get key, value proj
+        if is_cross_attention:
+            # cross_attentions
+            key_states = self.k_proj(key_value_states)
+            value_states = self.v_proj(key_value_states)
+        else:
+            # self_attention
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
+
+        query_states = self._split_heads(query_states)
+        key_states = self._split_heads(key_states)
+        value_states = self._split_heads(value_states)
+
+        # handle cache prepare causal attention mask
+        if self.causal:
+            query_length, key_length = query_states.shape[1], key_states.shape[1]
+            if self.has_variable("cache", "cached_key"):
+                mask_shift = self.variables["cache"]["cache_index"]
+                max_decoder_length = self.variables["cache"]["cached_key"].shape[1]
+                causal_mask = lax.dynamic_slice(
+                    self.causal_mask,
+                    (0, 0, mask_shift, 0),
+                    (1, 1, query_length, max_decoder_length),
+                )
+            else:
+                causal_mask = self.causal_mask[:, :, :query_length, :key_length]
+            causal_mask = jnp.broadcast_to(
+                causal_mask, (batch_size,) + causal_mask.shape[1:]
+            )
+
+        # combine masks if needed
+        if attention_mask is not None and self.causal:
+            attention_mask = jnp.broadcast_to(
+                jnp.expand_dims(attention_mask, axis=(-3, -2)), causal_mask.shape
+            )
+            attention_mask = combine_masks(attention_mask, causal_mask)
+        elif self.causal:
+            attention_mask = causal_mask
+        elif attention_mask is not None:
+            attention_mask = jnp.expand_dims(attention_mask, axis=(-3, -2))
+
+        # During fast autoregressive decoding, we feed one position at a time,
+        # and cache the keys and values step by step.
+        if self.causal and (self.has_variable("cache", "cached_key") or init_cache):
+            key_states, value_states, attention_mask = self._concatenate_to_cache(
+                key_states, value_states, query_states, attention_mask
+            )
+
+        # Convert the boolean attention mask to an attention bias.
+        if attention_mask is not None:
+            # attention mask in the form of attention bias
+            attention_bias = lax.select(
+                attention_mask > 0,
+                jnp.full(attention_mask.shape, 0.0).astype(self.dtype),
+                jnp.full(attention_mask.shape, float("-inf")).astype(self.dtype),
+            )
+        else:
+            attention_bias = None
+
+        dropout_rng = None
+        if not deterministic and self.dropout > 0.0:
+            dropout_rng = self.make_rng("dropout")
+
+        attn_weights = dot_product_attention_weights(
+            query_states,
+            key_states,
+            bias=attention_bias,
+            dropout_rng=dropout_rng,
+            dropout_rate=self.dropout,
+            broadcast_dropout=True,
+            deterministic=deterministic,
+            dtype=self.dtype,
+            precision=None,
+        )
+
+        attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value_states)
+        # scale attention heads per NormFormer paper
+        # attn outputs has dim (bs, dim, self.num_heads, self.head_dim)
+        attn_output = attn_output * self.head_scale
+
+        attn_output = self._merge_heads(attn_output)
+        attn_output = self.out_proj(attn_output)
+
+        return attn_output, attn_weights
 
 
 class GLU(nn.Module):
