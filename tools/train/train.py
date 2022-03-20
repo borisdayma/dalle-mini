@@ -498,10 +498,12 @@ class TrainState(train_state.TrainState):
 
 
 class MetricsLogger:
-    def __init__(self, step):
+    def __init__(self, step, log_histogram_steps):
         self.step = step
         self.time = time.perf_counter()
         self.state_dict = {}
+        # histograms are not calculated all the time
+        self.log_histogram_steps = log_histogram_steps
 
     def update_state_metrics(self, state):
         """Update internal state metrics (logged at each call to be used as x-axis)"""
@@ -522,19 +524,20 @@ class MetricsLogger:
         if jax.process_index() == 0:
             log_metrics = {}
             for k, v in metrics.items():
-                if prefix is not None:
-                    k = f"{prefix}/{k}"
                 if "_norm" in k:
                     log_metrics[f"{k}/"] = unfreeze(v)
                 elif "_hist" in k:
-                    v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
-                    v = jax.tree_map(
-                        lambda x: wandb.Histogram(np_histogram=x),
-                        v,
-                        is_leaf=lambda x: isinstance(x, tuple),
-                    )
-                    log_metrics[f"{k}/"] = v
+                    if self.step % self.log_histogram_steps == 0:
+                        v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
+                        v = jax.tree_map(
+                            lambda x: wandb.Histogram(np_histogram=x),
+                            v,
+                            is_leaf=lambda x: isinstance(x, tuple),
+                        )
+                        log_metrics[f"{k}/"] = v
                 else:
+                    if prefix is not None:
+                        k = f"{prefix}/{k}"
                     log_metrics[k] = v
             wandb.log({**log_metrics, **self.state_dict})
 
@@ -1144,7 +1147,7 @@ def main():
     last_time = time.perf_counter()
     train_metrics = None
     step = int(state.step)
-    metrics_logger = MetricsLogger(step)
+    metrics_logger = MetricsLogger(step, training_args.log_histogram_steps)
     epochs = tqdm(
         range(state.epoch, num_epochs),
         desc=f"Epoch ... (1/{num_epochs})",
