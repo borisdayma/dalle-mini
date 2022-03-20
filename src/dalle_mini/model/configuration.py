@@ -52,7 +52,6 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         attention_dropout=0.0,
         activation_dropout=0.0,
         init_std=0.02,
-        classifier_dropout=0.0,
         scale_embedding=False,
         gradient_checkpointing=False,
         use_cache=True,
@@ -81,7 +80,6 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.init_std = init_std
         self.encoder_layerdrop = encoder_layerdrop
         self.decoder_layerdrop = decoder_layerdrop
-        self.classifier_dropout = classifier_dropout
         self.use_cache = use_cache
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = (
