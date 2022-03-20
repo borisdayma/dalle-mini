@@ -43,10 +43,13 @@ def _get_partition_rules():
         (("out_proj", "kernel"), P("mp", None)),
         # FFN
         ((r"Dense_0", "kernel"), P(None, "mp")),
-        ((r"Dense_1", "kernel"), P("mp", None)),
+        ((r"Dense_1", "kernel"), P(None, "mp")),
+        ((r"Dense_2", "kernel"), P("mp", None)),
         # layer norms
         (("(bias|scale)",), None),
         ((r"lm_head", "kernel"), P(None, "mp")),
+        # head scales
+        (("head_scale",), None),
     ]
 
 
