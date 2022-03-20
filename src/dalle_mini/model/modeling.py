@@ -218,7 +218,7 @@ class GLU(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     @nn.compact
-    def call(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
         x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
         w = nn.Dense(
             self.config.encoder_ffn_dim,
@@ -295,7 +295,7 @@ def createFlaxBartEncoderLayer(do_remat=False):
             hidden_states = residual + hidden_states
 
             residual = hidden_states
-            hidden_states = GLU(self.config, self.dtype)(
+            hidden_states = GLU(config=self.config, dtype=self.dtype)(
                 hidden_states, deterministic=deterministic
             )
             hidden_states = residual + hidden_states
@@ -410,7 +410,7 @@ def createFlaxBartDecoderLayer(do_remat=False):
 
             # Feed forward
             residual = hidden_states
-            hidden_states = GLU(self.config, self.dtype)(
+            hidden_states = GLU(config=self.config, dtype=self.dtype)(
                 hidden_states, deterministic=deterministic
             )
             hidden_states = residual + hidden_states
