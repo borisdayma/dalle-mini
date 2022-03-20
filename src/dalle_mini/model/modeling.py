@@ -136,10 +136,7 @@ class GLU(nn.Module):
             use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )(x)
-        x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
-        x = nn.Dropout(rate=self.config.activation_dropout)(
-            x, deterministic=deterministic
-        )
+        x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
         return x
 
 
@@ -155,7 +152,6 @@ def createFlaxBartEncoderLayer(do_remat=False):
         Edits:
         - no bias
         - use custom FlaxBartAttention
-        - use Sandwich-LN per Cogview
         """
 
         config: DalleBartConfig
@@ -234,7 +230,6 @@ def createFlaxBartDecoderLayer(do_remat=False):
         Edits:
         - no bias
         - use custom FlaxBartAttention
-        - use Sandwich-LN per Cogview
         """
 
         config: DalleBartConfig
