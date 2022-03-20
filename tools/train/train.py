@@ -405,10 +405,10 @@ class TrainingArguments:
         default=False,
         metadata={"help": "Log model to wandb at `save_steps` frequency."},
     )
-    log_histograms: bool = field(
+    log_histogram_steps: int = field(
         default=False,
         metadata={
-            "help": "Log parameters and gradients histograms. Slows down training."
+            "help": "Log parameters and gradients histograms at this frequency. Slows down training."
         },
     )
 
@@ -1055,10 +1055,10 @@ def main():
         # get norm and histogram of grads and params
         zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
 
-        def maybe_fn(fn, val, zeros):
+        def maybe_fn(fn, val, zeros, freq):
             """Call fn only if it is a logging step"""
             return jax.lax.cond(
-                state.step % training_args.logging_steps == 0,
+                state.step % freq == 0,
                 fn,
                 lambda _: zeros,
                 val,
@@ -1067,8 +1067,10 @@ def main():
         def norm(val):
             return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
 
-        gradients_norm = maybe_fn(norm, grads, zeros_norm)
-        params_norm = maybe_fn(norm, state.params, zeros_norm)
+        gradients_norm = maybe_fn(norm, grads, zeros_norm, training_args.logging_steps)
+        params_norm = maybe_fn(
+            norm, state.params, zeros_norm, training_args.logging_steps
+        )
 
         metrics = {
             "loss": loss,
@@ -1077,7 +1079,7 @@ def main():
             "params_norm": params_norm,
         }
 
-        if training_args.log_histograms:
+        if training_args.log_histogram_steps:
             zeros_hist = jax.tree_map(
                 lambda _: jnp.histogram(jnp.zeros(1), density=True), state.params
             )
@@ -1085,8 +1087,12 @@ def main():
             def histogram(val):
                 return jax.tree_map(lambda x: jnp.histogram(x, density=True), val)
 
-            gradients_hist = maybe_fn(histogram, grads, zeros_hist)
-            params_hist = maybe_fn(histogram, state.params, zeros_hist)
+            gradients_hist = maybe_fn(
+                histogram, grads, zeros_hist, training_args.log_histogram_steps
+            )
+            params_hist = maybe_fn(
+                histogram, state.params, zeros_hist, training_args.log_histogram_steps
+            )
 
             metrics.update(
                 {
