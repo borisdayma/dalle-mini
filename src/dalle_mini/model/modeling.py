@@ -216,6 +216,7 @@ class GLU(nn.Module):
 
     config: DalleBartConfig
     ffn_dim: int
+    embed_dim: int
     dtype: jnp.dtype = jnp.float32
 
     @nn.compact
@@ -241,7 +242,7 @@ class GLU(nn.Module):
         )
 
         x = nn.Dense(
-            self.config.embed_dim,
+            self.embed_dim,
             dtype=self.dtype,
             use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
@@ -299,6 +300,7 @@ def createFlaxBartEncoderLayer(do_remat=False):
             hidden_states = GLU(
                 config=self.config,
                 ffn_dim=self.config.encoder_ffn_dim,
+                embed_dim=embed_dim,
                 dtype=self.dtype,
             )(hidden_states, deterministic=deterministic)
             hidden_states = residual + hidden_states
@@ -416,6 +418,7 @@ def createFlaxBartDecoderLayer(do_remat=False):
             hidden_states = GLU(
                 config=self.config,
                 ffn_dim=self.config.decoder_ffn_dim,
+                embed_dim=embed_dim,
                 dtype=self.dtype,
             )(hidden_states, deterministic=deterministic)
             hidden_states = residual + hidden_states
