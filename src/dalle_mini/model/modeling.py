@@ -183,10 +183,10 @@ def createFlaxBartEncoderLayer(do_remat=False):
                 dtype=self.dtype,
             )(hidden_states=hidden_states, attention_mask=attention_mask)
 
+            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
             hidden_states = nn.Dropout(rate=self.config.dropout)(
                 hidden_states, deterministic=deterministic
             )
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
             hidden_states = residual + hidden_states
 
             residual = hidden_states
@@ -271,10 +271,10 @@ def createFlaxBartDecoderLayer(do_remat=False):
                 attention_mask=attention_mask,
                 init_cache=init_cache,
             )
+            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
             hidden_states = nn.Dropout(rate=self.config.dropout)(
                 hidden_states, deterministic=deterministic
             )
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
             hidden_states = residual + hidden_states
 
             # Cross Attention
@@ -296,11 +296,11 @@ def createFlaxBartDecoderLayer(do_remat=False):
                     key_value_states=encoder_hidden_states,
                     attention_mask=encoder_attention_mask,
                 )
-                hidden_states = nn.Dropout(rate=self.config.dropout)(
-                    hidden_states, deterministic=deterministic
-                )
                 hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
                     hidden_states
+                )
+                hidden_states = nn.Dropout(rate=self.config.dropout)(
+                    hidden_states, deterministic=deterministic
                 )
                 hidden_states = residual + hidden_states
 
