@@ -59,9 +59,25 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         forced_eos_token_id=None,
         tie_word_embeddings=False,  # different modalities and sizes
         do_sample=True,
+        # transformer variants
+        head_scale=False,
+        ln_positions="normformer",  # "normformer" (default) or "swinv2"
+        use_glu=True,  # "GLU Variants Improve Transformer"
         **kwargs,
     ):
+        # text normalizer
         self.normalize_text = normalize_text
+
+        # transformer variants
+        self.head_scale = head_scale  # per Normformer
+        assert ln_positions in [
+            "normformer",
+            "swinv2",
+        ], "ln_positions must be 'normformer' or 'swinv2'"
+        self.ln_positions = ln_positions
+        self.use_glu = use_glu
+
+        # common parameters
         self.encoder_vocab_size = encoder_vocab_size
         self.image_vocab_size = image_vocab_size
         self.image_length = image_length

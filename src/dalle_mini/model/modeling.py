@@ -45,6 +45,7 @@ from transformers.generation_flax_utils import FlaxSampleOutput
 from transformers.modeling_flax_outputs import (
     FlaxCausalLMOutputWithCrossAttentions,
     FlaxSeq2SeqLMOutput,
+    FlaxBaseModelOutputWithPastAndCrossAttentions,
 )
 from transformers.modeling_flax_utils import ACT2FN
 from transformers.models.bart.modeling_flax_bart import (
@@ -97,9 +98,10 @@ class FlaxBartAttention(FlaxBartAttention):
 
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-        self.head_scale = self.param(
-            "head_scale", jax.nn.initializers.ones, (1, 1, self.num_heads, 1)
-        )
+        if self.config.head_scale:
+            self.head_scale = self.param(
+                "head_scale", jax.nn.initializers.ones, (1, 1, self.num_heads, 1)
+            )
 
         if self.causal:
             # used only in decoder
@@ -201,10 +203,9 @@ class FlaxBartAttention(FlaxBartAttention):
         )
 
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value_states)
-        # scale attention heads per NormFormer paper
-        # attn outputs has dim (bs, dim, self.num_heads, self.head_dim)
-        attn_output = attn_output * self.head_scale
-
+        if self.config.head_scale:
+            # per Normformer
+            attn_output = attn_output * self.head_scale
         attn_output = self._merge_heads(attn_output)
         attn_output = self.out_proj(attn_output)
 
@@ -221,7 +222,8 @@ class GLU(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
-        x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+        if self.config.ln_positions in ["normformer"]:
+            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
         w = nn.Dense(
             self.ffn_dim,
             dtype=self.dtype,
@@ -236,7 +238,8 @@ class GLU(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )(x)
         x = w * v
-        x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+        if self.config.ln_positions in ["normformer"]:
+            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
         x = nn.Dropout(rate=self.config.activation_dropout)(
             x, deterministic=deterministic
         )
@@ -247,6 +250,44 @@ class GLU(nn.Module):
             use_bias=False,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )(x)
+        if self.config.ln_positions in ["swinv2"]:
+            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+        x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
+        return x
+
+
+class FFN(nn.Module):
+    """Simple FFN layer"""
+
+    config: DalleBartConfig
+    ffn_dim: int
+    embed_dim: int
+    dtype: jnp.dtype = jnp.float32
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+        if self.config.ln_positions in ["normformer"]:
+            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+        x = nn.Dense(
+            self.ffn_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        x = ACT2FN[self.config.activation_function](x)
+        if self.config.ln_positions in ["normformer"]:
+            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+        x = nn.Dropout(rate=self.config.activation_dropout)(
+            x, deterministic=deterministic
+        )
+        x = nn.Dense(
+            self.embed_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        if self.config.ln_positions in ["swinv2"]:
+            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
         x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
         return x
 
@@ -280,7 +321,10 @@ def createFlaxBartEncoderLayer(do_remat=False):
 
             embed_dim = self.config.d_model
             residual = hidden_states
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            if self.config.ln_positions in ["normformer"]:
+                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
+                    hidden_states
+                )
             hidden_states, attn_weights = FlaxBartAttention(
                 config=self.config,
                 embed_dim=embed_dim,
@@ -290,19 +334,32 @@ def createFlaxBartEncoderLayer(do_remat=False):
                 dtype=self.dtype,
             )(hidden_states=hidden_states, attention_mask=attention_mask)
 
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            if self.config.ln_positions in ["normformer", "swinv2"]:
+                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
+                    hidden_states
+                )
             hidden_states = nn.Dropout(rate=self.config.dropout)(
                 hidden_states, deterministic=deterministic
             )
             hidden_states = residual + hidden_states
 
             residual = hidden_states
-            hidden_states = GLU(
-                config=self.config,
-                ffn_dim=self.config.encoder_ffn_dim,
-                embed_dim=embed_dim,
-                dtype=self.dtype,
-            )(hidden_states, deterministic=deterministic)
+            ff_block = (
+                GLU(
+                    config=self.config,
+                    ffn_dim=self.config.encoder_ffn_dim,
+                    embed_dim=embed_dim,
+                    dtype=self.dtype,
+                )
+                if self.config.use_glu
+                else FFN(
+                    config=self.config,
+                    ffn_dim=self.config.encoder_ffn_dim,
+                    embed_dim=embed_dim,
+                    dtype=self.dtype,
+                )
+            )
+            hidden_states = ff_block(hidden_states, deterministic=deterministic)
             hidden_states = residual + hidden_states
 
             outputs = (hidden_states,)
@@ -366,7 +423,10 @@ def createFlaxBartDecoderLayer(do_remat=False):
             residual = hidden_states
 
             # Self Attention
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+            if self.config.ln_positions in ["normformer"]:
+                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
+                    hidden_states
+                )
             hidden_states, attn_weights = FlaxBartAttention(
                 config=self.config,
                 embed_dim=embed_dim,
@@ -380,7 +440,11 @@ def createFlaxBartDecoderLayer(do_remat=False):
                 attention_mask=attention_mask,
                 init_cache=init_cache,
             )
-            hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(hidden_states)
+
+            if self.config.ln_positions in ["normformer", "swinv2"]:
+                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
+                    hidden_states
+                )
             hidden_states = nn.Dropout(rate=self.config.dropout)(
                 hidden_states, deterministic=deterministic
             )
@@ -390,9 +454,10 @@ def createFlaxBartDecoderLayer(do_remat=False):
             cross_attn_weights = None
             if encoder_hidden_states is not None:
                 residual = hidden_states
-                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
-                    hidden_states
-                )
+                if self.config.ln_positions in ["normformer"]:
+                    hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
+                        hidden_states
+                    )
                 hidden_states, cross_attn_weights = FlaxBartAttention(
                     config=self.config,
                     embed_dim=embed_dim,
@@ -405,9 +470,10 @@ def createFlaxBartDecoderLayer(do_remat=False):
                     key_value_states=encoder_hidden_states,
                     attention_mask=encoder_attention_mask,
                 )
-                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
-                    hidden_states
-                )
+                if self.config.ln_positions in ["normformer", "swinv2"]:
+                    hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
+                        hidden_states
+                    )
                 hidden_states = nn.Dropout(rate=self.config.dropout)(
                     hidden_states, deterministic=deterministic
                 )
@@ -415,12 +481,22 @@ def createFlaxBartDecoderLayer(do_remat=False):
 
             # Feed forward
             residual = hidden_states
-            hidden_states = GLU(
-                config=self.config,
-                ffn_dim=self.config.decoder_ffn_dim,
-                embed_dim=embed_dim,
-                dtype=self.dtype,
-            )(hidden_states, deterministic=deterministic)
+            ff_block = (
+                GLU(
+                    config=self.config,
+                    ffn_dim=self.config.decoder_ffn_dim,
+                    embed_dim=embed_dim,
+                    dtype=self.dtype,
+                )
+                if self.config.use_glu
+                else FFN(
+                    config=self.config,
+                    ffn_dim=self.config.decoder_ffn_dim,
+                    embed_dim=embed_dim,
+                    dtype=self.dtype,
+                )
+            )
+            hidden_states = ff_block(hidden_states, deterministic=deterministic)
             hidden_states = residual + hidden_states
 
             outputs = (hidden_states,)
@@ -433,7 +509,9 @@ def createFlaxBartDecoderLayer(do_remat=False):
     return FlaxBartDecoderLayer
 
 
-class FlaxBartDecoderLayerCollection(FlaxBartDecoderLayerCollection):
+class FlaxBartDecoderLayerCollection(nn.Module):
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32  # the dtype of the computation
     """
     Edits:
     - use custom FlaxBartDecoderLayer
@@ -447,7 +525,72 @@ class FlaxBartDecoderLayerCollection(FlaxBartDecoderLayerCollection):
             )
             for i in range(self.config.decoder_layers)
         ]
-        self.layerdrop = self.config.decoder_layerdrop
+        self.final_layernorm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+
+    def __call__(
+        self,
+        hidden_states,
+        attention_mask,
+        encoder_hidden_states: Optional[jnp.ndarray] = None,
+        encoder_attention_mask: Optional[jnp.ndarray] = None,
+        deterministic: bool = True,
+        init_cache: bool = False,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ):
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        all_cross_attentions = (
+            () if (output_attentions and encoder_hidden_states is not None) else None
+        )
+
+        n_layers = len(self.layers)
+        for i, decoder_layer in enumerate(self.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = decoder_layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
+                init_cache=init_cache,
+                output_attentions=output_attentions,
+                deterministic=deterministic,
+            )
+
+            hidden_states = layer_outputs[0]
+            # final layernorm on the output of the last layer
+            if i == n_layers - 1:
+                if self.config.ln_positions in ["normformer", "swinv2"]:
+                    hidden_states = self.final_layernorm(hidden_states)
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+                if encoder_hidden_states is not None:
+                    all_cross_attentions += (layer_outputs[2],)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        outputs = [
+            hidden_states,
+            all_hidden_states,
+            all_self_attns,
+            all_cross_attentions,
+        ]
+
+        if not return_dict:
+            return tuple(v for v in outputs if v is not None)
+
+        return FlaxBaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=hidden_states,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+            cross_attentions=all_cross_attentions,
+        )
 
 
 class FlaxBartEncoder(FlaxBartEncoder):
