@@ -725,11 +725,13 @@ class FlaxBartDecoderLayerCollection(nn.Module):
                 ((i + 1) % 6 == 0) and (self.config.ln_positions == "swinv2")
             ):
                 if self.config.ln_positions in ["normformer", "swinv2"]:
+                    # scale not needed at last layer due to dense layers
+                    use_scale = i != n_layers - 1
                     hidden_states = norm(
                         self.config.ln_type,
                         dtype=self.dtype,
                         epsilon=1e-05,
-                        use_scale=False,
+                        use_scale=use_scale,
                     )(hidden_states)
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
