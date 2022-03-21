@@ -188,7 +188,7 @@ GLU blocks from:
 }
 ```
 
-Architecture improvements from:
+NormFormer architecture:
 
 ```text
 @misc{shleifer2021normformer,
@@ -198,5 +198,29 @@ Architecture improvements from:
       eprint={2110.09456},
       archivePrefix={arXiv},
       primaryClass={cs.CL}
+}
+```
+
+Swin Transformer v2:
+
+```text
+@inproceedings{liu2021swinv2,
+               title={Swin Transformer V2: Scaling Up Capacity and Resolution}, 
+               author={Ze Liu and Han Hu and Yutong Lin and Zhuliang Yao and Zhenda Xie and Yixuan Wei and Jia Ning and Yue Cao and Zheng Zhang and Li Dong and Furu Wei and Baining Guo},
+               booktitle={International Conference on Computer Vision and Pattern Recognition (CVPR)},
+               year={2022}
+}
+```
+
+Root Mean Square Layer Normalization:
+
+```text
+@misc{zhang2019root,
+      title = {Root Mean Square Layer Normalization},
+      author = {Biao Zhang and Rico Sennrich},
+      year = {2019},
+      eprint = {1910.07467},
+      archivePrefix = {arXiv},
+      primaryClass = {cs.LG}
 }
 ```
