@@ -63,10 +63,92 @@ from transformers.utils import logging
 from .configuration import DalleBartConfig
 from .utils import PretrainedFromWandbMixin
 
+
 logger = logging.get_logger(__name__)
 
 
 id_fn = lambda x: x
+
+
+class RMSNorm(nn.Module):
+    """
+    From "Root Mean Square Layer Normalization" by https://arxiv.org/abs/1910.07467
+
+    Adapted from flax.linen.LayerNorm
+    """
+
+    epsilon: float = 1e-6
+    dtype = jnp.float32
+    param_dtype = jnp.float32
+    use_scale = True
+    scale_init = jax.nn.initializers.ones
+
+    @nn.compact
+    def __call__(self, x):
+        reduction_axes = (-1,)
+        feature_axes = (-1,)
+
+        rms_sq = self._compute_rms(x, reduction_axes)
+
+        return self._normalize(
+            self,
+            x,
+            rms_sq,
+            reduction_axes,
+            feature_axes,
+            self.dtype,
+            self.param_dtype,
+            self.epsilon,
+            self.use_scale,
+            self.scale_init,
+        )
+
+    def _compute_rms_sq(self, x, axes):
+        x = jnp.asarray(x, jnp.promote_types(jnp.float32, jnp.result_type(x)))
+        rms_sq = jnp.mean(jax.lax.square(x), axes)
+        return rms_sq
+
+    def _normalize(
+        self,
+        mdl,
+        x,
+        rms_sq,
+        reduction_axes,
+        feature_axes,
+        dtype,
+        param_dtype,
+        epsilon,
+        use_scale,
+        scale_init,
+    ):
+        reduction_axes = nn.normalization._canonicalize_axes(x.ndim, reduction_axes)
+        feature_axes = nn.normalization._canonicalize_axes(x.ndim, feature_axes)
+        stats_shape = list(x.shape)
+        for axis in reduction_axes:
+            stats_shape[axis] = 1
+        rms_sq = rms_sq.reshape(stats_shape)
+        feature_shape = [1] * x.ndim
+        reduced_feature_shape = []
+        for ax in feature_axes:
+            feature_shape[ax] = x.shape[ax]
+            reduced_feature_shape.append(x.shape[ax])
+        mul = lax.rsqrt(rms_sq + epsilon)
+        if use_scale:
+            scale = mdl.param(
+                "scale", scale_init, reduced_feature_shape, param_dtype
+            ).reshape(feature_shape)
+            mul *= scale
+        y = mul * x
+        return jnp.asarray(y, dtype)
+
+
+def norm(type, *args, **kwargs):
+    if type == "rmsnorm":
+        return RMSNorm(*args, **kwargs)
+    elif type == "layernorm":
+        return nn.LayerNorm(*args, **kwargs)
+    else:
+        raise ValueError(f"Unknown norm type {type}")
 
 
 class FlaxBartAttention(FlaxBartAttention):
@@ -238,7 +320,9 @@ class GLU(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
         if self.config.ln_positions in ["normformer"]:
-            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+            x = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+            )(x)
         w = nn.Dense(
             self.ffn_dim,
             dtype=self.dtype,
@@ -254,7 +338,9 @@ class GLU(nn.Module):
         )(x)
         x = w * v
         if self.config.ln_positions in ["normformer"]:
-            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+            x = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+            )(x)
         x = nn.Dropout(rate=self.config.activation_dropout)(
             x, deterministic=deterministic
         )
@@ -266,7 +352,7 @@ class GLU(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )(x)
         if self.config.ln_positions in ["swinv2"]:
-            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+            x = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(x)
         x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
         return x
 
@@ -282,7 +368,9 @@ class FFN(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
         if self.config.ln_positions in ["normformer"]:
-            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+            x = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+            )(x)
         x = nn.Dense(
             self.ffn_dim,
             dtype=self.dtype,
@@ -291,7 +379,9 @@ class FFN(nn.Module):
         )(x)
         x = ACT2FN[self.config.activation_function](x)
         if self.config.ln_positions in ["normformer"]:
-            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+            x = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+            )(x)
         x = nn.Dropout(rate=self.config.activation_dropout)(
             x, deterministic=deterministic
         )
@@ -302,7 +392,7 @@ class FFN(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )(x)
         if self.config.ln_positions in ["swinv2"]:
-            x = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(x)
+            x = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(x)
         x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
         return x
 
@@ -337,9 +427,9 @@ def createFlaxBartEncoderLayer(do_remat=False):
             embed_dim = self.config.d_model
             residual = hidden_states
             if self.config.ln_positions in ["normformer"]:
-                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
-                    hidden_states
-                )
+                hidden_states = norm(
+                    self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+                )(hidden_states)
             hidden_states, attn_weights = FlaxBartAttention(
                 config=self.config,
                 embed_dim=embed_dim,
@@ -350,9 +440,9 @@ def createFlaxBartEncoderLayer(do_remat=False):
             )(hidden_states=hidden_states, attention_mask=attention_mask)
 
             if self.config.ln_positions in ["normformer", "swinv2"]:
-                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
-                    hidden_states
-                )
+                hidden_states = norm(
+                    self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+                )(hidden_states)
             hidden_states = nn.Dropout(rate=self.config.dropout)(
                 hidden_states, deterministic=deterministic
             )
@@ -422,9 +512,12 @@ def createFlaxBartDecoderLayer(do_remat=False):
 
             # Self Attention
             if self.config.ln_positions in ["normformer"]:
-                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
-                    hidden_states
-                )
+                hidden_states = norm(
+                    self.config.ln_type,
+                    dtype=self.dtype,
+                    epsilon=1e-05,
+                    use_scale=False,
+                )(hidden_states)
             hidden_states, attn_weights = FlaxBartAttention(
                 config=self.config,
                 embed_dim=embed_dim,
@@ -440,9 +533,9 @@ def createFlaxBartDecoderLayer(do_remat=False):
             )
 
             if self.config.ln_positions in ["normformer", "swinv2"]:
-                hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
-                    hidden_states
-                )
+                hidden_states = norm(
+                    self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+                )(hidden_states)
             hidden_states = nn.Dropout(rate=self.config.dropout)(
                 hidden_states, deterministic=deterministic
             )
@@ -453,9 +546,12 @@ def createFlaxBartDecoderLayer(do_remat=False):
             if encoder_hidden_states is not None:
                 residual = hidden_states
                 if self.config.ln_positions in ["normformer"]:
-                    hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
-                        hidden_states
-                    )
+                    hidden_states = norm(
+                        self.config.ln_type,
+                        dtype=self.dtype,
+                        epsilon=1e-05,
+                        use_scale=False,
+                    )(hidden_states)
                 hidden_states, cross_attn_weights = FlaxBartAttention(
                     config=self.config,
                     embed_dim=embed_dim,
@@ -469,9 +565,9 @@ def createFlaxBartDecoderLayer(do_remat=False):
                     attention_mask=encoder_attention_mask,
                 )
                 if self.config.ln_positions in ["normformer", "swinv2"]:
-                    hidden_states = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)(
-                        hidden_states
-                    )
+                    hidden_states = norm(
+                        self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+                    )(hidden_states)
                 hidden_states = nn.Dropout(rate=self.config.dropout)(
                     hidden_states, deterministic=deterministic
                 )
@@ -523,7 +619,9 @@ class FlaxBartEncoderLayerCollection(nn.Module):
             )
             for i in range(self.config.encoder_layers)
         ]
-        self.final_layernorm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+        self.final_layernorm = norm(
+            self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+        )
 
     def __call__(
         self,
@@ -592,7 +690,9 @@ class FlaxBartDecoderLayerCollection(nn.Module):
             )
             for i in range(self.config.decoder_layers)
         ]
-        self.final_layernorm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+        self.final_layernorm = norm(
+            self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+        )
 
     def __call__(
         self,
@@ -685,7 +785,9 @@ class FlaxBartEncoder(FlaxBartEncoder):
             embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.layers = FlaxBartEncoderLayerCollection(self.config, self.dtype)
-        self.layernorm_embedding = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+        self.layernorm_embedding = norm(
+            self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+        )
 
 
 class FlaxBartDecoder(FlaxBartDecoder):
@@ -716,7 +818,9 @@ class FlaxBartDecoder(FlaxBartDecoder):
         )
 
         self.layers = FlaxBartDecoderLayerCollection(self.config, self.dtype)
-        self.layernorm_embedding = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+        self.layernorm_embedding = norm(
+            self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+        )
 
 
 class FlaxBartModule(FlaxBartModule):

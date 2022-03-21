@@ -59,7 +59,8 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         do_sample=True,
         # transformer variants
         head_scale=False,
-        ln_positions="swinv2",  # "normformer" (default) or "swinv2"
+        ln_type="rmsnorm",  # layer normalization type, "rmsnorm" or "layernorm"
+        ln_positions="swinv2",  # layer normalization positions, "normformer" (default) or "swinv2"
         use_cosine_attention=True,
         use_glu=True,  # "GLU Variants Improve Transformer"
         **kwargs,
@@ -69,6 +70,11 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
 
         # transformer variants
         self.head_scale = head_scale  # per Normformer
+        assert ln_type in [
+            "rmsnorm",
+            "layernorm",
+        ], "ln_type must be 'rmsnorm' or 'layernorm'"
+        self.ln_type = ln_type
         assert ln_positions in [
             "normformer",
             "swinv2",
