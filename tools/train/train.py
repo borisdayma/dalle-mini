@@ -1119,9 +1119,8 @@ def main():
             new_time = time.perf_counter()
             if new_step > self.step:
                 # remove time for eval & save
-                new_time -= self.offset_time
+                delta_time = new_time - self.time - self.offset_time
                 self.offset_time = 0
-                delta_time = new_time - self.time
                 time_per_step = delta_time / (new_step - self.step)
                 self.step = new_step
                 self.time = new_time
