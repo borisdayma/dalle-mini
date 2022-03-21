@@ -58,10 +58,10 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         tie_word_embeddings=False,  # different modalities and sizes
         do_sample=True,
         # transformer variants
-        head_scale=False,
+        head_scale=True,  # used in NormFormer
         ln_type="layernorm",  # layer normalization type, "rmsnorm" or "layernorm"
-        ln_positions="swinv2",  # layer normalization positions, "normformer" (default) or "swinv2"
-        use_cosine_attention=True,
+        ln_positions="normformer",  # layer normalization positions, "normformer" (default) or "swinv2"
+        use_cosine_attention=False,  # used in Swin v2
         use_glu=True,  # "GLU Variants Improve Transformer"
         **kwargs,
     ):
