@@ -63,7 +63,6 @@ from transformers.utils import logging
 from .configuration import DalleBartConfig
 from .utils import PretrainedFromWandbMixin
 
-
 logger = logging.get_logger(__name__)
 
 
