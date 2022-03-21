@@ -48,8 +48,8 @@ def _get_partition_rules():
         # layer norms
         (("(bias|scale)",), None),
         ((r"lm_head", "kernel"), P(None, "mp")),
-        # head scales
-        (("head_scale",), None),
+        # head scale and tau
+        (("(head_scale|tau)",), None),
     ]
 
 
