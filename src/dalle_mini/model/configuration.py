@@ -62,6 +62,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         # transformer variants
         head_scale=False,
         ln_positions="normformer",  # "normformer" (default) or "swinv2"
+        use_cosine_attention=False,
         use_glu=True,  # "GLU Variants Improve Transformer"
         **kwargs,
     ):
@@ -75,6 +76,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
             "swinv2",
         ], "ln_positions must be 'normformer' or 'swinv2'"
         self.ln_positions = ln_positions
+        self.use_cosine_attention = use_cosine_attention
         self.use_glu = use_glu
 
         # common parameters

@@ -100,6 +100,14 @@ class FlaxBartAttention(FlaxBartAttention):
                 "head_scale", jax.nn.initializers.ones, (1, 1, self.num_heads, 1)
             )
 
+        if self.config.use_cosine_attention:
+            self.tau = self.param(
+                "tau",
+                jax.nn.initializers.ones,
+                (1, 1, self.num_heads, 1),
+                dtype=jnp.float32,
+            )
+
         if self.causal:
             # used only in decoder
             self.causal_mask = make_causal_mask(
@@ -187,6 +195,14 @@ class FlaxBartAttention(FlaxBartAttention):
         if not deterministic and self.dropout > 0.0:
             dropout_rng = self.make_rng("dropout")
 
+        if self.config.use_cosine_attention:
+            # normalize q and k
+            query_states = query_states / (
+                jnp.linalg.norm(query_states, axis=-1, keepdims=True) + 1e-8
+            )
+            key_states = key_states / (
+                jnp.linalg.norm(key_states, axis=-1, keepdims=True) + 1e-8
+            )
         attn_weights = dot_product_attention_weights(
             query_states,
             key_states,
@@ -198,6 +214,9 @@ class FlaxBartAttention(FlaxBartAttention):
             dtype=self.dtype,
             precision=None,
         )
+        if self.config.use_cosine_attention:
+            # divide by tau
+            attn_weights = attn_weights / (self.tau + 0.01)
 
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value_states)
         if self.config.head_scale:
