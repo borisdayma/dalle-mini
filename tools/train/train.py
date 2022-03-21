@@ -497,51 +497,6 @@ class TrainState(train_state.TrainState):
     train_samples: int = 0  # number of samples seen
 
 
-class MetricsLogger:
-    def __init__(self, step, log_histogram_steps):
-        self.step = step
-        self.time = time.perf_counter()
-        self.state_dict = {}
-        # histograms are not calculated all the time
-        self.log_histogram_steps = log_histogram_steps
-
-    def update_state_metrics(self, state):
-        """Update internal state metrics (logged at each call to be used as x-axis)"""
-        self.state_dict = {
-            f'train/{k.split("_")[-1]}': getattr(state, k)
-            for k in ["step", "epoch", "train_time", "train_samples"]
-        }
-        # timing metrics
-        new_step = int(state.step)
-        new_time = time.perf_counter()
-        if new_step > self.step:
-            time_per_step = (new_time - self.time) / (new_step - self.step)
-            self.step = new_step
-            self.time = new_time
-            self.state_dict["train/time_per_step"] = time_per_step
-
-    def log(self, metrics, prefix=None):
-        if jax.process_index() == 0:
-            log_metrics = {}
-            for k, v in metrics.items():
-                if "_norm" in k:
-                    log_metrics[f"{k}/"] = unfreeze(v)
-                elif "_hist" in k:
-                    if self.step % self.log_histogram_steps == 0:
-                        v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
-                        v = jax.tree_map(
-                            lambda x: wandb.Histogram(np_histogram=x),
-                            v,
-                            is_leaf=lambda x: isinstance(x, tuple),
-                        )
-                        log_metrics[f"{k}/"] = v
-                else:
-                    if prefix is not None:
-                        k = f"{prefix}/{k}"
-                    log_metrics[k] = v
-            wandb.log({**log_metrics, **self.state_dict})
-
-
 def main():
     # See all possible arguments by passing the --help flag to this script.
     parser = HfArgumentParser(
@@ -962,7 +917,7 @@ def main():
         )
 
     # Define gradient update step fn
-    def train_step(state, batch, delta_time):
+    def train_step(state, batch, train_time):
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
@@ -1051,7 +1006,7 @@ def main():
         state = state.apply_gradients(
             grads=grads,
             dropout_rng=dropout_rng,
-            train_time=state.train_time + delta_time,
+            train_time=train_time,
             train_samples=state.train_samples + batch_size_per_step,
         )
 
@@ -1143,13 +1098,72 @@ def main():
         out_axis_resources=None,
     )
 
+    # define metrics logger
+    class MetricsLogger:
+        def __init__(self, step):
+            # keep state
+            self.state_dict = {}
+            # estimate speed
+            self.step = step
+            self.time = time.perf_counter()
+            self.offset_time = 0.0
+
+        def update_state_metrics(self, state):
+            """Update internal state metrics (logged at each call to be used as x-axis)"""
+            self.state_dict = {
+                f'train/{k.split("_")[-1]}': state[k]
+                for k in ["step", "epoch", "train_time", "train_samples"]
+            }
+            # timing metrics
+            new_step = int(state["step"])
+            new_time = time.perf_counter()
+            if new_step > self.step:
+                # remove time for eval & save
+                new_time -= self.offset_time
+                self.offset_time = 0
+                delta_time = new_time - self.time
+                time_per_step = delta_time / (new_step - self.step)
+                self.step = new_step
+                self.time = new_time
+                self.log_time("train_per_step", time_per_step)
+                self.log_time("train_per_log", delta_time)
+
+        def log_time(self, key, duration):
+            wandb.log({f"time/{key}": duration, **self.state_dict})
+            self.offset_time += duration
+
+        def log(self, metrics, prefix=None):
+            if jax.process_index() == 0:
+                log_metrics = {}
+                for k, v in metrics.items():
+                    if "_norm" in k:
+                        log_metrics[f"{k}/"] = unfreeze(v)
+                    elif "_hist" in k:
+                        if self.step % training_args.log_histogram_steps == 0:
+                            v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
+                            v = jax.tree_map(
+                                lambda x: wandb.Histogram(np_histogram=x),
+                                v,
+                                is_leaf=lambda x: isinstance(x, tuple),
+                            )
+                            log_metrics[f"{k}/"] = v
+                    else:
+                        if prefix is not None:
+                            k = f"{prefix}/{k}"
+                        log_metrics[k] = v
+                wandb.log({**log_metrics, **self.state_dict})
+
+    # keep local copy of state
+    local_state = {
+        k: jax.device_get(getattr(state, k)).item()
+        for k in ["step", "epoch", "train_time", "train_samples"]
+    }
     # init variables
-    last_time = time.perf_counter()
+    start_time = time.perf_counter() + local_state["train_time"]
     train_metrics = None
-    step = int(state.step)
-    metrics_logger = MetricsLogger(step, training_args.log_histogram_steps)
+    metrics_logger = MetricsLogger(local_state["step"])
     epochs = tqdm(
-        range(state.epoch, num_epochs),
+        range(local_state["epoch"], num_epochs),
         desc=f"Epoch ... (1/{num_epochs})",
         position=0,
         disable=jax.process_index() > 0,
@@ -1158,6 +1172,7 @@ def main():
     def run_evaluation():
         # ======================== Evaluating ==============================
         if training_args.do_eval:
+            start_eval_time = time.perf_counter()
             eval_loader = dataset.dataloader("eval", eval_batch_size_per_step)
             eval_steps = (
                 len_eval_dataset // eval_batch_size_per_step
@@ -1204,6 +1219,7 @@ def main():
 
             # log metrics
             metrics_logger.log(eval_metrics, prefix="eval")
+            metrics_logger.log_time("eval", time.perf_counter() - start_eval_time)
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -1215,6 +1231,7 @@ def main():
     def run_save_model(state, eval_metrics=None):
         if jax.process_index() == 0:
 
+            start_save_time = time.perf_counter()
             output_dir = training_args.output_dir
             use_bucket = output_dir.startswith("gs://")
             if use_bucket:
@@ -1307,13 +1324,15 @@ def main():
                         f"{Path(training_args.output_dir) / 'opt_state.msgpack'}"
                     )
                 wandb.run.log_artifact(artifact_state)
+            metrics_logger.log_time("save_model", time.perf_counter() - start_save_time)
 
     logger.info("  Ready to start training")
     with mesh:
         for epoch in epochs:
             state.replace(epoch=epoch)
+            local_state["epoch"] = epoch
             # ======================== Training ================================
-            metrics_logger.update_state_metrics(state)
+            metrics_logger.update_state_metrics(local_state)
             metrics_logger.log({})
 
             # Generate an epoch by shuffling sampling indices from the train dataset
@@ -1332,9 +1351,7 @@ def main():
                 disable=jax.process_index() > 0,
             ):
                 # calculate delta time (we have a lag of one step but it's ok)
-                new_time = time.perf_counter()
-                delta_time = new_time - last_time
-                last_time = new_time
+                train_time = time.perf_counter() - start_time
 
                 # set correct shape to batch
                 # - add grad_step dim if gradient_accumulation_steps > 1
@@ -1362,18 +1379,23 @@ def main():
                 batch = freeze(batch)
 
                 # train step
-                state, train_metrics = p_train_step(state, batch, delta_time)
-                step += 1
+                state, train_metrics = p_train_step(state, batch, train_time)
+                local_state["step"] += 1
+                local_state["train_time"] = train_time
+                local_state["train_samples"] += batch_size_per_step
 
-                if step % training_args.logging_steps == 0 and jax.process_index() == 0:
-                    metrics_logger.update_state_metrics(state)
+                if (
+                    local_state["step"] % training_args.logging_steps == 0
+                    and jax.process_index() == 0
+                ):
+                    metrics_logger.update_state_metrics(local_state)
                     metrics_logger.log(train_metrics, prefix="train")
 
                 eval_metrics = None
-                if step % training_args.eval_steps == 0:
+                if local_state["step"] % training_args.eval_steps == 0:
                     eval_metrics = run_evaluation()
 
-                if step % training_args.save_steps == 0:
+                if local_state["step"] % training_args.save_steps == 0:
                     run_save_model(state, eval_metrics)
 
             # log final train metrics
