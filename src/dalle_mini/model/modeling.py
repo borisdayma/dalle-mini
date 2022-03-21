@@ -612,17 +612,7 @@ class FlaxBartEncoderLayerCollection(nn.Module):
     - allow Gradient Checkpointing (nn.remat)
     """
 
-    def setup(self):
-        self.layers = [
-            createFlaxBartEncoderLayer(self.config.gradient_checkpointing)(
-                self.config, name=str(i), dtype=self.dtype
-            )
-            for i in range(self.config.encoder_layers)
-        ]
-        self.final_layernorm = norm(
-            self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
-        )
-
+    @nn.compact
     def __call__(
         self,
         hidden_states,
@@ -635,10 +625,13 @@ class FlaxBartEncoderLayerCollection(nn.Module):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
-        n_layers = len(self.layers)
-        for i, encoder_layer in enumerate(self.layers):
+        n_layers = self.config.encoder_layers
+        for i in range(n_layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
+            encoder_layer = createFlaxBartEncoderLayer(
+                self.config.gradient_checkpointing
+            )(self.config, dtype=self.dtype)
             layer_outputs = encoder_layer(
                 hidden_states,
                 attention_mask=attention_mask,
@@ -648,9 +641,16 @@ class FlaxBartEncoderLayerCollection(nn.Module):
 
             hidden_states = layer_outputs[0]
             # final layernorm on the output of the last layer
-            if i == n_layers - 1:
+            if (i == n_layers - 1) or (
+                ((i + 1) % 6 == 0) and (self.config.ln_positions == "swinv2")
+            ):
                 if self.config.ln_positions in ["normformer", "swinv2"]:
-                    hidden_states = self.final_layernorm(hidden_states)
+                    hidden_states = norm(
+                        self.config.ln_type,
+                        dtype=self.dtype,
+                        epsilon=1e-05,
+                        use_scale=False,
+                    )(hidden_states)
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
@@ -683,17 +683,7 @@ class FlaxBartDecoderLayerCollection(nn.Module):
     - allow Gradient Checkpointing (nn.remat)
     """
 
-    def setup(self):
-        self.layers = [
-            createFlaxBartDecoderLayer(self.config.gradient_checkpointing)(
-                self.config, name=str(i), dtype=self.dtype
-            )
-            for i in range(self.config.decoder_layers)
-        ]
-        self.final_layernorm = norm(
-            self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
-        )
-
+    @nn.compact
     def __call__(
         self,
         hidden_states,
@@ -713,10 +703,13 @@ class FlaxBartDecoderLayerCollection(nn.Module):
             () if (output_attentions and encoder_hidden_states is not None) else None
         )
 
-        n_layers = len(self.layers)
-        for i, decoder_layer in enumerate(self.layers):
+        n_layers = self.config.decoder_layers
+        for i in range(n_layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
+            decoder_layer = createFlaxBartDecoderLayer(
+                self.config.gradient_checkpointing
+            )(self.config, dtype=self.dtype)
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=attention_mask,
@@ -729,9 +722,16 @@ class FlaxBartDecoderLayerCollection(nn.Module):
 
             hidden_states = layer_outputs[0]
             # final layernorm on the output of the last layer
-            if i == n_layers - 1:
+            if (i == n_layers - 1) or (
+                ((i + 1) % 6 == 0) and (self.config.ln_positions == "swinv2")
+            ):
                 if self.config.ln_positions in ["normformer", "swinv2"]:
-                    hidden_states = self.final_layernorm(hidden_states)
+                    hidden_states = norm(
+                        self.config.ln_type,
+                        dtype=self.dtype,
+                        epsilon=1e-05,
+                        use_scale=False,
+                    )(hidden_states)
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
