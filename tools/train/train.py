@@ -1124,12 +1124,13 @@ def main():
                 time_per_step = delta_time / (new_step - self.step)
                 self.step = new_step
                 self.time = new_time
-                self.log_time("train_per_step", time_per_step)
-                self.log_time("train_per_log", delta_time)
+                self.log_time("train_per_step", time_per_step, offset=False)
+                self.log_time("train_per_log", delta_time, offset=False)
 
-        def log_time(self, key, duration):
+        def log_time(self, key, duration, offset=True):
             wandb.log({f"time/{key}": duration, **self.state_dict})
-            self.offset_time += duration
+            if offset:
+                self.offset_time += duration
 
         def log(self, metrics, prefix=None):
             if jax.process_index() == 0:
