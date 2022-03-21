@@ -104,10 +104,7 @@ class FlaxBartAttention(FlaxBartAttention):
 
         if self.config.use_cosine_attention:
             self.tau = self.param(
-                "tau",
-                jax.nn.initializers.ones,
-                (1, 1, self.num_heads, 1),
-                dtype=jnp.float32,
+                "tau", jax.nn.initializers.ones, (1, self.num_heads, 1, 1)
             )
 
         if self.causal:
