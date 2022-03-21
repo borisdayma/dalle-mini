@@ -44,8 +44,6 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         decoder_layers=12,
         decoder_ffn_dim=4096,
         decoder_attention_heads=16,
-        encoder_layerdrop=0.0,
-        decoder_layerdrop=0.0,
         activation_function="gelu",
         d_model=1024,
         dropout=0.1,
@@ -61,8 +59,8 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         do_sample=True,
         # transformer variants
         head_scale=False,
-        ln_positions="normformer",  # "normformer" (default) or "swinv2"
-        use_cosine_attention=False,
+        ln_positions="swinv2",  # "normformer" (default) or "swinv2"
+        use_cosine_attention=True,
         use_glu=True,  # "GLU Variants Improve Transformer"
         **kwargs,
     ):
@@ -96,8 +94,6 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.activation_dropout = activation_dropout
         self.activation_function = activation_function
         self.init_std = init_std
-        self.encoder_layerdrop = encoder_layerdrop
-        self.decoder_layerdrop = decoder_layerdrop
         self.use_cache = use_cache
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = (
