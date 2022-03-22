@@ -69,6 +69,31 @@ logger = logging.get_logger(__name__)
 remat = nn_partitioning.remat
 
 
+# deepnet initialization
+def deepnet_init(gain=1):
+    init = jax.nn.initializers.glorot_normal
+
+    def _init(*args, **kwargs):
+        return gain * init(*args, **kwargs)
+
+    return _init
+
+
+# deepnet gain
+deepnet_gain = {
+    "encoder": {
+        "alpha": lambda config: 0.81
+        * (config.encoder_layers**4 * config.decoder_layers) ** 0.0625,
+        "beta": lambda config: 0.87
+        * (config.encoder_layers**4 * config.decoder_layers) ** -0.0625,
+    },
+    "decoder": {
+        "alpha": lambda config: (3 * config.decoder_layers) ** 0.25,
+        "beta": lambda config: (12 * config.decoder_layers) ** -0.25,
+    },
+}
+
+
 class RMSNorm(nn.Module):
     """
     From "Root Mean Square Layer Normalization" by https://arxiv.org/abs/1910.07467
@@ -157,6 +182,8 @@ class FlaxBartAttention(FlaxBartAttention):
     - scale attention heads per NormFormer paper
     """
 
+    is_encoder: bool = False
+
     def setup(self) -> None:
         self.head_dim = self.embed_dim // self.num_heads
         if self.head_dim * self.num_heads != self.embed_dim:
@@ -170,12 +197,32 @@ class FlaxBartAttention(FlaxBartAttention):
             self.embed_dim,
             use_bias=self.bias,
             dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
 
-        self.q_proj, self.k_proj, self.v_proj = dense(), dense(), dense()
-        self.out_proj = dense()
+        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+            self.config
+        )
 
+        self.q_proj = dense(
+            kernel_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std)
+        )
+        self.k_proj = dense(
+            kernel_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std)
+        )
+        self.v_proj = dense(
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std)
+        )
+        self.out_proj = dense(
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std)
+        )
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
         if self.config.head_scale:
@@ -317,9 +364,15 @@ class GLU(nn.Module):
     ffn_dim: int
     embed_dim: int
     dtype: jnp.dtype = jnp.float32
+    is_encoder: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+
+        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+            self.config
+        )
+
         if self.config.ln_positions in ["normformer"]:
             x = norm(
                 self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
@@ -328,14 +381,18 @@ class GLU(nn.Module):
             self.ffn_dim,
             dtype=self.dtype,
             use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         w = ACT2FN[self.config.activation_function](w)
         v = nn.Dense(
             self.ffn_dim,
             dtype=self.dtype,
             use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         x = w * v
         if self.config.ln_positions in ["normformer"]:
@@ -350,7 +407,9 @@ class GLU(nn.Module):
             self.embed_dim,
             dtype=self.dtype,
             use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         if self.config.ln_positions in ["swinv2"]:
             x = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(x)
@@ -365,9 +424,14 @@ class FFN(nn.Module):
     ffn_dim: int
     embed_dim: int
     dtype: jnp.dtype = jnp.float32
+    is_encoder: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+
+        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+            self.config
+        )
         if self.config.ln_positions in ["normformer"]:
             x = norm(
                 self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
@@ -376,7 +440,9 @@ class FFN(nn.Module):
             self.ffn_dim,
             dtype=self.dtype,
             use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         x = ACT2FN[self.config.activation_function](x)
         if self.config.ln_positions in ["normformer"]:
@@ -390,7 +456,9 @@ class FFN(nn.Module):
             self.embed_dim,
             dtype=self.dtype,
             use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         if self.config.ln_positions in ["swinv2"]:
             x = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(x)
@@ -432,6 +500,7 @@ class FlaxBartEncoderLayer(nn.Module):
             dropout=self.config.attention_dropout,
             bias=False,
             dtype=self.dtype,
+            is_encoder=True,
         )(hidden_states=hidden_states, attention_mask=attention_mask)
 
         if self.config.ln_positions in ["normformer", "swinv2"]:
@@ -454,6 +523,7 @@ class FlaxBartEncoderLayer(nn.Module):
                 ffn_dim=self.config.encoder_ffn_dim,
                 embed_dim=embed_dim,
                 dtype=self.dtype,
+                is_encoder=True,
             )
             if self.config.use_glu
             else FFN(
@@ -461,6 +531,7 @@ class FlaxBartEncoderLayer(nn.Module):
                 ffn_dim=self.config.encoder_ffn_dim,
                 embed_dim=embed_dim,
                 dtype=self.dtype,
+                is_encoder=True,
             )
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
@@ -525,6 +596,7 @@ class FlaxBartDecoderLayer(nn.Module):
             causal=True,
             bias=False,
             dtype=self.dtype,
+            is_encoder=False,
         )(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -562,6 +634,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 dropout=self.config.attention_dropout,
                 bias=False,
                 dtype=self.dtype,
+                is_encoder=False,
             )(
                 hidden_states=hidden_states,
                 key_value_states=encoder_hidden_states,
@@ -588,6 +661,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 ffn_dim=self.config.decoder_ffn_dim,
                 embed_dim=embed_dim,
                 dtype=self.dtype,
+                is_encoder=False,
             )
             if self.config.use_glu
             else FFN(
@@ -595,6 +669,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 ffn_dim=self.config.decoder_ffn_dim,
                 embed_dim=embed_dim,
                 dtype=self.dtype,
+                is_encoder=False,
             )
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
@@ -795,7 +870,9 @@ class FlaxBartEncoder(FlaxBartEncoder):
         self.embed_positions = nn.Embed(
             self.config.max_text_length + self.offset,
             embed_dim,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
         self.layers = FlaxBartEncoderLayerCollection(self.config, self.dtype)
         self.layernorm_embedding = norm(
@@ -827,7 +904,9 @@ class FlaxBartDecoder(FlaxBartDecoder):
         self.embed_positions = nn.Embed(
             self.config.image_length + self.offset,  # image length for BOS
             embed_dim,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
 
         self.layers = FlaxBartDecoderLayerCollection(self.config, self.dtype)
@@ -847,12 +926,16 @@ class FlaxBartModule(FlaxBartModule):
         encoder_embed_tokens = nn.Embed(
             self.config.encoder_vocab_size,
             self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
         decoder_embed_tokens = nn.Embed(
             self.config.image_vocab_size + 1,  # image vocab size + 1 for BOS
             self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
 
         self.encoder = FlaxBartEncoder(
@@ -1192,7 +1275,9 @@ class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationMod
             + 1,  # image vocab size + 1 for BOS to have same size as decoder inputs (for sharding)
             use_bias=False,
             dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            kernel_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
 
     def __call__(
