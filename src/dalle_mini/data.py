@@ -110,7 +110,9 @@ class Dataset:
         if self.streaming:
             # we need to shuffle early in streaming mode
             if hasattr(self, "train_dataset"):
-                self.train_dataset = self.train_dataset.shuffle(5000, self.seed_dataset)
+                self.train_dataset = self.train_dataset.shuffle(
+                    buffer_size=5000, seed=self.seed_dataset
+                )
         else:
             self.rng_dataset = jax.random.PRNGKey(self.seed_dataset)
 
