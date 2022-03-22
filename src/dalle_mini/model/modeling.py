@@ -405,6 +405,8 @@ class FlaxBartEncoderLayer(nn.Module):
 
     config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32
+    add_norm: bool = False
+    use_scale: bool = False
 
     @nn.compact
     def __call__(
@@ -458,6 +460,14 @@ class FlaxBartEncoderLayer(nn.Module):
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual + hidden_states
 
+        if self.add_norm:
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.use_scale,
+            )(hidden_states)
+
         outputs = (hidden_states,)
 
         if output_attentions:
@@ -475,6 +485,8 @@ class FlaxBartDecoderLayer(nn.Module):
 
     config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32
+    add_norm: bool = False
+    use_scale: bool = False
 
     @nn.compact
     def __call__(
@@ -574,6 +586,14 @@ class FlaxBartDecoderLayer(nn.Module):
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual + hidden_states
 
+        if self.add_norm:
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.use_scale,
+            )(hidden_states)
+
         outputs = (hidden_states,)
 
         if output_attentions:
@@ -605,35 +625,30 @@ class FlaxBartEncoderLayerCollection(nn.Module):
         all_self_attns = () if output_attentions else None
 
         n_layers = self.config.encoder_layers
+        layer = (
+            remat(FlaxBartEncoderLayer, static_argnums=(2, 3))
+            if self.config.gradient_checkpointing
+            else FlaxBartEncoderLayer
+        )
         for i in range(n_layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            layer = (
-                remat(FlaxBartEncoderLayer, static_argnums=(2, 3))
-                if self.config.gradient_checkpointing
-                else FlaxBartEncoderLayer
+            # final layernorm on the output of the last layer
+            # or every 6 layers for Swin v2
+            add_norm = (i == n_layers - 1) or (
+                (self.config.ln_positions == "swinv2") and ((i + 1) % 6 == 0)
             )
-            layer_outputs = layer(self.config, dtype=self.dtype)(
+            # we don't need to scale the norm for the last layer
+            use_scale = i != n_layers - 1
+            layer_outputs = layer(
+                self.config, dtype=self.dtype, add_norm=add_norm, use_scale=use_scale
+            )(
                 hidden_states,
                 attention_mask,
                 output_attentions,
                 deterministic,
             )
-
             hidden_states = layer_outputs[0]
-            # final layernorm on the output of the last layer
-            if (i == n_layers - 1) or (
-                ((i + 1) % 6 == 0) and (self.config.ln_positions == "swinv2")
-            ):
-                if self.config.ln_positions in ["normformer", "swinv2"]:
-                    # scale not needed at last layer due to dense layers
-                    use_scale = i != n_layers - 1
-                    hidden_states = norm(
-                        self.config.ln_type,
-                        dtype=self.dtype,
-                        epsilon=1e-05,
-                        use_scale=use_scale,
-                    )(hidden_states)
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
@@ -687,15 +702,24 @@ class FlaxBartDecoderLayerCollection(nn.Module):
         )
 
         n_layers = self.config.decoder_layers
+        layer = (
+            remat(FlaxBartDecoderLayer, static_argnums=(4, 5, 6))
+            if self.config.gradient_checkpointing
+            else FlaxBartDecoderLayer
+        )
         for i in range(n_layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            layer = (
-                remat(FlaxBartDecoderLayer, static_argnums=(4, 5, 6))
-                if self.config.gradient_checkpointing
-                else FlaxBartDecoderLayer
+            # final layernorm on the output of the last layer
+            # or every 6 layers for Swin v2
+            add_norm = (i == n_layers - 1) or (
+                (self.config.ln_positions == "swinv2") and ((i + 1) % 6 == 0)
             )
-            layer_outputs = layer(self.config, dtype=self.dtype)(
+            # we don't need to scale the norm for the last layer
+            use_scale = i != n_layers - 1
+            layer_outputs = layer(
+                self.config, dtype=self.dtype, add_norm=add_norm, use_scale=use_scale
+            )(
                 hidden_states,
                 attention_mask,
                 encoder_hidden_states,
@@ -706,19 +730,6 @@ class FlaxBartDecoderLayerCollection(nn.Module):
             )
 
             hidden_states = layer_outputs[0]
-            # final layernorm on the output of the last layer
-            if (i == n_layers - 1) or (
-                ((i + 1) % 6 == 0) and (self.config.ln_positions == "swinv2")
-            ):
-                if self.config.ln_positions in ["normformer", "swinv2"]:
-                    # scale not needed at last layer due to dense layers
-                    use_scale = i != n_layers - 1
-                    hidden_states = norm(
-                        self.config.ln_type,
-                        dtype=self.dtype,
-                        epsilon=1e-05,
-                        use_scale=use_scale,
-                    )(hidden_states)
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
