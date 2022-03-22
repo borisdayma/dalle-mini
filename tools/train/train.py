@@ -406,7 +406,7 @@ class TrainingArguments:
         metadata={"help": "Log model to wandb at `save_steps` frequency."},
     )
     log_norm_steps: int = field(
-        default=False,
+        default=True,
         metadata={"help": "Log parameters and gradients norm at this frequency."},
     )
     log_histogram_steps: int = field(
@@ -475,6 +475,8 @@ class TrainingArguments:
         ], f"Selected learning rate decay not supported: {self.lr_decay}"
         if self.per_device_eval_batch_size is None:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
+        if self.log_norm_steps is True:
+            self.log_norm_steps = self.logging_steps
         if (
             os.path.exists(self.output_dir)
             and os.listdir(self.output_dir)
