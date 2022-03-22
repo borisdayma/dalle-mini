@@ -405,6 +405,10 @@ class TrainingArguments:
         default=False,
         metadata={"help": "Log model to wandb at `save_steps` frequency."},
     )
+    log_norm_steps: int = field(
+        default=False,
+        metadata={"help": "Log parameters and gradients norm at this frequency."},
+    )
     log_histogram_steps: int = field(
         default=False,
         metadata={
@@ -991,8 +995,10 @@ def main():
             train_samples=state.train_samples + batch_size_per_step,
         )
 
-        # get norm and histogram of grads and params
-        zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
+        metrics = {
+            "loss": loss,
+            "learning_rate": learning_rate_fn(state.step),
+        }
 
         def maybe_fn(fn, val, zeros, freq):
             """Call fn only if it is a logging step"""
@@ -1003,20 +1009,25 @@ def main():
                 val,
             )
 
-        def norm(val):
-            return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
+        if training_args.log_norm_steps:
+            zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
 
-        gradients_norm = maybe_fn(norm, grads, zeros_norm, training_args.logging_steps)
-        params_norm = maybe_fn(
-            norm, state.params, zeros_norm, training_args.logging_steps
-        )
+            def norm(val):
+                return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
 
-        metrics = {
-            "loss": loss,
-            "learning_rate": learning_rate_fn(state.step),
-            "gradients_norm": gradients_norm,
-            "params_norm": params_norm,
-        }
+            gradients_norm = maybe_fn(
+                norm, grads, zeros_norm, training_args.log_norm_steps
+            )
+            params_norm = maybe_fn(
+                norm, state.params, zeros_norm, training_args.log_norm_steps
+            )
+
+            metrics.update(
+                {
+                    "gradients_norm": gradients_norm,
+                    "params_norm": params_norm,
+                }
+            )
 
         if training_args.log_histogram_steps:
             zeros_hist = jax.tree_map(
@@ -1118,7 +1129,8 @@ def main():
                 log_metrics = {}
                 for k, v in metrics.items():
                     if "_norm" in k:
-                        log_metrics[f"{k}/"] = unfreeze(v)
+                        if self.step % training_args.log_norm_steps == 0:
+                            log_metrics[f"{k}/"] = unfreeze(v)
                     elif "_hist" in k:
                         if self.step % training_args.log_histogram_steps == 0:
                             v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
