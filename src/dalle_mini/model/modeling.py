@@ -185,7 +185,9 @@ class FlaxBartAttention(FlaxBartAttention):
 
         if self.config.use_cosine_attention:
             self.tau = self.param(
-                "tau", jax.nn.initializers.ones, (1, self.num_heads, 1, 1)
+                "tau",
+                jax.nn.initializers.constant(self.config.tau_init),
+                (1, self.num_heads, 1, 1),
             )
 
         if self.causal:
@@ -296,7 +298,7 @@ class FlaxBartAttention(FlaxBartAttention):
         )
         if self.config.use_cosine_attention:
             # divide by tau
-            attn_weights = attn_weights / (self.tau + 0.01)
+            attn_weights = attn_weights / jnp.maximum(self.tau, 0.01)
 
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value_states)
         if self.config.head_scale:
