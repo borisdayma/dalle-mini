@@ -66,9 +66,6 @@ from .utils import PretrainedFromWandbMixin
 logger = logging.get_logger(__name__)
 
 
-id_fn = lambda x: x
-
-
 class RMSNorm(nn.Module):
     """
     From "Root Mean Square Layer Normalization" by https://arxiv.org/abs/1910.07467
@@ -396,120 +393,136 @@ class FFN(nn.Module):
         return x
 
 
-def createFlaxBartEncoderLayer(do_remat=False):
+class FlaxBartEncoderLayer(nn.Module):
+    """
+    Edits:
+    - no bias
+    - use custom FlaxBartAttention
+    """
 
-    if do_remat:
-        transform = partial(nn.remat, concrete=True)
-    else:
-        transform = id_fn
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32
 
-    class FlaxBartEncoderLayer(nn.Module):
-        """
-        Edits:
-        - no bias
-        - use custom FlaxBartAttention
-        """
+    @nn.compact
+    def __call__(
+        self,
+        hidden_states: jnp.ndarray,
+        attention_mask: jnp.ndarray,
+        output_attentions: bool = True,
+        deterministic: bool = True,
+    ) -> Tuple[jnp.ndarray]:
 
-        config: DalleBartConfig
-        dtype: jnp.dtype = jnp.float32
+        embed_dim = self.config.d_model
+        residual = hidden_states
+        if self.config.ln_positions in ["normformer"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
+        hidden_states, attn_weights = FlaxBartAttention(
+            config=self.config,
+            embed_dim=embed_dim,
+            num_heads=self.config.encoder_attention_heads,
+            dropout=self.config.attention_dropout,
+            bias=False,
+            dtype=self.dtype,
+        )(hidden_states=hidden_states, attention_mask=attention_mask)
 
-        @transform
-        @nn.compact
-        def __call__(
-            self,
-            hidden_states: jnp.ndarray,
-            attention_mask: jnp.ndarray,
-            output_attentions: bool = True,
-            deterministic: bool = True,
-        ) -> Tuple[jnp.ndarray]:
+        if self.config.ln_positions in ["normformer", "swinv2"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
+        hidden_states = nn.Dropout(rate=self.config.dropout)(
+            hidden_states, deterministic=deterministic
+        )
+        hidden_states = residual + hidden_states
 
-            embed_dim = self.config.d_model
-            residual = hidden_states
-            if self.config.ln_positions in ["normformer"]:
-                hidden_states = norm(
-                    self.config.ln_type, dtype=self.dtype, epsilon=1e-05
-                )(hidden_states)
-            hidden_states, attn_weights = FlaxBartAttention(
+        residual = hidden_states
+        ff_block = (
+            GLU(
                 config=self.config,
+                ffn_dim=self.config.encoder_ffn_dim,
                 embed_dim=embed_dim,
-                num_heads=self.config.encoder_attention_heads,
-                dropout=self.config.attention_dropout,
-                bias=False,
                 dtype=self.dtype,
-            )(hidden_states=hidden_states, attention_mask=attention_mask)
-
-            if self.config.ln_positions in ["normformer", "swinv2"]:
-                hidden_states = norm(
-                    self.config.ln_type, dtype=self.dtype, epsilon=1e-05
-                )(hidden_states)
-            hidden_states = nn.Dropout(rate=self.config.dropout)(
-                hidden_states, deterministic=deterministic
             )
-            hidden_states = residual + hidden_states
-
-            residual = hidden_states
-            ff_block = (
-                GLU(
-                    config=self.config,
-                    ffn_dim=self.config.encoder_ffn_dim,
-                    embed_dim=embed_dim,
-                    dtype=self.dtype,
-                )
-                if self.config.use_glu
-                else FFN(
-                    config=self.config,
-                    ffn_dim=self.config.encoder_ffn_dim,
-                    embed_dim=embed_dim,
-                    dtype=self.dtype,
-                )
+            if self.config.use_glu
+            else FFN(
+                config=self.config,
+                ffn_dim=self.config.encoder_ffn_dim,
+                embed_dim=embed_dim,
+                dtype=self.dtype,
             )
-            hidden_states = ff_block(hidden_states, deterministic=deterministic)
-            hidden_states = residual + hidden_states
+        )
+        hidden_states = ff_block(hidden_states, deterministic=deterministic)
+        hidden_states = residual + hidden_states
 
-            outputs = (hidden_states,)
+        outputs = (hidden_states,)
 
-            if output_attentions:
-                outputs += (attn_weights,)
+        if output_attentions:
+            outputs += (attn_weights,)
 
-            return outputs
-
-    return FlaxBartEncoderLayer
+        return outputs
 
 
-def createFlaxBartDecoderLayer(do_remat=False):
+class FlaxBartDecoderLayer(nn.Module):
+    """
+    Edits:
+    - no bias
+    - use custom FlaxBartAttention
+    """
 
-    if do_remat:
-        transform = partial(nn.remat, concrete=True)
-    else:
-        transform = id_fn
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32
 
-    class FlaxBartDecoderLayer(nn.Module):
-        """
-        Edits:
-        - no bias
-        - use custom FlaxBartAttention
-        """
+    @nn.compact
+    def __call__(
+        self,
+        hidden_states: jnp.ndarray,
+        attention_mask: jnp.ndarray,
+        encoder_hidden_states: Optional[jnp.ndarray] = None,
+        encoder_attention_mask: Optional[jnp.ndarray] = None,
+        init_cache: bool = False,
+        output_attentions: bool = True,
+        deterministic: bool = True,
+    ) -> Tuple[jnp.ndarray]:
 
-        config: DalleBartConfig
-        dtype: jnp.dtype = jnp.float32
+        embed_dim = self.config.d_model
+        residual = hidden_states
 
-        @transform
-        @nn.compact
-        def __call__(
-            self,
-            hidden_states: jnp.ndarray,
-            attention_mask: jnp.ndarray,
-            encoder_hidden_states: Optional[jnp.ndarray] = None,
-            encoder_attention_mask: Optional[jnp.ndarray] = None,
-            init_cache: bool = False,
-            output_attentions: bool = True,
-            deterministic: bool = True,
-        ) -> Tuple[jnp.ndarray]:
+        # Self Attention
+        if self.config.ln_positions in ["normformer"]:
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=False,
+            )(hidden_states)
+        hidden_states, attn_weights = FlaxBartAttention(
+            config=self.config,
+            embed_dim=embed_dim,
+            num_heads=self.config.decoder_attention_heads,
+            dropout=self.config.attention_dropout,
+            causal=True,
+            bias=False,
+            dtype=self.dtype,
+        )(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            init_cache=init_cache,
+        )
 
-            embed_dim = self.config.d_model
+        if self.config.ln_positions in ["normformer", "swinv2"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
+        hidden_states = nn.Dropout(rate=self.config.dropout)(
+            hidden_states, deterministic=deterministic
+        )
+        hidden_states = residual + hidden_states
+
+        # Cross Attention
+        cross_attn_weights = None
+        if encoder_hidden_states is not None:
             residual = hidden_states
-
-            # Self Attention
             if self.config.ln_positions in ["normformer"]:
                 hidden_states = norm(
                     self.config.ln_type,
@@ -517,20 +530,18 @@ def createFlaxBartDecoderLayer(do_remat=False):
                     epsilon=1e-05,
                     use_scale=False,
                 )(hidden_states)
-            hidden_states, attn_weights = FlaxBartAttention(
+            hidden_states, cross_attn_weights = FlaxBartAttention(
                 config=self.config,
                 embed_dim=embed_dim,
                 num_heads=self.config.decoder_attention_heads,
                 dropout=self.config.attention_dropout,
-                causal=True,
                 bias=False,
                 dtype=self.dtype,
             )(
                 hidden_states=hidden_states,
-                attention_mask=attention_mask,
-                init_cache=init_cache,
+                key_value_states=encoder_hidden_states,
+                attention_mask=encoder_attention_mask,
             )
-
             if self.config.ln_positions in ["normformer", "swinv2"]:
                 hidden_states = norm(
                     self.config.ln_type, dtype=self.dtype, epsilon=1e-05
@@ -540,66 +551,32 @@ def createFlaxBartDecoderLayer(do_remat=False):
             )
             hidden_states = residual + hidden_states
 
-            # Cross Attention
-            cross_attn_weights = None
-            if encoder_hidden_states is not None:
-                residual = hidden_states
-                if self.config.ln_positions in ["normformer"]:
-                    hidden_states = norm(
-                        self.config.ln_type,
-                        dtype=self.dtype,
-                        epsilon=1e-05,
-                        use_scale=False,
-                    )(hidden_states)
-                hidden_states, cross_attn_weights = FlaxBartAttention(
-                    config=self.config,
-                    embed_dim=embed_dim,
-                    num_heads=self.config.decoder_attention_heads,
-                    dropout=self.config.attention_dropout,
-                    bias=False,
-                    dtype=self.dtype,
-                )(
-                    hidden_states=hidden_states,
-                    key_value_states=encoder_hidden_states,
-                    attention_mask=encoder_attention_mask,
-                )
-                if self.config.ln_positions in ["normformer", "swinv2"]:
-                    hidden_states = norm(
-                        self.config.ln_type, dtype=self.dtype, epsilon=1e-05
-                    )(hidden_states)
-                hidden_states = nn.Dropout(rate=self.config.dropout)(
-                    hidden_states, deterministic=deterministic
-                )
-                hidden_states = residual + hidden_states
-
-            # Feed forward
-            residual = hidden_states
-            ff_block = (
-                GLU(
-                    config=self.config,
-                    ffn_dim=self.config.decoder_ffn_dim,
-                    embed_dim=embed_dim,
-                    dtype=self.dtype,
-                )
-                if self.config.use_glu
-                else FFN(
-                    config=self.config,
-                    ffn_dim=self.config.decoder_ffn_dim,
-                    embed_dim=embed_dim,
-                    dtype=self.dtype,
-                )
+        # Feed forward
+        residual = hidden_states
+        ff_block = (
+            GLU(
+                config=self.config,
+                ffn_dim=self.config.decoder_ffn_dim,
+                embed_dim=embed_dim,
+                dtype=self.dtype,
             )
-            hidden_states = ff_block(hidden_states, deterministic=deterministic)
-            hidden_states = residual + hidden_states
+            if self.config.use_glu
+            else FFN(
+                config=self.config,
+                ffn_dim=self.config.decoder_ffn_dim,
+                embed_dim=embed_dim,
+                dtype=self.dtype,
+            )
+        )
+        hidden_states = ff_block(hidden_states, deterministic=deterministic)
+        hidden_states = residual + hidden_states
 
-            outputs = (hidden_states,)
+        outputs = (hidden_states,)
 
-            if output_attentions:
-                outputs += (attn_weights, cross_attn_weights)
+        if output_attentions:
+            outputs += (attn_weights, cross_attn_weights)
 
-            return outputs
-
-    return FlaxBartDecoderLayer
+        return outputs
 
 
 class FlaxBartEncoderLayerCollection(nn.Module):
@@ -628,10 +605,12 @@ class FlaxBartEncoderLayerCollection(nn.Module):
         for i in range(n_layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            encoder_layer = createFlaxBartEncoderLayer(
-                self.config.gradient_checkpointing
-            )(self.config, dtype=self.dtype)
-            layer_outputs = encoder_layer(
+            layer = (
+                nn.remat(FlaxBartEncoderLayer, concrete=True)
+                if self.config.gradient_checkpointing
+                else FlaxBartEncoderLayer
+            )
+            layer_outputs = layer(self.config, dtype=self.dtype)(
                 hidden_states,
                 attention_mask=attention_mask,
                 output_attentions=output_attentions,
@@ -708,10 +687,12 @@ class FlaxBartDecoderLayerCollection(nn.Module):
         for i in range(n_layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            decoder_layer = createFlaxBartDecoderLayer(
-                self.config.gradient_checkpointing
-            )(self.config, dtype=self.dtype)
-            layer_outputs = decoder_layer(
+            layer = (
+                nn.remat(FlaxBartDecoderLayer, concrete=True)
+                if self.config.gradient_checkpointing
+                else FlaxBartDecoderLayer
+            )
+            layer_outputs = layer(self.config, dtype=self.dtype)(
                 hidden_states,
                 attention_mask=attention_mask,
                 encoder_hidden_states=encoder_hidden_states,
