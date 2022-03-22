@@ -551,9 +551,7 @@ def main():
     # Set up our new model config
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
-        # initializing params with gradient checkpointing creates issues
-        # we correctly set it later per training_args
-        config.gradient_checkpointing = False
+        config.gradient_checkpointing = training_args.gradient_checkpointing
     else:
         config = None
 
@@ -565,9 +563,7 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,  # we overwrite them with loaded checkpoint
-            # initializing params with gradient checkpointing creates issues
-            # we correctly set it later per training_args
-            gradient_checkpointing=False,
+            gradient_checkpointing=training_args.gradient_checkpointing,
         )
     else:
         model = DalleBart(
@@ -576,21 +572,6 @@ def main():
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
         )
-
-    # define model eval and train functions
-    eval_fn = model.__call__
-    if training_args.gradient_checkpointing:
-        remat_config = copy.deepcopy(model.config)
-        remat_config.gradient_checkpointing = True
-        remat_model = DalleBart(
-            remat_config,
-            seed=training_args.seed_model,
-            dtype=getattr(jnp, model_args.dtype),
-            init_weights=False,
-        )
-        train_fn = remat_model.__call__
-    else:
-        train_fn = model.__call__
 
     # get model metadata
     model_metadata = model_args.get_metadata()
@@ -825,7 +806,7 @@ def main():
         epoch=None,
         train_time=None,
         train_samples=None,
-        apply_fn=train_fn,
+        apply_fn=model.__call__,
         tx=optimizer,
     )
 
@@ -844,7 +825,7 @@ def main():
 
             def init_state(params):
                 return TrainState.create(
-                    apply_fn=train_fn,
+                    apply_fn=model.__call__,
                     tx=optimizer,
                     params=maybe_init_params(params),
                     dropout_rng=dropout_rng,
@@ -871,7 +852,7 @@ def main():
 
             def restore_state(params, opt_state):
                 return TrainState(
-                    apply_fn=train_fn,
+                    apply_fn=model.__call__,
                     tx=optimizer,
                     params=params,
                     opt_state=opt_state,
@@ -1065,7 +1046,7 @@ def main():
     def eval_step(state, batch):
         def compute_eval_loss(batch):
             batch, labels = batch.pop("labels")
-            logits = eval_fn(**batch, params=state.params, train=False)[0]
+            logits = model(**batch, params=state.params, train=False)[0]
             return loss_fn(logits, labels)
 
         if use_vmap_trick:
