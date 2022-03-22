@@ -71,7 +71,7 @@ remat = nn_partitioning.remat
 
 # deepnet initialization
 def deepnet_init(gain=1):
-    init = jax.nn.initializers.glorot_normal
+    init = jax.nn.initializers.glorot_normal()
 
     def _init(*args, **kwargs):
         return gain * init(*args, **kwargs)
