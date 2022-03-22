@@ -487,6 +487,12 @@ class FlaxBartEncoderLayer(nn.Module):
         deterministic: bool = True,
     ) -> Tuple[jnp.ndarray]:
 
+        res_gain = (
+            deepnet_gain["encoder"]["alpha"](self.config)
+            if self.config.use_deepnet_scaling
+            else 1
+        )
+
         embed_dim = self.config.d_model
         residual = hidden_states
         if self.config.ln_positions in ["normformer"]:
@@ -510,7 +516,7 @@ class FlaxBartEncoderLayer(nn.Module):
         hidden_states = nn.Dropout(rate=self.config.dropout)(
             hidden_states, deterministic=deterministic
         )
-        hidden_states = residual + hidden_states
+        hidden_states = residual * res_gain + hidden_states
         if self.config.ln_positions in ["deepnet"]:
             hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
                 hidden_states
@@ -535,7 +541,7 @@ class FlaxBartEncoderLayer(nn.Module):
             )
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
-        hidden_states = residual + hidden_states
+        hidden_states = residual * res_gain + hidden_states
         if self.add_norm or self.config.ln_positions in ["deepnet"]:
             use_scale = self.use_scale or self.config.ln_positions == "deepnet"
             hidden_states = norm(
@@ -577,6 +583,12 @@ class FlaxBartDecoderLayer(nn.Module):
         deterministic: bool = True,
     ) -> Tuple[jnp.ndarray]:
 
+        res_gain = (
+            deepnet_gain["decoder"]["alpha"](self.config)
+            if self.config.use_deepnet_scaling
+            else 1
+        )
+
         embed_dim = self.config.d_model
         residual = hidden_states
 
@@ -610,7 +622,7 @@ class FlaxBartDecoderLayer(nn.Module):
         hidden_states = nn.Dropout(rate=self.config.dropout)(
             hidden_states, deterministic=deterministic
         )
-        hidden_states = residual + hidden_states
+        hidden_states = residual * res_gain + hidden_states
         if self.config.ln_positions in ["deepnet"]:
             hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
                 hidden_states
@@ -647,7 +659,7 @@ class FlaxBartDecoderLayer(nn.Module):
             hidden_states = nn.Dropout(rate=self.config.dropout)(
                 hidden_states, deterministic=deterministic
             )
-            hidden_states = residual + hidden_states
+            hidden_states = residual * res_gain + hidden_states
             if self.config.ln_positions in ["deepnet"]:
                 hidden_states = norm(
                     self.config.ln_type, dtype=self.dtype, epsilon=1e-05
@@ -673,7 +685,7 @@ class FlaxBartDecoderLayer(nn.Module):
             )
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
-        hidden_states = residual + hidden_states
+        hidden_states = residual * res_gain + hidden_states
         if self.add_norm or self.config.ln_positions in ["deepnet"]:
             use_scale = self.use_scale or self.config.ln_positions == "deepnet"
             hidden_states = norm(
