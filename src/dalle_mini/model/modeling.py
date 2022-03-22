@@ -408,7 +408,7 @@ class FlaxBartEncoderLayer(nn.Module):
     config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32
     add_norm: bool = False
-    use_scale: bool = False
+    use_scale: bool = True
 
     @nn.compact
     def __call__(
@@ -442,6 +442,10 @@ class FlaxBartEncoderLayer(nn.Module):
             hidden_states, deterministic=deterministic
         )
         hidden_states = residual + hidden_states
+        if self.config.ln_positions in ["deepnet"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
 
         residual = hidden_states
         ff_block = (
@@ -461,13 +465,13 @@ class FlaxBartEncoderLayer(nn.Module):
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual + hidden_states
-
-        if self.add_norm:
+        if self.add_norm or self.config.ln_positions in ["deepnet"]:
+            use_scale = self.use_scale or self.config.ln_positions == "deepnet"
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=self.use_scale,
+                use_scale=use_scale,
             )(hidden_states)
 
         outputs = (hidden_states,)
@@ -535,6 +539,10 @@ class FlaxBartDecoderLayer(nn.Module):
             hidden_states, deterministic=deterministic
         )
         hidden_states = residual + hidden_states
+        if self.config.ln_positions in ["deepnet"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
 
         # Cross Attention
         cross_attn_weights = None
@@ -567,6 +575,10 @@ class FlaxBartDecoderLayer(nn.Module):
                 hidden_states, deterministic=deterministic
             )
             hidden_states = residual + hidden_states
+            if self.config.ln_positions in ["deepnet"]:
+                hidden_states = norm(
+                    self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+                )(hidden_states)
 
         # Feed forward
         residual = hidden_states
@@ -587,13 +599,13 @@ class FlaxBartDecoderLayer(nn.Module):
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual + hidden_states
-
-        if self.add_norm:
+        if self.add_norm or self.config.ln_positions in ["deepnet"]:
+            use_scale = self.use_scale or self.config.ln_positions == "deepnet"
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=self.use_scale,
+                use_scale=use_scale,
             )(hidden_states)
 
         outputs = (hidden_states,)
@@ -637,6 +649,7 @@ class FlaxBartEncoderLayerCollection(nn.Module):
                 all_hidden_states += (hidden_states,)
             # final layernorm on the output of the last layer
             # or every 6 layers for Swin v2
+            # ignored args for deepnet which always add a norm with scale
             add_norm = (i == n_layers - 1) or (
                 (self.config.ln_positions == "swinv2") and ((i + 1) % 6 == 0)
             )

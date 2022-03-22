@@ -59,10 +59,11 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         do_sample=True,
         # transformer variants
         head_scale=False,  # used in NormFormer
-        ln_type="layernorm",  # layer normalization type, "rmsnorm" or "layernorm"
-        ln_positions="swinv2",  # layer normalization positions, "normformer" (default) or "swinv2"
+        ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
+        ln_positions="swinv2",  # layer normalization positions, "normformer", "swinv2", "deepnet"
         use_cosine_attention=True,  # used in Swin v2
         tau_init=0.05,  # used in Swin v2
+        use_deepnet_scaling=True,  # used in Deepnet
         use_glu=True,  # "GLU Variants Improve Transformer"
         **kwargs,
     ):
@@ -79,10 +80,12 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         assert ln_positions in [
             "normformer",
             "swinv2",
-        ], "ln_positions must be 'normformer' or 'swinv2'"
+            "deepnet",
+        ], "ln_positions must be 'normformer', 'swinv2' or 'deepnet'"
         self.ln_positions = ln_positions
         self.use_cosine_attention = use_cosine_attention
         self.tau_init = tau_init
+        self.use_deepnet_scaling = use_deepnet_scaling
         self.use_glu = use_glu
 
         # common parameters
