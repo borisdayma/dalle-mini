@@ -27,6 +27,7 @@ import jax.numpy as jnp
 import msgpack.exceptions
 from flax.core.frozen_dict import unfreeze
 from flax.linen import combine_masks, make_causal_mask
+from flax.linen import partitioning as nn_partitioning
 from flax.linen.attention import dot_product_attention_weights
 from flax.serialization import from_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
@@ -64,6 +65,8 @@ from .configuration import DalleBartConfig
 from .utils import PretrainedFromWandbMixin
 
 logger = logging.get_logger(__name__)
+
+remat = nn_partitioning.remat
 
 
 class RMSNorm(nn.Module):
@@ -606,15 +609,15 @@ class FlaxBartEncoderLayerCollection(nn.Module):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             layer = (
-                nn.remat(FlaxBartEncoderLayer, concrete=True)
+                remat(FlaxBartEncoderLayer, static_argnums=(2, 3))
                 if self.config.gradient_checkpointing
                 else FlaxBartEncoderLayer
             )
             layer_outputs = layer(self.config, dtype=self.dtype)(
                 hidden_states,
-                attention_mask=attention_mask,
-                output_attentions=output_attentions,
-                deterministic=deterministic,
+                attention_mask,
+                output_attentions,
+                deterministic,
             )
 
             hidden_states = layer_outputs[0]
@@ -688,18 +691,18 @@ class FlaxBartDecoderLayerCollection(nn.Module):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             layer = (
-                nn.remat(FlaxBartDecoderLayer, concrete=True)
+                remat(FlaxBartDecoderLayer, static_argnums=(4, 5, 6))
                 if self.config.gradient_checkpointing
                 else FlaxBartDecoderLayer
             )
             layer_outputs = layer(self.config, dtype=self.dtype)(
                 hidden_states,
-                attention_mask=attention_mask,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_attention_mask,
-                init_cache=init_cache,
-                output_attentions=output_attentions,
-                deterministic=deterministic,
+                attention_mask,
+                encoder_hidden_states,
+                encoder_attention_mask,
+                init_cache,
+                output_attentions,
+                deterministic,
             )
 
             hidden_states = layer_outputs[0]
