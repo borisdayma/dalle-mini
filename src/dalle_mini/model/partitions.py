@@ -36,18 +36,19 @@ def _replacement_rules(rules):
 def _get_partition_rules():
     return [
         # embeddings
-        ((r"embed_positions", "embedding"), P("mp", None)),
-        ((r"embed_tokens", "embedding"), P("mp", None)),
+        (("embed_positions", "embedding"), P("mp", None)),
+        (("embed_tokens", "embedding"), P("mp", None)),
         # attention
         (("(q_proj|k_proj|v_proj)", "kernel"), P(None, "mp")),
         (("out_proj", "kernel"), P("mp", None)),
         # FFN
-        ((r"Dense_0", "kernel"), P(None, "mp")),
-        ((r"Dense_1", "kernel"), P(None, "mp")),
-        ((r"Dense_2", "kernel"), P("mp", None)),
+        (("Dense_0", "kernel"), P(None, "mp")),
+        (("GLU.*", "Dense_1", "kernel"), P(None, "mp")),
+        (("GLU.*", "Dense_2", "kernel"), P("mp", None)),
+        (("FFN.*", "Dense_1", "kernel"), P("mp", None)),
         # layer norms
         (("(bias|scale)",), None),
-        ((r"lm_head", "kernel"), P(None, "mp")),
+        (("lm_head", "kernel"), P(None, "mp")),
         # head scale and tau
         (("(head_scale|tau)",), None),
     ]
