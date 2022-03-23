@@ -29,8 +29,10 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 import datasets
+import flax
 import jax
 import jax.numpy as jnp
+import jaxlib
 import numpy as np
 import optax
 import transformers
@@ -652,8 +654,16 @@ def main():
                 "len_train_dataset": len_train_dataset,
                 "len_eval_dataset": len_eval_dataset,
                 "batch_size_per_step": batch_size_per_step,
-                "num_params": num_params,
+                "model": {"num_params": num_params, "config": model.config.to_dict()},
                 "num_devices": jax.device_count(),
+                "versions": {
+                    "jax": jax.__version__,
+                    "jaxlib": jaxlib.__version__,
+                    "flax": flax.__version__,
+                    "transformers": transformers.__version__,
+                    "datasets": datasets.__version__,
+                    "wandb": wandb.__version__,
+                },
             }
         )
 
