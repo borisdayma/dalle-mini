@@ -59,12 +59,12 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         do_sample=True,
         # transformer variants
         head_scale=False,  # used in NormFormer
-        ln_type="rmsnorm",  # layer normalization type, "rmsnorm", "layernorm"
-        ln_positions="deepnet",  # layer normalization positions, "normformer", "swinv2", "deepnet"
+        ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
+        ln_positions="deepnet",  # layer normalization positions, "normformer", "swinv2", "deepnet" (same as post-ln)
         use_cosine_attention=False,  # used in Swin v2
         tau_init=0.05,  # used only in cosine attention (Swin v2)
-        use_deepnet_scaling=True,  # used in Deepnet
-        use_glu=True,  # "GLU Variants Improve Transformer"
+        use_deepnet_scaling=False,  # used in Deepnet
+        use_glu=False,  # "GLU Variants Improve Transformer"
         **kwargs,
     ):
         # text normalizer
