@@ -18,7 +18,6 @@ Training DALL·E Mini.
 Script adapted from run_summarization_flax.py
 """
 
-import copy
 import io
 import logging
 import os
