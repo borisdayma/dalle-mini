@@ -18,7 +18,7 @@ import math
 import os
 from functools import partial
 from pickle import UnpicklingError
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import flax
 import flax.linen as nn
@@ -102,17 +102,17 @@ class RMSNorm(nn.Module):
     """
 
     epsilon: float = 1e-6
-    dtype = jnp.float32
-    param_dtype = jnp.float32
-    use_scale = True
-    scale_init = jax.nn.initializers.ones
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+    use_scale: bool = True
+    scale_init: Any = jax.nn.initializers.ones
 
     @nn.compact
     def __call__(self, x):
         reduction_axes = (-1,)
         feature_axes = (-1,)
 
-        rms_sq = self._compute_rms(x, reduction_axes)
+        rms_sq = self._compute_rms_sq(x, reduction_axes)
 
         return self._normalize(
             self,
