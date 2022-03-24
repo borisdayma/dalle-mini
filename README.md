@@ -94,26 +94,43 @@ Many thanks to the people who helped make it better:
 
 - the [DALLE-Pytorch](https://discord.gg/xBPBXfcFHd) and [EleutherAI](https://www.eleuther.ai/) communities for testing and exchanging cool ideas
 - [Rohan Anil](https://github.com/rohan-anil) for adding Distributed Shampoo optimizer
+- [Phil Wang](https://github.com/lucidrains) has provided a lot of cool implementations of transformer variants and gives interesting insights with [x-transformers](https://github.com/lucidrains/x-transformers)
 - [Katherine Crowson](https://github.com/crowsonkb) for [super conditioning](https://twitter.com/RiversHaveWings/status/1478093658716966912)
 
 ## Citing DALL·E mini
 
 If you find DALL·E mini useful in your research or wish to refer, please use the following BibTeX entry.
 
-```
+```text
 @misc{Dayma_DALL·E_Mini_2021,
-author = {Dayma, Boris and Patil, Suraj and Cuenca, Pedro and Saifullah, Khalid and Abraham, Tanishq and Lê Khắc, Phúc and Melas, Luke and Ghosh, Ritobrata},
-doi = {10.5281/zenodo.5146400},
-month = {7},
-title = {DALL·E Mini},
-url = {https://github.com/borisdayma/dalle-mini},
-year = {2021}
+      author = {Dayma, Boris and Patil, Suraj and Cuenca, Pedro and Saifullah, Khalid and Abraham, Tanishq and Lê Khắc, Phúc and Melas, Luke and Ghosh, Ritobrata},
+      doi = {10.5281/zenodo.5146400},
+      month = {7},
+      title = {DALL·E Mini},
+      url = {https://github.com/borisdayma/dalle-mini},
+      year = {2021}
 }
 ```
 
 ## References
 
-```
+Original DALL·E from "[Zero-Shot Text-to-Image Generation](https://arxiv.org/abs/2102.12092)" with image quantization from "[Learning Transferable Visual Models From Natural Language Supervision](https://arxiv.org/abs/2103.00020)".
+
+Image encoder from "[Taming Transformers for High-Resolution Image Synthesis](https://arxiv.org/abs/2012.09841v2)".
+
+Sequence to sequence model based on "[BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension](https://arxiv.org/abs/1910.13461v1)" with implementation of a few variants:
+
+- "[GLU Variants Improve Transformer](https://arxiv.org/abs/2002.05202)"
+- "[Deepnet: Scaling Transformers to 1,000 Layers](https://arxiv.org/abs/2203.00555)"
+- "[NormFormer: Improved Transformer Pretraining with Extra Normalization](https://arxiv.org/abs/2110.09456)"
+- "[Swin Transformer: Hierarchical Vision Transformer using Shifted Windows](https://arxiv.org/abs/2103.14030)"
+- "[Root Mean Square Layer Normalization](https://arxiv.org/abs/1910.07467)"
+
+Main optimizer (Distributed Shampoo) from "[Scalable Second Order Optimization for Deep Learning](https://arxiv.org/abs/2002.09018)".
+
+### Citations
+
+```text
 @misc{ramesh2021zeroshot,
       title={Zero-Shot Text-to-Image Generation}, 
       author={Aditya Ramesh and Mikhail Pavlov and Gabriel Goh and Scott Gray and Chelsea Voss and Alec Radford and Mark Chen and Ilya Sutskever},
@@ -124,29 +141,7 @@ year = {2021}
 }
 ```
 
-```
-@misc{esser2021taming,
-      title={Taming Transformers for High-Resolution Image Synthesis}, 
-      author={Patrick Esser and Robin Rombach and Björn Ommer},
-      year={2021},
-      eprint={2012.09841},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
-}
-```
-
-```
-@misc{lewis2019bart,
-      title={BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension}, 
-      author={Mike Lewis and Yinhan Liu and Naman Goyal and Marjan Ghazvininejad and Abdelrahman Mohamed and Omer Levy and Ves Stoyanov and Luke Zettlemoyer},
-      year={2019},
-      eprint={1910.13461},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL}
-}
-```
-
-```
+```text
 @misc{radford2021learning,
       title={Learning Transferable Visual Models From Natural Language Supervision}, 
       author={Alec Radford and Jong Wook Kim and Chris Hallacy and Aditya Ramesh and Gabriel Goh and Sandhini Agarwal and Girish Sastry and Amanda Askell and Pamela Mishkin and Jack Clark and Gretchen Krueger and Ilya Sutskever},
@@ -157,7 +152,29 @@ year = {2021}
 }
 ```
 
+```text
+@misc{esser2021taming,
+      title={Taming Transformers for High-Resolution Image Synthesis}, 
+      author={Patrick Esser and Robin Rombach and Björn Ommer},
+      year={2021},
+      eprint={2012.09841},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
 ```
+
+```text
+@misc{lewis2019bart,
+      title={BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension}, 
+      author={Mike Lewis and Yinhan Liu and Naman Goyal and Marjan Ghazvininejad and Abdelrahman Mohamed and Omer Levy and Ves Stoyanov and Luke Zettlemoyer},
+      year={2019},
+      eprint={1910.13461},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}
+}
+```
+
+```text
 @misc{anil2021scalable,
       title={Scalable Second Order Optimization for Deep Learning},
       author={Rohan Anil and Vineet Gupta and Tomer Koren and Kevin Regan and Yoram Singer},
@@ -165,5 +182,56 @@ year = {2021}
       eprint={2002.09018},
       archivePrefix={arXiv},
       primaryClass={cs.LG}
+}
+```
+
+```text
+@misc{shazeer2020glu,
+      title={GLU Variants Improve Transformer},
+      author={Noam Shazeer},
+      year={2020},
+      url={https://arxiv.org/abs/2002.05202}    
+}
+```
+
+```text
+ @misc{wang_ma_dong_huang_zhang_wei_2022,
+       title={DeepNet: Scaling transformers to 1,000 layers},
+       author={Wang, Hongyu and Ma, Shuming and Dong, Li and Huang, Shaohan and Zhang, Dongdong and Wei, Furu},
+       year={2022},
+       eprint={2203.00555}
+       archivePrefix={arXiv},
+       primaryClass={cs.LG}
+} 
+```
+
+```text
+@misc{shleifer2021normformer,
+      title={NormFormer: Improved Transformer Pretraining with Extra Normalization},
+      author={Sam Shleifer and Jason Weston and Myle Ott},
+      year={2021},
+      eprint={2110.09456},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}
+}
+```
+
+```text
+@inproceedings{liu2021swinv2,
+               title={Swin Transformer V2: Scaling Up Capacity and Resolution}, 
+               author={Ze Liu and Han Hu and Yutong Lin and Zhuliang Yao and Zhenda Xie and Yixuan Wei and Jia Ning and Yue Cao and Zheng Zhang and Li Dong and Furu Wei and Baining Guo},
+               booktitle={International Conference on Computer Vision and Pattern Recognition (CVPR)},
+               year={2022}
+}
+```
+
+```text
+@misc{zhang2019root,
+      title = {Root Mean Square Layer Normalization},
+      author = {Biao Zhang and Rico Sennrich},
+      year = {2019},
+      eprint = {1910.07467},
+      archivePrefix = {arXiv},
+      primaryClass = {cs.LG}
 }
 ```

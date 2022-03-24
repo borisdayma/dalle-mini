@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -39,6 +40,9 @@ class Dataset:
     multi_hosts: bool = field(init=False)
 
     def __post_init__(self):
+        if self.seed_dataset is None:
+            # create a random seed
+            self.seed_dataset = random.randint(0, 2**32 - 1)
         self.multi_hosts = jax.process_count() > 1
         # feed blank captions only in streaming mode for now
         # otherwise dataset could be cached with same blanked captions
@@ -106,11 +110,10 @@ class Dataset:
         if self.streaming:
             # we need to shuffle early in streaming mode
             if hasattr(self, "train_dataset"):
-                self.train_dataset = self.train_dataset.shuffle(5000, self.seed_dataset)
+                self.train_dataset = self.train_dataset.shuffle(
+                    buffer_size=5000, seed=self.seed_dataset
+                )
         else:
-            # prepare rng for later shuffling
-            if self.seed_dataset is None:
-                self.seed_dataset = np.random.get_state()[1][0]
             self.rng_dataset = jax.random.PRNGKey(self.seed_dataset)
 
         # filter data

@@ -18,7 +18,6 @@ Training DALL·E Mini.
 Script adapted from run_summarization_flax.py
 """
 
-import copy
 import io
 import logging
 import os
@@ -30,8 +29,10 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 import datasets
+import flax
 import jax
 import jax.numpy as jnp
+import jaxlib
 import numpy as np
 import optax
 import transformers
@@ -405,10 +406,14 @@ class TrainingArguments:
         default=False,
         metadata={"help": "Log model to wandb at `save_steps` frequency."},
     )
-    log_histograms: bool = field(
+    log_norm_steps: int = field(
+        default=True,
+        metadata={"help": "Log parameters and gradients norm at this frequency."},
+    )
+    log_histogram_steps: int = field(
         default=False,
         metadata={
-            "help": "Log parameters and gradients histograms. Slows down training."
+            "help": "Log parameters and gradients histograms at this frequency. Slows down training."
         },
     )
 
@@ -471,6 +476,8 @@ class TrainingArguments:
         ], f"Selected learning rate decay not supported: {self.lr_decay}"
         if self.per_device_eval_batch_size is None:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
+        if self.log_norm_steps is True:
+            self.log_norm_steps = self.logging_steps
         if (
             os.path.exists(self.output_dir)
             and os.listdir(self.output_dir)
@@ -495,48 +502,6 @@ class TrainState(train_state.TrainState):
     epoch: int = 0
     train_time: float = 0.0  # total time the model trained
     train_samples: int = 0  # number of samples seen
-
-
-class MetricsLogger:
-    def __init__(self, step):
-        self.step = step
-        self.time = time.perf_counter()
-        self.state_dict = {}
-
-    def update_state_metrics(self, state):
-        """Update internal state metrics (logged at each call to be used as x-axis)"""
-        self.state_dict = {
-            f'train/{k.split("_")[-1]}': getattr(state, k)
-            for k in ["step", "epoch", "train_time", "train_samples"]
-        }
-        # timing metrics
-        new_step = int(state.step)
-        new_time = time.perf_counter()
-        if new_step > self.step:
-            time_per_step = (new_time - self.time) / (new_step - self.step)
-            self.step = new_step
-            self.time = new_time
-            self.state_dict["train/time_per_step"] = time_per_step
-
-    def log(self, metrics, prefix=None):
-        if jax.process_index() == 0:
-            log_metrics = {}
-            for k, v in metrics.items():
-                if prefix is not None:
-                    k = f"{prefix}/{k}"
-                if "_norm" in k:
-                    log_metrics[f"{k}/"] = unfreeze(v)
-                elif "_hist" in k:
-                    v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
-                    v = jax.tree_map(
-                        lambda x: wandb.Histogram(np_histogram=x),
-                        v,
-                        is_leaf=lambda x: isinstance(x, tuple),
-                    )
-                    log_metrics[f"{k}/"] = v
-                else:
-                    log_metrics[k] = v
-            wandb.log({**log_metrics, **self.state_dict})
 
 
 def main():
@@ -593,9 +558,7 @@ def main():
     # Set up our new model config
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
-        # initializing params with gradient checkpointing creates issues
-        # we correctly set it later per training_args
-        config.gradient_checkpointing = False
+        config.gradient_checkpointing = training_args.gradient_checkpointing
     else:
         config = None
 
@@ -607,9 +570,7 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,  # we overwrite them with loaded checkpoint
-            # initializing params with gradient checkpointing creates issues
-            # we correctly set it later per training_args
-            gradient_checkpointing=False,
+            gradient_checkpointing=training_args.gradient_checkpointing,
         )
     else:
         model = DalleBart(
@@ -618,21 +579,6 @@ def main():
             dtype=getattr(jnp, model_args.dtype),
             abstract_init=True,
         )
-
-    # define model eval and train functions
-    eval_fn = model.__call__
-    if training_args.gradient_checkpointing:
-        remat_config = copy.deepcopy(model.config)
-        remat_config.gradient_checkpointing = True
-        remat_model = DalleBart(
-            remat_config,
-            seed=training_args.seed_model,
-            dtype=getattr(jnp, model_args.dtype),
-            init_weights=False,
-        )
-        train_fn = remat_model.__call__
-    else:
-        train_fn = model.__call__
 
     # get model metadata
     model_metadata = model_args.get_metadata()
@@ -708,8 +654,16 @@ def main():
                 "len_train_dataset": len_train_dataset,
                 "len_eval_dataset": len_eval_dataset,
                 "batch_size_per_step": batch_size_per_step,
-                "num_params": num_params,
+                "model": {"num_params": num_params, "config": model.config.to_dict()},
                 "num_devices": jax.device_count(),
+                "versions": {
+                    "jax": jax.__version__,
+                    "jaxlib": jaxlib.__version__,
+                    "flax": flax.__version__,
+                    "transformers": transformers.__version__,
+                    "datasets": datasets.__version__,
+                    "wandb": wandb.__version__,
+                },
             }
         )
 
@@ -719,7 +673,7 @@ def main():
         warmup_fn = optax.linear_schedule(
             init_value=0.0,
             end_value=training_args.learning_rate,
-            transition_steps=training_args.warmup_steps,
+            transition_steps=training_args.warmup_steps + 1,  # ensure not 0
         )
         # offset step when resuming
         if model_metadata.get("step", 0):
@@ -867,7 +821,7 @@ def main():
         epoch=None,
         train_time=None,
         train_samples=None,
-        apply_fn=train_fn,
+        apply_fn=model.__call__,
         tx=optimizer,
     )
 
@@ -880,13 +834,13 @@ def main():
             # params have not been initialized yet
             return model.init_weights()
 
-    with maps.mesh(mesh.devices, mesh.axis_names):
+    with mesh:
         logger.info("  Creating state")
         if not model_args.restore_state:
 
             def init_state(params):
                 return TrainState.create(
-                    apply_fn=train_fn,
+                    apply_fn=model.__call__,
                     tx=optimizer,
                     params=maybe_init_params(params),
                     dropout_rng=dropout_rng,
@@ -913,7 +867,7 @@ def main():
 
             def restore_state(params, opt_state):
                 return TrainState(
-                    apply_fn=train_fn,
+                    apply_fn=model.__call__,
                     tx=optimizer,
                     params=params,
                     opt_state=opt_state,
@@ -959,7 +913,7 @@ def main():
         )
 
     # Define gradient update step fn
-    def train_step(state, batch, delta_time):
+    def train_step(state, batch, train_time):
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
@@ -1048,36 +1002,45 @@ def main():
         state = state.apply_gradients(
             grads=grads,
             dropout_rng=dropout_rng,
-            train_time=state.train_time + delta_time,
+            train_time=train_time,
             train_samples=state.train_samples + batch_size_per_step,
         )
 
-        # get norm and histogram of grads and params
-        zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
+        metrics = {
+            "loss": loss,
+            "learning_rate": learning_rate_fn(state.step),
+        }
 
-        def maybe_fn(fn, val, zeros):
+        def maybe_fn(fn, val, zeros, freq):
             """Call fn only if it is a logging step"""
             return jax.lax.cond(
-                state.step % training_args.logging_steps == 0,
+                state.step % freq == 0,
                 fn,
                 lambda _: zeros,
                 val,
             )
 
-        def norm(val):
-            return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
+        if training_args.log_norm_steps:
+            zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
 
-        gradients_norm = maybe_fn(norm, grads, zeros_norm)
-        params_norm = maybe_fn(norm, state.params, zeros_norm)
+            def norm(val):
+                return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
 
-        metrics = {
-            "loss": loss,
-            "learning_rate": learning_rate_fn(state.step),
-            "gradients_norm": gradients_norm,
-            "params_norm": params_norm,
-        }
+            gradients_norm = maybe_fn(
+                norm, grads, zeros_norm, training_args.log_norm_steps
+            )
+            params_norm = maybe_fn(
+                norm, state.params, zeros_norm, training_args.log_norm_steps
+            )
 
-        if training_args.log_histograms:
+            metrics.update(
+                {
+                    "gradients_norm": gradients_norm,
+                    "params_norm": params_norm,
+                }
+            )
+
+        if training_args.log_histogram_steps:
             zeros_hist = jax.tree_map(
                 lambda _: jnp.histogram(jnp.zeros(1), density=True), state.params
             )
@@ -1085,8 +1048,12 @@ def main():
             def histogram(val):
                 return jax.tree_map(lambda x: jnp.histogram(x, density=True), val)
 
-            gradients_hist = maybe_fn(histogram, grads, zeros_hist)
-            params_hist = maybe_fn(histogram, state.params, zeros_hist)
+            gradients_hist = maybe_fn(
+                histogram, grads, zeros_hist, training_args.log_histogram_steps
+            )
+            params_hist = maybe_fn(
+                histogram, state.params, zeros_hist, training_args.log_histogram_steps
+            )
 
             metrics.update(
                 {
@@ -1101,7 +1068,7 @@ def main():
     def eval_step(state, batch):
         def compute_eval_loss(batch):
             batch, labels = batch.pop("labels")
-            logits = eval_fn(**batch, params=state.params, train=False)[0]
+            logits = model(**batch, params=state.params, train=False)[0]
             return loss_fn(logits, labels)
 
         if use_vmap_trick:
@@ -1134,13 +1101,73 @@ def main():
         out_axis_resources=None,
     )
 
+    # define metrics logger
+    class MetricsLogger:
+        def __init__(self, step):
+            # keep state
+            self.state_dict = {}
+            # estimate speed
+            self.step = step
+            self.time = time.perf_counter()
+            self.offset_time = 0.0
+
+        def update_state_metrics(self, state):
+            """Update internal state metrics (logged at each call to be used as x-axis)"""
+            self.state_dict = {
+                f'train/{k.split("_")[-1]}': state[k]
+                for k in ["step", "epoch", "train_time", "train_samples"]
+            }
+            # timing metrics
+            new_step = int(state["step"])
+            new_time = time.perf_counter()
+            if new_step > self.step:
+                # remove time for eval & save
+                delta_time = new_time - self.time - self.offset_time
+                self.offset_time = 0
+                time_per_step = delta_time / (new_step - self.step)
+                self.step = new_step
+                self.time = new_time
+                self.log_time("train_per_step", time_per_step, offset=False)
+                self.log_time("train_per_log", delta_time, offset=False)
+
+        def log_time(self, key, duration, offset=True):
+            wandb.log({f"time/{key}": duration, **self.state_dict})
+            if offset:
+                self.offset_time += duration
+
+        def log(self, metrics, prefix=None):
+            if jax.process_index() == 0:
+                log_metrics = {}
+                for k, v in metrics.items():
+                    if "_norm" in k:
+                        if self.step % training_args.log_norm_steps == 0:
+                            log_metrics[f"{k}/"] = unfreeze(v)
+                    elif "_hist" in k:
+                        if self.step % training_args.log_histogram_steps == 0:
+                            v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
+                            v = jax.tree_map(
+                                lambda x: wandb.Histogram(np_histogram=x),
+                                v,
+                                is_leaf=lambda x: isinstance(x, tuple),
+                            )
+                            log_metrics[f"{k}/"] = v
+                    else:
+                        if prefix is not None:
+                            k = f"{prefix}/{k}"
+                        log_metrics[k] = v
+                wandb.log({**log_metrics, **self.state_dict})
+
+    # keep local copy of state
+    local_state = {
+        k: jax.device_get(getattr(state, k)).item()
+        for k in ["step", "epoch", "train_time", "train_samples"]
+    }
     # init variables
-    last_time = time.perf_counter()
+    start_time = time.perf_counter() - local_state["train_time"]
     train_metrics = None
-    step = int(state.step)
-    metrics_logger = MetricsLogger(step)
+    metrics_logger = MetricsLogger(local_state["step"])
     epochs = tqdm(
-        range(state.epoch, num_epochs),
+        range(local_state["epoch"], num_epochs),
         desc=f"Epoch ... (1/{num_epochs})",
         position=0,
         disable=jax.process_index() > 0,
@@ -1149,6 +1176,7 @@ def main():
     def run_evaluation():
         # ======================== Evaluating ==============================
         if training_args.do_eval:
+            start_eval_time = time.perf_counter()
             eval_loader = dataset.dataloader("eval", eval_batch_size_per_step)
             eval_steps = (
                 len_eval_dataset // eval_batch_size_per_step
@@ -1195,6 +1223,7 @@ def main():
 
             # log metrics
             metrics_logger.log(eval_metrics, prefix="eval")
+            metrics_logger.log_time("eval", time.perf_counter() - start_eval_time)
 
             # Print metrics and update progress bar
             desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
@@ -1206,6 +1235,7 @@ def main():
     def run_save_model(state, eval_metrics=None):
         if jax.process_index() == 0:
 
+            start_save_time = time.perf_counter()
             output_dir = training_args.output_dir
             use_bucket = output_dir.startswith("gs://")
             if use_bucket:
@@ -1298,13 +1328,15 @@ def main():
                         f"{Path(training_args.output_dir) / 'opt_state.msgpack'}"
                     )
                 wandb.run.log_artifact(artifact_state)
+            metrics_logger.log_time("save_model", time.perf_counter() - start_save_time)
 
     logger.info("  Ready to start training")
-    with maps.mesh(mesh.devices, mesh.axis_names):
+    with mesh:
         for epoch in epochs:
             state.replace(epoch=epoch)
+            local_state["epoch"] = epoch
             # ======================== Training ================================
-            metrics_logger.update_state_metrics(state)
+            metrics_logger.update_state_metrics(local_state)
             metrics_logger.log({})
 
             # Generate an epoch by shuffling sampling indices from the train dataset
@@ -1323,9 +1355,7 @@ def main():
                 disable=jax.process_index() > 0,
             ):
                 # calculate delta time (we have a lag of one step but it's ok)
-                new_time = time.perf_counter()
-                delta_time = new_time - last_time
-                last_time = new_time
+                train_time = time.perf_counter() - start_time
 
                 # set correct shape to batch
                 # - add grad_step dim if gradient_accumulation_steps > 1
@@ -1353,18 +1383,23 @@ def main():
                 batch = freeze(batch)
 
                 # train step
-                state, train_metrics = p_train_step(state, batch, delta_time)
-                step += 1
+                state, train_metrics = p_train_step(state, batch, train_time)
+                local_state["step"] += 1
+                local_state["train_time"] = train_time
+                local_state["train_samples"] += batch_size_per_step
 
-                if step % training_args.logging_steps == 0 and jax.process_index() == 0:
-                    metrics_logger.update_state_metrics(state)
+                if (
+                    local_state["step"] % training_args.logging_steps == 0
+                    and jax.process_index() == 0
+                ):
+                    metrics_logger.update_state_metrics(local_state)
                     metrics_logger.log(train_metrics, prefix="train")
 
                 eval_metrics = None
-                if step % training_args.eval_steps == 0:
+                if local_state["step"] % training_args.eval_steps == 0:
                     eval_metrics = run_evaluation()
 
-                if step % training_args.save_steps == 0:
+                if local_state["step"] % training_args.save_steps == 0:
                     run_save_model(state, eval_metrics)
 
             # log final train metrics

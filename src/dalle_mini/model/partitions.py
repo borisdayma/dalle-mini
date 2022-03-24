@@ -36,23 +36,21 @@ def _replacement_rules(rules):
 def _get_partition_rules():
     return [
         # embeddings
-        ((r"embed_positions", "embedding"), P("mp", None)),
-        ((r"embed_tokens", "embedding"), P("mp", None)),
-        # self-attention
-        ((r"self_attn", "(q_proj|k_proj|v_proj)", "kernel"), P(None, "mp")),
-        ((r"self_attn", "out_proj", "kernel"), P("mp", None)),
-        # enc-dec attention
-        ((r"encoder_attn", "(q_proj|k_proj|v_proj)", "kernel"), P(None, "mp")),
-        ((r"encoder_attn", "out_proj", "kernel"), P("mp", None)),
+        (("embed_positions", "embedding"), P("mp", None)),
+        (("embed_tokens", "embedding"), P("mp", None)),
+        # attention
+        (("(q_proj|k_proj|v_proj)", "kernel"), P(None, "mp")),
+        (("out_proj", "kernel"), P("mp", None)),
         # FFN
-        ((r"fc1", "kernel"), P(None, "mp")),
-        ((r"fc2", "kernel"), P("mp", None)),
+        (("Dense_0", "kernel"), P(None, "mp")),
+        (("GLU.*", "Dense_1", "kernel"), P(None, "mp")),
+        (("GLU.*", "Dense_2", "kernel"), P("mp", None)),
+        (("FFN.*", "Dense_1", "kernel"), P("mp", None)),
         # layer norms
-        ((r"layernorm_embedding", "(bias|scale)"), None),
-        ((r"self_attn_layer_norm", "(bias|scale)"), None),
-        ((r"encoder_attn_layer_norm", "(bias|scale)"), None),
-        ((r"final_layer_norm", "(bias|scale)"), None),
-        ((r"lm_head", "kernel"), P(None, "mp")),
+        (("(bias|scale)",), None),
+        (("lm_head", "kernel"), P(None, "mp")),
+        # head scale and tau
+        (("(head_scale|tau)",), None),
     ]
 
 
@@ -63,6 +61,6 @@ def set_partitions(in_dict):
     result = {k: replace(k, v) for k, v in initd.items()}
     for k, v in result.items():
         if v == _unmatched:
-            print(k)
+            print(f"Unmatched -> {k}")
     assert _unmatched not in result.values(), "Incomplete partition spec."
     return freeze(unflatten_dict(result))

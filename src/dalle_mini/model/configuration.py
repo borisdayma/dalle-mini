@@ -44,15 +44,12 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         decoder_layers=12,
         decoder_ffn_dim=4096,
         decoder_attention_heads=16,
-        encoder_layerdrop=0.0,
-        decoder_layerdrop=0.0,
         activation_function="gelu",
         d_model=1024,
         dropout=0.1,
         attention_dropout=0.0,
         activation_dropout=0.0,
         init_std=0.02,
-        classifier_dropout=0.0,
         scale_embedding=False,
         gradient_checkpointing=False,
         use_cache=True,
@@ -60,9 +57,38 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         forced_eos_token_id=None,
         tie_word_embeddings=False,  # different modalities and sizes
         do_sample=True,
+        # transformer variants
+        head_scale=False,  # used in NormFormer
+        ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
+        ln_positions="deepnet",  # layer normalization positions, "normformer", "swinv2", "deepnet" (same as post-ln)
+        use_cosine_attention=False,  # used in Swin v2
+        tau_init=0.05,  # used only in cosine attention (Swin v2)
+        use_deepnet_scaling=False,  # used in Deepnet
+        use_glu=False,  # "GLU Variants Improve Transformer"
         **kwargs,
     ):
+        # text normalizer
         self.normalize_text = normalize_text
+
+        # transformer variants
+        self.head_scale = head_scale  # per Normformer
+        assert ln_type in [
+            "rmsnorm",
+            "layernorm",
+        ], "ln_type must be 'rmsnorm' or 'layernorm'"
+        self.ln_type = ln_type
+        assert ln_positions in [
+            "normformer",
+            "swinv2",
+            "deepnet",
+        ], "ln_positions must be 'normformer', 'swinv2' or 'deepnet'"
+        self.ln_positions = ln_positions
+        self.use_cosine_attention = use_cosine_attention
+        self.tau_init = tau_init
+        self.use_deepnet_scaling = use_deepnet_scaling
+        self.use_glu = use_glu
+
+        # common parameters
         self.encoder_vocab_size = encoder_vocab_size
         self.image_vocab_size = image_vocab_size
         self.image_length = image_length
@@ -79,9 +105,6 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.activation_dropout = activation_dropout
         self.activation_function = activation_function
         self.init_std = init_std
-        self.encoder_layerdrop = encoder_layerdrop
-        self.decoder_layerdrop = decoder_layerdrop
-        self.classifier_dropout = classifier_dropout
         self.use_cache = use_cache
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = (

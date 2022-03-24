@@ -18,7 +18,7 @@ import math
 import os
 from functools import partial
 from pickle import UnpicklingError
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import flax
 import flax.linen as nn
@@ -26,7 +26,9 @@ import jax
 import jax.numpy as jnp
 import msgpack.exceptions
 from flax.core.frozen_dict import unfreeze
-from flax.linen import make_causal_mask
+from flax.linen import combine_masks, make_causal_mask
+from flax.linen import partitioning as nn_partitioning
+from flax.linen.attention import dot_product_attention_weights
 from flax.serialization import from_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jax import lax
@@ -42,6 +44,8 @@ from transformers.file_utils import (
 )
 from transformers.generation_flax_utils import FlaxSampleOutput
 from transformers.modeling_flax_outputs import (
+    FlaxBaseModelOutput,
+    FlaxBaseModelOutputWithPastAndCrossAttentions,
     FlaxCausalLMOutputWithCrossAttentions,
     FlaxSeq2SeqLMOutput,
 )
@@ -49,11 +53,7 @@ from transformers.modeling_flax_utils import ACT2FN
 from transformers.models.bart.modeling_flax_bart import (
     FlaxBartAttention,
     FlaxBartDecoder,
-    FlaxBartDecoderLayer,
-    FlaxBartDecoderLayerCollection,
     FlaxBartEncoder,
-    FlaxBartEncoderLayer,
-    FlaxBartEncoderLayerCollection,
     FlaxBartForConditionalGeneration,
     FlaxBartForConditionalGenerationModule,
     FlaxBartModule,
@@ -66,12 +66,123 @@ from .utils import PretrainedFromWandbMixin
 
 logger = logging.get_logger(__name__)
 
+remat = nn_partitioning.remat
+
+
+# deepnet initialization
+def deepnet_init(gain=1):
+    init = jax.nn.initializers.glorot_normal()
+
+    def _init(*args, **kwargs):
+        return gain * init(*args, **kwargs)
+
+    return _init
+
+
+# deepnet gain
+deepnet_gain = {
+    "encoder": {
+        "alpha": lambda config: 0.81
+        * (config.encoder_layers**4 * config.decoder_layers) ** 0.0625,
+        "beta": lambda config: 0.87
+        * (config.encoder_layers**4 * config.decoder_layers) ** -0.0625,
+    },
+    "decoder": {
+        "alpha": lambda config: (3 * config.decoder_layers) ** 0.25,
+        "beta": lambda config: (12 * config.decoder_layers) ** -0.25,
+    },
+}
+
+
+class RMSNorm(nn.Module):
+    """
+    From "Root Mean Square Layer Normalization" by https://arxiv.org/abs/1910.07467
+
+    Adapted from flax.linen.LayerNorm
+    """
+
+    epsilon: float = 1e-6
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+    use_scale: bool = True
+    scale_init: Any = jax.nn.initializers.ones
+
+    @nn.compact
+    def __call__(self, x):
+        reduction_axes = (-1,)
+        feature_axes = (-1,)
+
+        rms_sq = self._compute_rms_sq(x, reduction_axes)
+
+        return self._normalize(
+            self,
+            x,
+            rms_sq,
+            reduction_axes,
+            feature_axes,
+            self.dtype,
+            self.param_dtype,
+            self.epsilon,
+            self.use_scale,
+            self.scale_init,
+        )
+
+    def _compute_rms_sq(self, x, axes):
+        x = jnp.asarray(x, jnp.promote_types(jnp.float32, jnp.result_type(x)))
+        rms_sq = jnp.mean(jax.lax.square(x), axes)
+        return rms_sq
+
+    def _normalize(
+        self,
+        mdl,
+        x,
+        rms_sq,
+        reduction_axes,
+        feature_axes,
+        dtype,
+        param_dtype,
+        epsilon,
+        use_scale,
+        scale_init,
+    ):
+        reduction_axes = nn.normalization._canonicalize_axes(x.ndim, reduction_axes)
+        feature_axes = nn.normalization._canonicalize_axes(x.ndim, feature_axes)
+        stats_shape = list(x.shape)
+        for axis in reduction_axes:
+            stats_shape[axis] = 1
+        rms_sq = rms_sq.reshape(stats_shape)
+        feature_shape = [1] * x.ndim
+        reduced_feature_shape = []
+        for ax in feature_axes:
+            feature_shape[ax] = x.shape[ax]
+            reduced_feature_shape.append(x.shape[ax])
+        mul = lax.rsqrt(rms_sq + epsilon)
+        if use_scale:
+            scale = mdl.param(
+                "scale", scale_init, reduced_feature_shape, param_dtype
+            ).reshape(feature_shape)
+            mul *= scale
+        y = mul * x
+        return jnp.asarray(y, dtype)
+
+
+def norm(type, *args, **kwargs):
+    if type == "rmsnorm":
+        return RMSNorm(*args, **kwargs)
+    elif type == "layernorm":
+        return nn.LayerNorm(*args, **kwargs)
+    else:
+        raise ValueError(f"Unknown norm type {type}")
+
 
 class FlaxBartAttention(FlaxBartAttention):
     """
     Edits:
     - causal mask is used only in decoder and considers image_length
+    - scale attention heads per NormFormer paper
     """
+
+    is_encoder: bool = False
 
     def setup(self) -> None:
         self.head_dim = self.embed_dim // self.num_heads
@@ -86,13 +197,45 @@ class FlaxBartAttention(FlaxBartAttention):
             self.embed_dim,
             use_bias=self.bias,
             dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
 
-        self.q_proj, self.k_proj, self.v_proj = dense(), dense(), dense()
-        self.out_proj = dense()
+        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+            self.config
+        )
 
+        self.q_proj = dense(
+            kernel_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std)
+        )
+        self.k_proj = dense(
+            kernel_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std)
+        )
+        self.v_proj = dense(
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std)
+        )
+        self.out_proj = dense(
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std)
+        )
         self.dropout_layer = nn.Dropout(rate=self.dropout)
+
+        if self.config.head_scale:
+            self.head_scale = self.param(
+                "head_scale", jax.nn.initializers.ones, (1, 1, self.num_heads, 1)
+            )
+
+        if self.config.use_cosine_attention:
+            self.tau = self.param(
+                "tau",
+                jax.nn.initializers.constant(self.config.tau_init),
+                (1, self.num_heads, 1, 1),
+            )
 
         if self.causal:
             # used only in decoder
@@ -100,128 +243,621 @@ class FlaxBartAttention(FlaxBartAttention):
                 jnp.ones((1, self.config.image_length), dtype="bool"), dtype="bool"
             )
 
+    def __call__(
+        self,
+        hidden_states: jnp.ndarray,
+        key_value_states: Optional[jnp.ndarray] = None,
+        attention_mask: Optional[jnp.ndarray] = None,
+        init_cache: bool = False,
+        deterministic: bool = True,
+    ) -> Tuple[jnp.ndarray]:
+        """Input shape: Batch x Time x Channel"""
 
-class FlaxBartEncoderLayer(FlaxBartEncoderLayer):
+        # if key_value_states are provided this layer is used as a cross-attention layer
+        # for the decoder
+        is_cross_attention = key_value_states is not None
+        batch_size = hidden_states.shape[0]
+
+        # get query proj
+        query_states = self.q_proj(hidden_states)
+        # get key, value proj
+        if is_cross_attention:
+            # cross_attentions
+            key_states = self.k_proj(key_value_states)
+            value_states = self.v_proj(key_value_states)
+        else:
+            # self_attention
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
+
+        query_states = self._split_heads(query_states)
+        key_states = self._split_heads(key_states)
+        value_states = self._split_heads(value_states)
+
+        # handle cache prepare causal attention mask
+        if self.causal:
+            query_length, key_length = query_states.shape[1], key_states.shape[1]
+            if self.has_variable("cache", "cached_key"):
+                mask_shift = self.variables["cache"]["cache_index"]
+                max_decoder_length = self.variables["cache"]["cached_key"].shape[1]
+                causal_mask = lax.dynamic_slice(
+                    self.causal_mask,
+                    (0, 0, mask_shift, 0),
+                    (1, 1, query_length, max_decoder_length),
+                )
+            else:
+                causal_mask = self.causal_mask[:, :, :query_length, :key_length]
+            causal_mask = jnp.broadcast_to(
+                causal_mask, (batch_size,) + causal_mask.shape[1:]
+            )
+
+        # combine masks if needed
+        if attention_mask is not None and self.causal:
+            attention_mask = jnp.broadcast_to(
+                jnp.expand_dims(attention_mask, axis=(-3, -2)), causal_mask.shape
+            )
+            attention_mask = combine_masks(attention_mask, causal_mask)
+        elif self.causal:
+            attention_mask = causal_mask
+        elif attention_mask is not None:
+            attention_mask = jnp.expand_dims(attention_mask, axis=(-3, -2))
+
+        # During fast autoregressive decoding, we feed one position at a time,
+        # and cache the keys and values step by step.
+        if self.causal and (self.has_variable("cache", "cached_key") or init_cache):
+            key_states, value_states, attention_mask = self._concatenate_to_cache(
+                key_states, value_states, query_states, attention_mask
+            )
+
+        # Convert the boolean attention mask to an attention bias.
+        if attention_mask is not None:
+            # attention mask in the form of attention bias
+            attention_bias = lax.select(
+                attention_mask > 0,
+                jnp.full(attention_mask.shape, 0.0).astype(self.dtype),
+                jnp.full(attention_mask.shape, float("-inf")).astype(self.dtype),
+            )
+        else:
+            attention_bias = None
+
+        dropout_rng = None
+        if not deterministic and self.dropout > 0.0:
+            dropout_rng = self.make_rng("dropout")
+
+        if self.config.use_cosine_attention:
+            # normalize q and k
+            query_states = query_states / (
+                jnp.linalg.norm(query_states, axis=-1, keepdims=True) + 1e-8
+            )
+            key_states = key_states / (
+                jnp.linalg.norm(key_states, axis=-1, keepdims=True) + 1e-8
+            )
+        attn_weights = dot_product_attention_weights(
+            query_states,
+            key_states,
+            bias=attention_bias,
+            dropout_rng=dropout_rng,
+            dropout_rate=self.dropout,
+            broadcast_dropout=True,
+            deterministic=deterministic,
+            dtype=self.dtype,
+            precision=None,
+        )
+        if self.config.use_cosine_attention:
+            # divide by tau
+            attn_weights = attn_weights / jnp.maximum(self.tau, 0.01)
+
+        attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value_states)
+        if self.config.head_scale:
+            # per Normformer
+            attn_output = attn_output * self.head_scale
+        attn_output = self._merge_heads(attn_output)
+        attn_output = self.out_proj(attn_output)
+
+        return attn_output, attn_weights
+
+
+class GLU(nn.Module):
+    """From "GLU Variants Improve Transformer" by https://arxiv.org/abs/2002.05202"""
+
+    config: DalleBartConfig
+    ffn_dim: int
+    embed_dim: int
+    dtype: jnp.dtype = jnp.float32
+    is_encoder: bool = False
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+
+        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+            self.config
+        )
+
+        if self.config.ln_positions in ["normformer"]:
+            x = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+            )(x)
+        w = nn.Dense(
+            self.ffn_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        w = ACT2FN[self.config.activation_function](w)
+        v = nn.Dense(
+            self.ffn_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        x = w * v
+        if self.config.ln_positions in ["normformer"]:
+            x = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+            )(x)
+        x = nn.Dropout(rate=self.config.activation_dropout)(
+            x, deterministic=deterministic
+        )
+
+        x = nn.Dense(
+            self.embed_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        if self.config.ln_positions in ["swinv2"]:
+            x = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(x)
+        x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
+        return x
+
+
+class FFN(nn.Module):
+    """Simple FFN layer"""
+
+    config: DalleBartConfig
+    ffn_dim: int
+    embed_dim: int
+    dtype: jnp.dtype = jnp.float32
+    is_encoder: bool = False
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+
+        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+            self.config
+        )
+        if self.config.ln_positions in ["normformer"]:
+            x = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+            )(x)
+        x = nn.Dense(
+            self.ffn_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        x = ACT2FN[self.config.activation_function](x)
+        if self.config.ln_positions in ["normformer"]:
+            x = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+            )(x)
+        x = nn.Dropout(rate=self.config.activation_dropout)(
+            x, deterministic=deterministic
+        )
+        x = nn.Dense(
+            self.embed_dim,
+            dtype=self.dtype,
+            use_bias=False,
+            kernel_init=deepnet_init(gain)
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
+        )(x)
+        if self.config.ln_positions in ["swinv2"]:
+            x = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(x)
+        x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
+        return x
+
+
+class FlaxBartEncoderLayer(nn.Module):
     """
     Edits:
     - no bias
     - use custom FlaxBartAttention
     """
 
-    def setup(self) -> None:
-        self.embed_dim = self.config.d_model
-        self.self_attn = FlaxBartAttention(
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32
+    add_norm: bool = False
+    use_scale: bool = True
+
+    @nn.compact
+    def __call__(
+        self,
+        hidden_states: jnp.ndarray,
+        attention_mask: jnp.ndarray,
+        output_attentions: bool = True,
+        deterministic: bool = True,
+    ) -> Tuple[jnp.ndarray]:
+
+        res_gain = (
+            deepnet_gain["encoder"]["alpha"](self.config)
+            if self.config.use_deepnet_scaling
+            else 1
+        )
+
+        embed_dim = self.config.d_model
+        residual = hidden_states
+        if self.config.ln_positions in ["normformer"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
+        hidden_states, attn_weights = FlaxBartAttention(
             config=self.config,
-            embed_dim=self.embed_dim,
+            embed_dim=embed_dim,
             num_heads=self.config.encoder_attention_heads,
             dropout=self.config.attention_dropout,
             bias=False,
             dtype=self.dtype,
+            is_encoder=True,
+        )(hidden_states=hidden_states, attention_mask=attention_mask)
+
+        if self.config.ln_positions in ["normformer", "swinv2"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
+        hidden_states = nn.Dropout(rate=self.config.dropout)(
+            hidden_states, deterministic=deterministic
         )
-        self.self_attn_layer_norm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
-        self.dropout_layer = nn.Dropout(rate=self.config.dropout)
-        self.activation_fn = ACT2FN[self.config.activation_function]
-        self.activation_dropout_layer = nn.Dropout(rate=self.config.activation_dropout)
-        self.fc1 = nn.Dense(
-            self.config.encoder_ffn_dim,
-            dtype=self.dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        hidden_states = residual * res_gain + hidden_states
+        if self.config.ln_positions in ["deepnet"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
+
+        residual = hidden_states
+        ff_block = (
+            GLU(
+                config=self.config,
+                ffn_dim=self.config.encoder_ffn_dim,
+                embed_dim=embed_dim,
+                dtype=self.dtype,
+                is_encoder=True,
+            )
+            if self.config.use_glu
+            else FFN(
+                config=self.config,
+                ffn_dim=self.config.encoder_ffn_dim,
+                embed_dim=embed_dim,
+                dtype=self.dtype,
+                is_encoder=True,
+            )
         )
-        self.fc2 = nn.Dense(
-            self.embed_dim,
-            dtype=self.dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
-        )
-        self.final_layer_norm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+        hidden_states = ff_block(hidden_states, deterministic=deterministic)
+        hidden_states = residual * res_gain + hidden_states
+        if self.add_norm or self.config.ln_positions in ["deepnet"]:
+            use_scale = self.use_scale or self.config.ln_positions == "deepnet"
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=use_scale,
+            )(hidden_states)
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (attn_weights,)
+
+        return outputs
 
 
-class FlaxBartEncoderLayerCollection(FlaxBartEncoderLayerCollection):
+class FlaxBartDecoderLayer(nn.Module):
+    """
+    Edits:
+    - no bias
+    - use custom FlaxBartAttention
+    """
+
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32
+    add_norm: bool = False
+    use_scale: bool = False
+
+    @nn.compact
+    def __call__(
+        self,
+        hidden_states: jnp.ndarray,
+        attention_mask: jnp.ndarray,
+        encoder_hidden_states: Optional[jnp.ndarray] = None,
+        encoder_attention_mask: Optional[jnp.ndarray] = None,
+        init_cache: bool = False,
+        output_attentions: bool = True,
+        deterministic: bool = True,
+    ) -> Tuple[jnp.ndarray]:
+
+        res_gain = (
+            deepnet_gain["decoder"]["alpha"](self.config)
+            if self.config.use_deepnet_scaling
+            else 1
+        )
+
+        embed_dim = self.config.d_model
+        residual = hidden_states
+
+        # Self Attention
+        if self.config.ln_positions in ["normformer"]:
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=False,
+            )(hidden_states)
+        hidden_states, attn_weights = FlaxBartAttention(
+            config=self.config,
+            embed_dim=embed_dim,
+            num_heads=self.config.decoder_attention_heads,
+            dropout=self.config.attention_dropout,
+            causal=True,
+            bias=False,
+            dtype=self.dtype,
+            is_encoder=False,
+        )(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            init_cache=init_cache,
+        )
+
+        if self.config.ln_positions in ["normformer", "swinv2"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
+        hidden_states = nn.Dropout(rate=self.config.dropout)(
+            hidden_states, deterministic=deterministic
+        )
+        hidden_states = residual * res_gain + hidden_states
+        if self.config.ln_positions in ["deepnet"]:
+            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
+                hidden_states
+            )
+
+        # Cross Attention
+        cross_attn_weights = None
+        if encoder_hidden_states is not None:
+            residual = hidden_states
+            if self.config.ln_positions in ["normformer"]:
+                hidden_states = norm(
+                    self.config.ln_type,
+                    dtype=self.dtype,
+                    epsilon=1e-05,
+                    use_scale=False,
+                )(hidden_states)
+            hidden_states, cross_attn_weights = FlaxBartAttention(
+                config=self.config,
+                embed_dim=embed_dim,
+                num_heads=self.config.decoder_attention_heads,
+                dropout=self.config.attention_dropout,
+                bias=False,
+                dtype=self.dtype,
+                is_encoder=False,
+            )(
+                hidden_states=hidden_states,
+                key_value_states=encoder_hidden_states,
+                attention_mask=encoder_attention_mask,
+            )
+            if self.config.ln_positions in ["normformer", "swinv2"]:
+                hidden_states = norm(
+                    self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+                )(hidden_states)
+            hidden_states = nn.Dropout(rate=self.config.dropout)(
+                hidden_states, deterministic=deterministic
+            )
+            hidden_states = residual * res_gain + hidden_states
+            if self.config.ln_positions in ["deepnet"]:
+                hidden_states = norm(
+                    self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+                )(hidden_states)
+
+        # Feed forward
+        residual = hidden_states
+        ff_block = (
+            GLU(
+                config=self.config,
+                ffn_dim=self.config.decoder_ffn_dim,
+                embed_dim=embed_dim,
+                dtype=self.dtype,
+                is_encoder=False,
+            )
+            if self.config.use_glu
+            else FFN(
+                config=self.config,
+                ffn_dim=self.config.decoder_ffn_dim,
+                embed_dim=embed_dim,
+                dtype=self.dtype,
+                is_encoder=False,
+            )
+        )
+        hidden_states = ff_block(hidden_states, deterministic=deterministic)
+        hidden_states = residual * res_gain + hidden_states
+        if self.add_norm or self.config.ln_positions in ["deepnet"]:
+            use_scale = self.use_scale or self.config.ln_positions == "deepnet"
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=use_scale,
+            )(hidden_states)
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (attn_weights, cross_attn_weights)
+
+        return outputs
+
+
+class FlaxBartEncoderLayerCollection(nn.Module):
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32  # the dtype of the computation
     """
     Edits:
     - use custom FlaxBartEncoderLayer
     - allow Gradient Checkpointing (nn.remat)
     """
 
-    def setup(self):
-        layer_module = (
-            nn.remat(FlaxBartEncoderLayer, concrete=True)
+    @nn.compact
+    def __call__(
+        self,
+        hidden_states,
+        attention_mask,
+        deterministic: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ):
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+
+        n_layers = self.config.encoder_layers
+        layer = (
+            remat(FlaxBartEncoderLayer, static_argnums=(2, 3))
             if self.config.gradient_checkpointing
             else FlaxBartEncoderLayer
         )
-        self.layers = [
-            layer_module(self.config, name=str(i), dtype=self.dtype)
-            for i in range(self.config.encoder_layers)
+        for i in range(n_layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            # final layernorm on the output of the last layer
+            # or every 6 layers for Swin v2
+            # ignored args for deepnet which always add a norm with scale
+            add_norm = (i == n_layers - 1) or (
+                (self.config.ln_positions == "swinv2") and ((i + 1) % 6 == 0)
+            )
+            # we don't need to scale the norm for the last layer
+            use_scale = i != n_layers - 1
+            layer_outputs = layer(
+                self.config, dtype=self.dtype, add_norm=add_norm, use_scale=use_scale
+            )(
+                hidden_states,
+                attention_mask,
+                output_attentions,
+                deterministic,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        # add hidden states from the last layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        outputs = [
+            hidden_states,
+            all_hidden_states,
+            all_self_attns,
         ]
-        self.layerdrop = self.config.encoder_layerdrop
 
+        if not return_dict:
+            return tuple(v for v in outputs if v is not None)
 
-class FlaxBartDecoderLayer(FlaxBartDecoderLayer):
-    """
-    Edits:
-    - no bias
-    - uses custom FlaxBartAttention
-    """
-
-    def setup(self) -> None:
-        self.embed_dim = self.config.d_model
-        self.self_attn = FlaxBartAttention(
-            config=self.config,
-            embed_dim=self.embed_dim,
-            num_heads=self.config.decoder_attention_heads,
-            dropout=self.config.attention_dropout,
-            causal=True,
-            bias=False,
-            dtype=self.dtype,
+        return FlaxBaseModelOutput(
+            last_hidden_state=hidden_states,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
         )
-        self.dropout_layer = nn.Dropout(rate=self.config.dropout)
-        self.activation_fn = ACT2FN[self.config.activation_function]
-        self.activation_dropout_layer = nn.Dropout(rate=self.config.activation_dropout)
-
-        self.self_attn_layer_norm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
-        self.encoder_attn = FlaxBartAttention(
-            config=self.config,
-            embed_dim=self.embed_dim,
-            num_heads=self.config.decoder_attention_heads,
-            dropout=self.config.attention_dropout,
-            bias=False,
-            dtype=self.dtype,
-        )
-        self.encoder_attn_layer_norm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
-        self.fc1 = nn.Dense(
-            self.config.encoder_ffn_dim,
-            dtype=self.dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
-        )
-        self.fc2 = nn.Dense(
-            self.embed_dim,
-            dtype=self.dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
-        )
-        self.final_layer_norm = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
 
 
-class FlaxBartDecoderLayerCollection(FlaxBartDecoderLayerCollection):
+class FlaxBartDecoderLayerCollection(nn.Module):
+    config: DalleBartConfig
+    dtype: jnp.dtype = jnp.float32  # the dtype of the computation
     """
     Edits:
     - use custom FlaxBartDecoderLayer
     - allow Gradient Checkpointing (nn.remat)
     """
 
-    def setup(self):
-        layer_module = (
-            nn.remat(FlaxBartDecoderLayer, concrete=True)
+    @nn.compact
+    def __call__(
+        self,
+        hidden_states,
+        attention_mask,
+        encoder_hidden_states: Optional[jnp.ndarray] = None,
+        encoder_attention_mask: Optional[jnp.ndarray] = None,
+        deterministic: bool = True,
+        init_cache: bool = False,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ):
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        all_cross_attentions = (
+            () if (output_attentions and encoder_hidden_states is not None) else None
+        )
+
+        n_layers = self.config.decoder_layers
+        layer = (
+            remat(FlaxBartDecoderLayer, static_argnums=(4, 5, 6))
             if self.config.gradient_checkpointing
             else FlaxBartDecoderLayer
         )
-        self.layers = [
-            layer_module(self.config, name=str(i), dtype=self.dtype)
-            for i in range(self.config.decoder_layers)
+        for i in range(n_layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            # final layernorm on the output of the last layer
+            # or every 6 layers for Swin v2
+            add_norm = (i == n_layers - 1) or (
+                (self.config.ln_positions == "swinv2") and ((i + 1) % 6 == 0)
+            )
+            # we don't need to scale the norm for the last layer
+            use_scale = i != n_layers - 1
+            layer_outputs = layer(
+                self.config, dtype=self.dtype, add_norm=add_norm, use_scale=use_scale
+            )(
+                hidden_states,
+                attention_mask,
+                encoder_hidden_states,
+                encoder_attention_mask,
+                init_cache,
+                output_attentions,
+                deterministic,
+            )
+
+            hidden_states = layer_outputs[0]
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+                if encoder_hidden_states is not None:
+                    all_cross_attentions += (layer_outputs[2],)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        outputs = [
+            hidden_states,
+            all_hidden_states,
+            all_self_attns,
+            all_cross_attentions,
         ]
-        self.layerdrop = self.config.decoder_layerdrop
+
+        if not return_dict:
+            return tuple(v for v in outputs if v is not None)
+
+        return FlaxBaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=hidden_states,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+            cross_attentions=all_cross_attentions,
+        )
 
 
 class FlaxBartEncoder(FlaxBartEncoder):
@@ -246,10 +882,14 @@ class FlaxBartEncoder(FlaxBartEncoder):
         self.embed_positions = nn.Embed(
             self.config.max_text_length + self.offset,
             embed_dim,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
         self.layers = FlaxBartEncoderLayerCollection(self.config, self.dtype)
-        self.layernorm_embedding = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+        self.layernorm_embedding = norm(
+            self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+        )
 
 
 class FlaxBartDecoder(FlaxBartDecoder):
@@ -276,11 +916,15 @@ class FlaxBartDecoder(FlaxBartDecoder):
         self.embed_positions = nn.Embed(
             self.config.image_length + self.offset,  # image length for BOS
             embed_dim,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
 
         self.layers = FlaxBartDecoderLayerCollection(self.config, self.dtype)
-        self.layernorm_embedding = nn.LayerNorm(dtype=self.dtype, epsilon=1e-05)
+        self.layernorm_embedding = norm(
+            self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+        )
 
 
 class FlaxBartModule(FlaxBartModule):
@@ -294,12 +938,16 @@ class FlaxBartModule(FlaxBartModule):
         encoder_embed_tokens = nn.Embed(
             self.config.encoder_vocab_size,
             self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
         decoder_embed_tokens = nn.Embed(
             self.config.image_vocab_size + 1,  # image vocab size + 1 for BOS
             self.config.d_model,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
 
         self.encoder = FlaxBartEncoder(
@@ -639,7 +1287,9 @@ class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationMod
             + 1,  # image vocab size + 1 for BOS to have same size as decoder inputs (for sharding)
             use_bias=False,
             dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            kernel_init=deepnet_init()
+            if self.config.use_deepnet_scaling
+            else jax.nn.initializers.normal(self.config.init_std),
         )
 
     def __call__(

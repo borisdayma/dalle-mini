@@ -3,7 +3,6 @@
   "activation_function": "gelu",
   "attention_dropout": 0.0,
   "bos_token_id": 16385,
-  "classifier_dropout": 0.0,
   "d_model": 256,
   "decoder_attention_heads": 2,
   "decoder_ffn_dim": 256,
