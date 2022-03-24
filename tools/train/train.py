@@ -673,7 +673,7 @@ def main():
         warmup_fn = optax.linear_schedule(
             init_value=0.0,
             end_value=training_args.learning_rate,
-            transition_steps=training_args.warmup_steps,
+            transition_steps=training_args.warmup_steps + 1,  # ensure not 0
         )
         # offset step when resuming
         if model_metadata.get("step", 0):
@@ -1163,7 +1163,7 @@ def main():
         for k in ["step", "epoch", "train_time", "train_samples"]
     }
     # init variables
-    start_time = time.perf_counter() + local_state["train_time"]
+    start_time = time.perf_counter() - local_state["train_time"]
     train_metrics = None
     metrics_logger = MetricsLogger(local_state["step"])
     epochs = tqdm(
