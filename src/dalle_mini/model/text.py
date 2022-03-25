@@ -25,7 +25,8 @@ class HashtagProcessor:
             "dalle-mini/dalle-mini", filename="enwiki-words-frequency.txt"
         )
         self._word_cost = (
-            l.split()[0] for l in Path(wiki_word_frequency).read_text().splitlines()
+            l.split()[0]
+            for l in Path(wiki_word_frequency).read_text(encoding="utf8").splitlines()
         )
         self._word_cost = {
             str(k): math.log(float(i + 1)) for i, k in enumerate(self._word_cost)
