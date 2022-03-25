@@ -60,7 +60,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         # transformer variants
         head_scale=False,  # used in NormFormer
         ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
-        ln_positions="deepnet",  # layer normalization positions, "normformer", "swinv2", "deepnet" (same as post-ln)
+        ln_positions="deepnet",  # layer normalization positions, "normformer", "swinv2", "cogview", "deepnet" (same as post-ln)
         use_cosine_attention=False,  # used in Swin v2
         tau_init=0.05,  # used only in cosine attention (Swin v2)
         use_deepnet_scaling=False,  # used in Deepnet
@@ -80,6 +80,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         assert ln_positions in [
             "normformer",
             "swinv2",
+            "cogview",
             "deepnet",
         ], "ln_positions must be 'normformer', 'swinv2' or 'deepnet'"
         self.ln_positions = ln_positions

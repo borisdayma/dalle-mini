@@ -124,6 +124,7 @@ Sequence to sequence model based on "[BART: Denoising Sequence-to-Sequence Pre-t
 - "[Deepnet: Scaling Transformers to 1,000 Layers](https://arxiv.org/abs/2203.00555)"
 - "[NormFormer: Improved Transformer Pretraining with Extra Normalization](https://arxiv.org/abs/2110.09456)"
 - "[Swin Transformer: Hierarchical Vision Transformer using Shifted Windows](https://arxiv.org/abs/2103.14030)"
+- "[CogView: Mastering Text-to-Image Generation via Transformers](https://arxiv.org/abs/2105.13290v2)
 - "[Root Mean Square Layer Normalization](https://arxiv.org/abs/1910.07467)"
 
 Main optimizer (Distributed Shampoo) from "[Scalable Second Order Optimization for Deep Learning](https://arxiv.org/abs/2002.09018)".
@@ -222,6 +223,17 @@ Main optimizer (Distributed Shampoo) from "[Scalable Second Order Optimization f
                author={Ze Liu and Han Hu and Yutong Lin and Zhuliang Yao and Zhenda Xie and Yixuan Wei and Jia Ning and Yue Cao and Zheng Zhang and Li Dong and Furu Wei and Baining Guo},
                booktitle={International Conference on Computer Vision and Pattern Recognition (CVPR)},
                year={2022}
+}
+```
+
+```text
+@misc{ding2021cogview,
+      title = {CogView: Mastering Text-to-Image Generation via Transformers},
+      author = {Ming Ding and Zhuoyi Yang and Wenyi Hong and Wendi Zheng and Chang Zhou and Da Yin and Junyang Lin and Xu Zou and Zhou Shao and Hongxia Yang and Jie Tang},
+      year = {2021},
+      eprint = {2105.13290},
+      archivePrefix = {arXiv},
+      primaryClass = {cs.CV}
 }
 ```
 

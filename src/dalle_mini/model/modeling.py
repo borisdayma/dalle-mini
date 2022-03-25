@@ -373,7 +373,7 @@ class GLU(nn.Module):
             self.config
         )
 
-        if self.config.ln_positions in ["normformer"]:
+        if self.config.ln_positions in ["normformer", "cogview"]:
             x = norm(
                 self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
             )(x)
@@ -411,7 +411,7 @@ class GLU(nn.Module):
             if self.config.use_deepnet_scaling
             else jax.nn.initializers.normal(self.config.init_std),
         )(x)
-        if self.config.ln_positions in ["swinv2"]:
+        if self.config.ln_positions in ["swinv2", "cogview"]:
             x = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(x)
         x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
         return x
@@ -432,7 +432,7 @@ class FFN(nn.Module):
         gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
             self.config
         )
-        if self.config.ln_positions in ["normformer"]:
+        if self.config.ln_positions in ["normformer", "cogview"]:
             x = norm(
                 self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
             )(x)
@@ -460,7 +460,7 @@ class FFN(nn.Module):
             if self.config.use_deepnet_scaling
             else jax.nn.initializers.normal(self.config.init_std),
         )(x)
-        if self.config.ln_positions in ["swinv2"]:
+        if self.config.ln_positions in ["swinv2", "cogview"]:
             x = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(x)
         x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
         return x
@@ -593,7 +593,7 @@ class FlaxBartDecoderLayer(nn.Module):
         residual = hidden_states
 
         # Self Attention
-        if self.config.ln_positions in ["normformer"]:
+        if self.config.ln_positions in ["normformer", "cogview"]:
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -615,7 +615,7 @@ class FlaxBartDecoderLayer(nn.Module):
             init_cache=init_cache,
         )
 
-        if self.config.ln_positions in ["normformer", "swinv2"]:
+        if self.config.ln_positions in ["normformer", "swinv2", "cogview"]:
             hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
                 hidden_states
             )
@@ -632,7 +632,7 @@ class FlaxBartDecoderLayer(nn.Module):
         cross_attn_weights = None
         if encoder_hidden_states is not None:
             residual = hidden_states
-            if self.config.ln_positions in ["normformer"]:
+            if self.config.ln_positions in ["normformer", "cogview"]:
                 hidden_states = norm(
                     self.config.ln_type,
                     dtype=self.dtype,
@@ -652,7 +652,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 key_value_states=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
             )
-            if self.config.ln_positions in ["normformer", "swinv2"]:
+            if self.config.ln_positions in ["normformer", "swinv2", "cogview"]:
                 hidden_states = norm(
                     self.config.ln_type, dtype=self.dtype, epsilon=1e-05
                 )(hidden_states)
