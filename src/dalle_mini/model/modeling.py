@@ -736,9 +736,10 @@ class FlaxBartEncoderLayerCollection(nn.Module):
                 all_hidden_states += (hidden_states,)
             # final layernorm on the output of the last layer
             # or every 6 layers for Swin v2
+            # not needed for other models which use layernorm before x-attention
             # ignored args for deepnet which always add a norm with scale
-            add_norm = (i == n_layers - 1) or (
-                (self.config.ln_positions == "swinv2") and ((i + 1) % 6 == 0)
+            add_norm = self.config.ln_positions == "swinv2" and (
+                (i == n_layers - 1) or ((i + 1) % 6 == 0)
             )
             # we don't need to scale the norm for the last layer
             use_scale = i != n_layers - 1
