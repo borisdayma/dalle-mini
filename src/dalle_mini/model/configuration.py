@@ -66,7 +66,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         use_deepnet_scaling=False,  # used in Deepnet
         use_glu=False,  # "GLU Variants Improve Transformer"
         use_alibi=False,  # from "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
-        sink_iters=1,  # used in SinkFormers
+        sinkhorn_iters=3,  # used in SinkFormers
         # parameters that should not be necessary but could affect results
         force_ln_scale=True,  # force scale in layernorm even when followed by dense layers
         force_final_ln_encoder=False,  # force layer normalization in encoder final layer even when followed by dense layers
@@ -97,7 +97,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.use_deepnet_scaling = use_deepnet_scaling
         self.use_glu = use_glu
         self.use_alibi = use_alibi
-        self.sink_iters = sink_iters
+        self.sinkhorn_iters = sinkhorn_iters
         self.force_ln_scale = force_ln_scale
         self.force_final_ln_encoder = force_final_ln_encoder
 

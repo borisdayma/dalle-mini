@@ -186,6 +186,7 @@ def dot_product_attention_weights(
     deterministic: bool = False,
     dtype: Any = jnp.float32,
     precision: PrecisionLike = None,
+    sinkhorn_iters: int = 1,
 ):
     """
     Computes dot-product attention weights given query and key.
@@ -213,6 +214,9 @@ def dot_product_attention_weights(
 
     # normalize the attention weights
     attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
+    for i in range(sinkhorn_iters - 1):
+        axis = -2 if i % 2 == 0 else -1
+        attn_weights /= 1e-8 + jnp.sum(attn_weights, axis=axis, keepdims=True)
 
     # apply attention dropout
     if not deterministic and dropout_rate > 0.0:
@@ -398,6 +402,7 @@ class FlaxBartAttention(FlaxBartAttention):
             deterministic=deterministic,
             dtype=self.dtype,
             precision=None,
+            sinkhorn_iters=self.config.sinkhorn_iters,
         )
         if self.config.use_cosine_attention:
             # divide by tau

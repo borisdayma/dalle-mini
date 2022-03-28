@@ -124,8 +124,9 @@ Sequence to sequence model based on "[BART: Denoising Sequence-to-Sequence Pre-t
 - "[Deepnet: Scaling Transformers to 1,000 Layers](https://arxiv.org/abs/2203.00555)"
 - "[NormFormer: Improved Transformer Pretraining with Extra Normalization](https://arxiv.org/abs/2110.09456)"
 - "[Swin Transformer: Hierarchical Vision Transformer using Shifted Windows](https://arxiv.org/abs/2103.14030)"
-- "[CogView: Mastering Text-to-Image Generation via Transformers](https://arxiv.org/abs/2105.13290v2)
+- "[CogView: Mastering Text-to-Image Generation via Transformers](https://arxiv.org/abs/2105.13290v2)"
 - "[Root Mean Square Layer Normalization](https://arxiv.org/abs/1910.07467)"
+- "[Sinkformers: Transformers with Doubly Stochastic Attention](https://arxiv.org/abs/2110.11773)"
 
 Main optimizer (Distributed Shampoo) from "[Scalable Second Order Optimization for Deep Learning](https://arxiv.org/abs/2002.09018)".
 
@@ -245,5 +246,14 @@ Main optimizer (Distributed Shampoo) from "[Scalable Second Order Optimization f
       eprint = {1910.07467},
       archivePrefix = {arXiv},
       primaryClass = {cs.LG}
+}
+```
+
+```text
+@misc{title = {Sinkformers: Transformers with Doubly Stochastic Attention},
+      url = {https://arxiv.org/abs/2110.11773},
+      author = {Sander, Michael E. and Ablin, Pierre and Blondel, Mathieu and Peyré, Gabriel},
+      publisher = {arXiv},
+      year = {2021},
 }
 ```
