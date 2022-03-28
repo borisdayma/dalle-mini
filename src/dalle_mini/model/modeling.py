@@ -378,7 +378,7 @@ class GLU(nn.Module):
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=self.config.use_all_scale,
+                use_scale=self.config.force_ln_scale,
             )(x)
         w = nn.Dense(
             self.ffn_dim,
@@ -403,7 +403,7 @@ class GLU(nn.Module):
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=self.config.use_all_scale,
+                use_scale=self.config.force_ln_scale,
             )(x)
         x = nn.Dropout(rate=self.config.activation_dropout)(
             x, deterministic=deterministic
@@ -443,7 +443,7 @@ class FFN(nn.Module):
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=self.config.use_all_scale,
+                use_scale=self.config.force_ln_scale,
             )(x)
         x = nn.Dense(
             self.ffn_dim,
@@ -459,7 +459,7 @@ class FFN(nn.Module):
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=self.config.use_all_scale,
+                use_scale=self.config.force_ln_scale,
             )(x)
         x = nn.Dropout(rate=self.config.activation_dropout)(
             x, deterministic=deterministic
@@ -512,7 +512,7 @@ class FlaxBartEncoderLayer(nn.Module):
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=self.config.use_all_scale,
+                use_scale=self.config.force_ln_scale,
             )(hidden_states)
         hidden_states, attn_weights = FlaxBartAttention(
             config=self.config,
@@ -561,7 +561,7 @@ class FlaxBartEncoderLayer(nn.Module):
             use_scale = (
                 self.use_scale
                 or self.config.ln_positions == "postln"
-                or self.config.use_all_scale
+                or self.config.force_ln_scale
             )
             hidden_states = norm(
                 self.config.ln_type,
@@ -617,7 +617,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=self.config.use_all_scale,
+                use_scale=self.config.force_ln_scale,
             )(hidden_states)
         hidden_states, attn_weights = FlaxBartAttention(
             config=self.config,
@@ -656,7 +656,7 @@ class FlaxBartDecoderLayer(nn.Module):
                     self.config.ln_type,
                     dtype=self.dtype,
                     epsilon=1e-05,
-                    use_scale=self.config.use_all_scale,
+                    use_scale=self.config.force_ln_scale,
                 )(hidden_states)
             hidden_states, cross_attn_weights = FlaxBartAttention(
                 config=self.config,
@@ -709,7 +709,7 @@ class FlaxBartDecoderLayer(nn.Module):
             use_scale = (
                 self.use_scale
                 or self.config.ln_positions == "postln"
-                or self.config.use_all_scale
+                or self.config.force_ln_scale
             )
             hidden_states = norm(
                 self.config.ln_type,
@@ -761,8 +761,9 @@ class FlaxBartEncoderLayerCollection(nn.Module):
             # or every 6 layers for Swin v2
             # not needed for other models which use layernorm before x-attention
             # ignored args for deepnet which always add a norm with scale
-            add_norm = self.config.ln_positions == "swinv2" and (
-                (i == n_layers - 1) or ((i + 1) % 6 == 0)
+            add_norm = self.config.force_final_ln_encoder or (
+                self.config.ln_positions == "swinv2"
+                and ((i == n_layers - 1) or ((i + 1) % 6 == 0))
             )
             # we don't need to scale the norm for the last layer
             use_scale = i != n_layers - 1
