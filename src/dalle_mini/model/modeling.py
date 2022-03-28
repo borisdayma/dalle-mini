@@ -883,9 +883,7 @@ class FlaxBartEncoder(FlaxBartEncoder):
         self.embed_positions = nn.Embed(
             self.config.max_text_length + self.offset,
             embed_dim,
-            embedding_init=deepnet_init()
-            if self.config.use_deepnet_scaling
-            else jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
         self.layers = FlaxBartEncoderLayerCollection(self.config, self.dtype)
         self.layernorm_embedding = norm(
@@ -917,9 +915,7 @@ class FlaxBartDecoder(FlaxBartDecoder):
         self.embed_positions = nn.Embed(
             self.config.image_length + self.offset,  # image length for BOS
             embed_dim,
-            embedding_init=deepnet_init()
-            if self.config.use_deepnet_scaling
-            else jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
 
         self.layers = FlaxBartDecoderLayerCollection(self.config, self.dtype)
@@ -939,16 +935,12 @@ class FlaxBartModule(FlaxBartModule):
         encoder_embed_tokens = nn.Embed(
             self.config.encoder_vocab_size,
             self.config.d_model,
-            embedding_init=deepnet_init()
-            if self.config.use_deepnet_scaling
-            else jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
         decoder_embed_tokens = nn.Embed(
             self.config.image_vocab_size + 1,  # image vocab size + 1 for BOS
             self.config.d_model,
-            embedding_init=deepnet_init()
-            if self.config.use_deepnet_scaling
-            else jax.nn.initializers.normal(self.config.init_std),
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
         )
 
         self.encoder = FlaxBartEncoder(
@@ -1288,9 +1280,7 @@ class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationMod
             + 1,  # image vocab size + 1 for BOS to have same size as decoder inputs (for sharding)
             use_bias=False,
             dtype=self.dtype,
-            kernel_init=deepnet_init()
-            if self.config.use_deepnet_scaling
-            else jax.nn.initializers.normal(self.config.init_std),
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
 
     def __call__(
