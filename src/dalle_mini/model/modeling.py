@@ -375,7 +375,10 @@ class GLU(nn.Module):
 
         if self.config.ln_positions in ["normformer", "cogview"]:
             x = norm(
-                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.use_all_scale,
             )(x)
         w = nn.Dense(
             self.ffn_dim,
@@ -397,7 +400,10 @@ class GLU(nn.Module):
         x = w * v
         if self.config.ln_positions in ["normformer"]:
             x = norm(
-                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.use_all_scale,
             )(x)
         x = nn.Dropout(rate=self.config.activation_dropout)(
             x, deterministic=deterministic
@@ -434,7 +440,10 @@ class FFN(nn.Module):
         )
         if self.config.ln_positions in ["normformer", "cogview"]:
             x = norm(
-                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.use_all_scale,
             )(x)
         x = nn.Dense(
             self.ffn_dim,
@@ -447,7 +456,10 @@ class FFN(nn.Module):
         x = ACT2FN[self.config.activation_function](x)
         if self.config.ln_positions in ["normformer"]:
             x = norm(
-                self.config.ln_type, dtype=self.dtype, epsilon=1e-05, use_scale=False
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.use_all_scale,
             )(x)
         x = nn.Dropout(rate=self.config.activation_dropout)(
             x, deterministic=deterministic
@@ -495,10 +507,13 @@ class FlaxBartEncoderLayer(nn.Module):
 
         embed_dim = self.config.d_model
         residual = hidden_states
-        if self.config.ln_positions in ["normformer"]:
-            hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
-                hidden_states
-            )
+        if self.config.ln_positions in ["normformer", "cogview"]:
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.use_all_scale,
+            )(hidden_states)
         hidden_states, attn_weights = FlaxBartAttention(
             config=self.config,
             embed_dim=embed_dim,
@@ -509,7 +524,7 @@ class FlaxBartEncoderLayer(nn.Module):
             is_encoder=True,
         )(hidden_states=hidden_states, attention_mask=attention_mask)
 
-        if self.config.ln_positions in ["normformer", "swinv2"]:
+        if self.config.ln_positions in ["normformer", "swinv2", "cogview"]:
             hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
                 hidden_states
             )
@@ -517,7 +532,7 @@ class FlaxBartEncoderLayer(nn.Module):
             hidden_states, deterministic=deterministic
         )
         hidden_states = residual * res_gain + hidden_states
-        if self.config.ln_positions in ["deepnet"]:
+        if self.config.ln_positions in ["postln"]:
             hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
                 hidden_states
             )
@@ -542,8 +557,12 @@ class FlaxBartEncoderLayer(nn.Module):
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual * res_gain + hidden_states
-        if self.add_norm or self.config.ln_positions in ["deepnet"]:
-            use_scale = self.use_scale or self.config.ln_positions == "deepnet"
+        if self.add_norm or self.config.ln_positions in ["postln"]:
+            use_scale = (
+                self.use_scale
+                or self.config.ln_positions == "postln"
+                or self.config.use_all_scale
+            )
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -598,7 +617,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 self.config.ln_type,
                 dtype=self.dtype,
                 epsilon=1e-05,
-                use_scale=False,
+                use_scale=self.config.use_all_scale,
             )(hidden_states)
         hidden_states, attn_weights = FlaxBartAttention(
             config=self.config,
@@ -623,7 +642,7 @@ class FlaxBartDecoderLayer(nn.Module):
             hidden_states, deterministic=deterministic
         )
         hidden_states = residual * res_gain + hidden_states
-        if self.config.ln_positions in ["deepnet"]:
+        if self.config.ln_positions in ["postln"]:
             hidden_states = norm(self.config.ln_type, dtype=self.dtype, epsilon=1e-05)(
                 hidden_states
             )
@@ -637,7 +656,7 @@ class FlaxBartDecoderLayer(nn.Module):
                     self.config.ln_type,
                     dtype=self.dtype,
                     epsilon=1e-05,
-                    use_scale=False,
+                    use_scale=self.config.use_all_scale,
                 )(hidden_states)
             hidden_states, cross_attn_weights = FlaxBartAttention(
                 config=self.config,
@@ -660,7 +679,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 hidden_states, deterministic=deterministic
             )
             hidden_states = residual * res_gain + hidden_states
-            if self.config.ln_positions in ["deepnet"]:
+            if self.config.ln_positions in ["postln"]:
                 hidden_states = norm(
                     self.config.ln_type, dtype=self.dtype, epsilon=1e-05
                 )(hidden_states)
@@ -686,8 +705,12 @@ class FlaxBartDecoderLayer(nn.Module):
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual * res_gain + hidden_states
-        if self.add_norm or self.config.ln_positions in ["deepnet"]:
-            use_scale = self.use_scale or self.config.ln_positions == "deepnet"
+        if self.add_norm or self.config.ln_positions in ["postln"]:
+            use_scale = (
+                self.use_scale
+                or self.config.ln_positions == "postln"
+                or self.config.use_all_scale
+            )
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,

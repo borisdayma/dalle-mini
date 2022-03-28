@@ -58,13 +58,14 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         tie_word_embeddings=False,  # different modalities and sizes
         do_sample=True,
         # transformer variants
-        head_scale=False,  # used in NormFormer
         ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
-        ln_positions="deepnet",  # layer normalization positions, "normformer", "swinv2", "cogview", "deepnet" (same as post-ln)
+        ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "deepnet" (same as postln)
+        head_scale=True,  # used in NormFormer
         use_cosine_attention=False,  # used in Swin v2
         tau_init=0.05,  # used only in cosine attention (Swin v2)
         use_deepnet_scaling=False,  # used in Deepnet
-        use_glu=False,  # "GLU Variants Improve Transformer"
+        use_glu=True,  # "GLU Variants Improve Transformer"
+        use_all_scale=True,  # use scale in layernorm even when seemingly unnecessary
         **kwargs,
     ):
         # text normalizer
@@ -83,11 +84,14 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
             "cogview",
             "deepnet",
         ], "ln_positions must be 'normformer', 'swinv2' or 'deepnet'"
+        if ln_positions == "deepnet":
+            ln_positions = "postln"
         self.ln_positions = ln_positions
         self.use_cosine_attention = use_cosine_attention
         self.tau_init = tau_init
         self.use_deepnet_scaling = use_deepnet_scaling
         self.use_glu = use_glu
+        self.use_all_scale = use_all_scale
 
         # common parameters
         self.encoder_vocab_size = encoder_vocab_size
