@@ -28,8 +28,8 @@ import msgpack.exceptions
 from flax.core.frozen_dict import unfreeze
 from flax.linen import combine_masks, make_causal_mask
 from flax.linen import partitioning as nn_partitioning
-from flax.serialization import from_bytes
 from flax.linen.linear import PrecisionLike
+from flax.serialization import from_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jax import lax
 from jax.random import PRNGKey
