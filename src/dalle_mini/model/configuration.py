@@ -59,8 +59,8 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         do_sample=True,
         # transformer variants
         ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
-        ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "deepnet" (same as postln)
-        head_scale=False,  # used in NormFormer
+        ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "preln", "deepnet" (same as postln)
+        use_head_scale=False,  # used in NormFormer
         use_cosine_attention=False,  # used in Swin v2
         tau_init=0.05,  # used only in cosine attention (Swin v2)
         use_deepnet_scaling=False,  # used in Deepnet
@@ -68,7 +68,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         use_alibi=False,  # from "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
         sinkhorn_iters=3,  # used in SinkFormers
         # parameters that should not be necessary but could affect results
-        force_ln_scale=True,  # force scale in layernorm even when followed by dense layers
+        force_ln_scale=False,  # force scale in layernorm even when followed by dense layers
         force_final_ln_encoder=False,  # force layer normalization in encoder final layer even when followed by dense layers
         **kwargs,
     ):
@@ -76,20 +76,21 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.normalize_text = normalize_text
 
         # transformer variants
-        self.head_scale = head_scale  # per Normformer
+        self.use_head_scale = use_head_scale  # per Normformer
         assert ln_type in [
             "rmsnorm",
             "layernorm",
         ], "ln_type must be 'rmsnorm' or 'layernorm'"
         self.ln_type = ln_type
+        if ln_positions == "deepnet":
+            ln_positions = "postln"
         assert ln_positions in [
             "normformer",
             "swinv2",
             "cogview",
-            "deepnet",
-        ], "ln_positions must be 'normformer', 'swinv2' or 'deepnet'"
-        if ln_positions == "deepnet":
-            ln_positions = "postln"
+            "postln",
+            "preln",
+        ], "ln_positions must be 'normformer', 'swinv2', 'cogview', 'postln', 'preln'"
         assert use_alibi is False, "use_alibi is not supported yet"
         self.ln_positions = ln_positions
         self.use_cosine_attention = use_cosine_attention

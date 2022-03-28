@@ -285,7 +285,7 @@ class FlaxBartAttention(FlaxBartAttention):
         )
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-        if self.config.head_scale:
+        if self.config.use_head_scale:
             self.head_scale = self.param(
                 "head_scale", jax.nn.initializers.ones, (1, 1, self.num_heads, 1)
             )
@@ -409,7 +409,7 @@ class FlaxBartAttention(FlaxBartAttention):
             attn_weights = attn_weights / jnp.maximum(self.tau, 0.01)
 
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value_states)
-        if self.config.head_scale:
+        if self.config.use_head_scale:
             # per Normformer
             attn_output = attn_output * self.head_scale
         attn_output = self._merge_heads(attn_output)
@@ -434,7 +434,7 @@ class GLU(nn.Module):
             self.config
         )
 
-        if self.config.ln_positions in ["normformer", "cogview"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
             x = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -499,7 +499,7 @@ class FFN(nn.Module):
         gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
             self.config
         )
-        if self.config.ln_positions in ["normformer", "cogview"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
             x = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -568,7 +568,7 @@ class FlaxBartEncoderLayer(nn.Module):
 
         embed_dim = self.config.d_model
         residual = hidden_states
-        if self.config.ln_positions in ["normformer", "cogview"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -673,7 +673,7 @@ class FlaxBartDecoderLayer(nn.Module):
         residual = hidden_states
 
         # Self Attention
-        if self.config.ln_positions in ["normformer", "cogview"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -712,7 +712,7 @@ class FlaxBartDecoderLayer(nn.Module):
         cross_attn_weights = None
         if encoder_hidden_states is not None:
             residual = hidden_states
-            if self.config.ln_positions in ["normformer", "cogview"]:
+            if self.config.ln_positions in ["normformer", "cogview", "preln"]:
                 hidden_states = norm(
                     self.config.ln_type,
                     dtype=self.dtype,
