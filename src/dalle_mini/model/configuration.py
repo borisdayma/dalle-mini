@@ -67,9 +67,10 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         use_glu=False,  # "GLU Variants Improve Transformer"
         use_alibi=False,  # from "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
         sinkhorn_iters=1,  # used in SinkFormers
+        use_final_ln_encoder=False,  # final layer normalization in encoder
+        use_final_ln_decoder=False,  # final layer normalization in decoder
         # parameters that should not be necessary but could affect results
         force_ln_scale=False,  # force scale in layernorm even when followed by dense layers
-        force_final_ln_encoder=False,  # force layer normalization in encoder final layer even when followed by dense layers
         **kwargs,
     ):
         # text normalizer
@@ -99,8 +100,16 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.use_glu = use_glu
         self.use_alibi = use_alibi
         self.sinkhorn_iters = sinkhorn_iters
+        if ln_positions == "postln":
+            assert (
+                use_final_ln_encoder
+            ), "use_final_ln_encoder must be True when ln_positions is 'postln'"
+            assert (
+                use_final_ln_decoder
+            ), "use_final_ln_decoder must be True when ln_positions is 'postln'"
+        self.use_final_ln_encoder = use_final_ln_encoder
+        self.use_final_ln_decoder = use_final_ln_decoder
         self.force_ln_scale = force_ln_scale
-        self.force_final_ln_encoder = force_final_ln_encoder
 
         # common parameters
         self.encoder_vocab_size = encoder_vocab_size
