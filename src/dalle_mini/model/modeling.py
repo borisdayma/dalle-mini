@@ -28,7 +28,7 @@ import msgpack.exceptions
 from flax.core.frozen_dict import unfreeze
 from flax.linen import combine_masks, make_causal_mask
 from flax.linen import partitioning as nn_partitioning
-from flax.linen.attention import dot_product_attention_weights
+from flax.linen.linear import PrecisionLike
 from flax.serialization import from_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jax import lax
@@ -175,6 +175,66 @@ def norm(type, *args, **kwargs):
         raise ValueError(f"Unknown norm type {type}")
 
 
+def dot_product_attention_weights(
+    query: Any,
+    key: Any,
+    bias: Optional[Any] = None,
+    mask: Optional[Any] = None,
+    broadcast_dropout: bool = True,
+    dropout_rng: Optional[PRNGKey] = None,
+    dropout_rate: float = 0.0,
+    deterministic: bool = False,
+    dtype: Any = jnp.float32,
+    precision: PrecisionLike = None,
+    sinkhorn_iters: int = 1,
+):
+    """
+    Computes dot-product attention weights given query and key.
+
+    Adapted from flax.linen.attention.dot_product_attention_weights"
+    """
+    assert query.ndim == key.ndim, "q, k must have same rank."
+    assert query.shape[:-3] == key.shape[:-3], "q, k batch dims must match."
+    assert query.shape[-2] == key.shape[-2], "q, k num_heads must match."
+    assert query.shape[-1] == key.shape[-1], "q, k depths must match."
+
+    # calculate attention matrix
+    depth = query.shape[-1]
+    query = query / jnp.sqrt(depth).astype(dtype)
+    # attn weight shape is (batch..., num_heads, q_length, kv_length)
+    attn_weights = jnp.einsum("...qhd,...khd->...hqk", query, key, precision=precision)
+
+    # apply attention bias: masking, dropout, proximity bias, etc.
+    if bias is not None:
+        attn_weights = attn_weights + bias
+    # apply attention mask
+    if mask is not None:
+        big_neg = jnp.finfo(dtype).min
+        attn_weights = jnp.where(mask, attn_weights, big_neg)
+
+    # normalize the attention weights
+    attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
+    for i in range(sinkhorn_iters - 1):
+        axis = -2 if i % 2 == 0 else -1
+        attn_weights /= 1e-8 + jnp.sum(attn_weights, axis=axis, keepdims=True)
+
+    # apply attention dropout
+    if not deterministic and dropout_rate > 0.0:
+        keep_prob = 1.0 - dropout_rate
+        if broadcast_dropout:
+            # dropout is broadcast across the batch + head dimensions
+            dropout_shape = tuple([1] * (key.ndim - 2)) + attn_weights.shape[-2:]
+            keep = jax.random.bernoulli(dropout_rng, keep_prob, dropout_shape)
+        else:
+            keep = jax.random.bernoulli(dropout_rng, keep_prob, attn_weights.shape)
+        multiplier = keep.astype(attn_weights.dtype) / jnp.asarray(
+            keep_prob, dtype=dtype
+        )
+        attn_weights = attn_weights * multiplier
+
+    return attn_weights
+
+
 class FlaxBartAttention(FlaxBartAttention):
     """
     Edits:
@@ -225,7 +285,7 @@ class FlaxBartAttention(FlaxBartAttention):
         )
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-        if self.config.head_scale:
+        if self.config.use_head_scale:
             self.head_scale = self.param(
                 "head_scale", jax.nn.initializers.ones, (1, 1, self.num_heads, 1)
             )
@@ -342,13 +402,14 @@ class FlaxBartAttention(FlaxBartAttention):
             deterministic=deterministic,
             dtype=self.dtype,
             precision=None,
+            sinkhorn_iters=self.config.sinkhorn_iters,
         )
         if self.config.use_cosine_attention:
             # divide by tau
             attn_weights = attn_weights / jnp.maximum(self.tau, 0.01)
 
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value_states)
-        if self.config.head_scale:
+        if self.config.use_head_scale:
             # per Normformer
             attn_output = attn_output * self.head_scale
         attn_output = self._merge_heads(attn_output)
@@ -373,7 +434,7 @@ class GLU(nn.Module):
             self.config
         )
 
-        if self.config.ln_positions in ["normformer", "cogview"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
             x = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -438,7 +499,7 @@ class FFN(nn.Module):
         gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
             self.config
         )
-        if self.config.ln_positions in ["normformer", "cogview"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
             x = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -507,7 +568,7 @@ class FlaxBartEncoderLayer(nn.Module):
 
         embed_dim = self.config.d_model
         residual = hidden_states
-        if self.config.ln_positions in ["normformer", "cogview"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -612,7 +673,7 @@ class FlaxBartDecoderLayer(nn.Module):
         residual = hidden_states
 
         # Self Attention
-        if self.config.ln_positions in ["normformer", "cogview"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -651,7 +712,7 @@ class FlaxBartDecoderLayer(nn.Module):
         cross_attn_weights = None
         if encoder_hidden_states is not None:
             residual = hidden_states
-            if self.config.ln_positions in ["normformer", "cogview"]:
+            if self.config.ln_positions in ["normformer", "cogview", "preln"]:
                 hidden_states = norm(
                     self.config.ln_type,
                     dtype=self.dtype,
@@ -759,12 +820,9 @@ class FlaxBartEncoderLayerCollection(nn.Module):
                 all_hidden_states += (hidden_states,)
             # final layernorm on the output of the last layer
             # or every 6 layers for Swin v2
-            # not needed for other models which use layernorm before x-attention
-            # ignored args for deepnet which always add a norm with scale
-            add_norm = self.config.force_final_ln_encoder or (
-                self.config.ln_positions == "swinv2"
-                and ((i == n_layers - 1) or ((i + 1) % 6 == 0))
-            )
+            add_norm = (
+                self.config.ln_positions == "swinv2" and ((i + 1) % 6 == 0)
+            ) or (self.config.use_final_ln_encoder and (i == n_layers - 1))
             # we don't need to scale the norm for the last layer
             use_scale = i != n_layers - 1
             layer_outputs = layer(
@@ -839,9 +897,9 @@ class FlaxBartDecoderLayerCollection(nn.Module):
                 all_hidden_states += (hidden_states,)
             # final layernorm on the output of the last layer
             # or every 6 layers for Swin v2
-            add_norm = (i == n_layers - 1) or (
-                (self.config.ln_positions == "swinv2") and ((i + 1) % 6 == 0)
-            )
+            add_norm = (
+                self.config.ln_positions == "swinv2" and ((i + 1) % 6 == 0)
+            ) or (self.config.use_final_ln_decoder and (i == n_layers - 1))
             # we don't need to scale the norm for the last layer
             use_scale = i != n_layers - 1
             layer_outputs = layer(
