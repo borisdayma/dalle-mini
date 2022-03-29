@@ -654,7 +654,8 @@ def main():
                 "len_train_dataset": len_train_dataset,
                 "len_eval_dataset": len_eval_dataset,
                 "batch_size_per_step": batch_size_per_step,
-                "model": {"num_params": num_params, "config": model.config.to_dict()},
+                "num_params": num_params,
+                "model_config": model.config.to_dict(),
                 "num_devices": jax.device_count(),
                 "versions": {
                     "jax": jax.__version__,
