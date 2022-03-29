@@ -42,7 +42,6 @@ from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import onehot
-from google.cloud import storage
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
@@ -57,6 +56,11 @@ from dalle_mini.model import (
     DalleBartTokenizer,
     set_partitions,
 )
+
+try:
+    from google.cloud import storage
+except:
+    storage = None
 
 cc.initialize_cache("./jax_cache", max_cache_size_bytes=10 * 2**30)
 
@@ -144,6 +148,9 @@ class ModelArguments:
             if self.restore_state.startswith("gs://"):
                 bucket_path = Path(self.restore_state[5:]) / "opt_state.msgpack"
                 bucket, blob_name = str(bucket_path).split("/", 1)
+                assert (
+                    storage is not None
+                ), 'Could not find google.storage. Install with "pip install google-cloud-storage"'
                 client = storage.Client()
                 bucket = client.bucket(bucket)
                 blob = bucket.blob(blob_name)
@@ -456,6 +463,10 @@ class TrainingArguments:
             assert (
                 jax.local_device_count() == 8
             ), "TPUs in use, please check running processes"
+        if self.output_dir.startswith("gs://"):
+            assert (
+                storage is not None
+            ), 'Could not find google.storage. Install with "pip install google-cloud-storage"'
         assert self.optim in [
             "distributed_shampoo",
             "adam",
