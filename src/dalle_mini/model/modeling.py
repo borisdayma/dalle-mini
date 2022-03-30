@@ -444,7 +444,7 @@ class GLU(nn.Module):
         w = nn.Dense(
             self.ffn_dim,
             dtype=self.dtype,
-            use_bias=False,
+            use_bias=self.config.use_bias,
             kernel_init=deepnet_init(gain)
             if self.config.use_deepnet_scaling
             else jax.nn.initializers.normal(self.config.init_std),
@@ -453,7 +453,7 @@ class GLU(nn.Module):
         v = nn.Dense(
             self.ffn_dim,
             dtype=self.dtype,
-            use_bias=False,
+            use_bias=self.config.use_bias,
             kernel_init=deepnet_init(gain)
             if self.config.use_deepnet_scaling
             else jax.nn.initializers.normal(self.config.init_std),
@@ -473,7 +473,7 @@ class GLU(nn.Module):
         x = nn.Dense(
             self.embed_dim,
             dtype=self.dtype,
-            use_bias=False,
+            use_bias=self.config.use_bias,
             kernel_init=deepnet_init(gain)
             if self.config.use_deepnet_scaling
             else jax.nn.initializers.normal(self.config.init_std),
@@ -509,7 +509,7 @@ class FFN(nn.Module):
         x = nn.Dense(
             self.ffn_dim,
             dtype=self.dtype,
-            use_bias=False,
+            use_bias=self.config.use_bias,
             kernel_init=deepnet_init(gain)
             if self.config.use_deepnet_scaling
             else jax.nn.initializers.normal(self.config.init_std),
@@ -528,7 +528,7 @@ class FFN(nn.Module):
         x = nn.Dense(
             self.embed_dim,
             dtype=self.dtype,
-            use_bias=False,
+            use_bias=self.config.use_bias,
             kernel_init=deepnet_init(gain)
             if self.config.use_deepnet_scaling
             else jax.nn.initializers.normal(self.config.init_std),
@@ -580,7 +580,7 @@ class FlaxBartEncoderLayer(nn.Module):
             embed_dim=embed_dim,
             num_heads=self.config.encoder_attention_heads,
             dropout=self.config.attention_dropout,
-            bias=False,
+            bias=self.config.use_bias,
             dtype=self.dtype,
             is_encoder=True,
         )(hidden_states=hidden_states, attention_mask=attention_mask)
@@ -686,7 +686,7 @@ class FlaxBartDecoderLayer(nn.Module):
             num_heads=self.config.decoder_attention_heads,
             dropout=self.config.attention_dropout,
             causal=True,
-            bias=False,
+            bias=self.config.use_bias,
             dtype=self.dtype,
             is_encoder=False,
         )(
@@ -724,7 +724,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 embed_dim=embed_dim,
                 num_heads=self.config.decoder_attention_heads,
                 dropout=self.config.attention_dropout,
-                bias=False,
+                bias=self.config.use_bias,
                 dtype=self.dtype,
                 is_encoder=False,
             )(

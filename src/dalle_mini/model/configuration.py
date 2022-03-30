@@ -58,6 +58,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         tie_word_embeddings=False,  # different modalities and sizes
         do_sample=True,
         # transformer variants
+        use_bias=False,  # use bias in attention and dense layers (except for lm_head)
         ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
         ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "preln", "deepnet" (same as postln)
         use_head_scale=False,  # used in NormFormer
@@ -77,7 +78,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.normalize_text = normalize_text
 
         # transformer variants
-        self.use_head_scale = use_head_scale  # per Normformer
+        self.use_bias = use_bias
         assert ln_type in [
             "rmsnorm",
             "layernorm",
@@ -92,6 +93,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
             "postln",
             "preln",
         ], "ln_positions must be 'normformer', 'swinv2', 'cogview', 'postln', 'preln'"
+        self.use_head_scale = use_head_scale  # per Normformer
         assert use_alibi is False, "use_alibi is not supported yet"
         self.ln_positions = ln_positions
         self.use_cosine_attention = use_cosine_attention
