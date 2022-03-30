@@ -58,6 +58,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         tie_word_embeddings=False,  # different modalities and sizes
         do_sample=True,
         # transformer variants
+        use_bias=False,  # use bias in attention and dense layers (except for lm_head)
         ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
         ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "preln", "deepnet" (same as postln)
         use_head_scale=False,  # used in NormFormer
@@ -65,7 +66,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         tau_init=0.05,  # used only in cosine attention (Swin v2)
         use_deepnet_scaling=False,  # used in Deepnet
         use_glu=False,  # "GLU Variants Improve Transformer"
-        use_alibi=False,  # from "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
+        use_alibi=False,  # Not implemented yet - from "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
         sinkhorn_iters=1,  # used in SinkFormers
         use_final_ln_encoder=False,  # final layer normalization in encoder
         use_final_ln_decoder=False,  # final layer normalization in decoder
@@ -77,7 +78,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.normalize_text = normalize_text
 
         # transformer variants
-        self.use_head_scale = use_head_scale  # per Normformer
+        self.use_bias = use_bias
         assert ln_type in [
             "rmsnorm",
             "layernorm",
@@ -92,6 +93,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
             "postln",
             "preln",
         ], "ln_positions must be 'normformer', 'swinv2', 'cogview', 'postln', 'preln'"
+        self.use_head_scale = use_head_scale
         assert use_alibi is False, "use_alibi is not supported yet"
         self.ln_positions = ln_positions
         self.use_cosine_attention = use_cosine_attention

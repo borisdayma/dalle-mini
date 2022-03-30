@@ -49,6 +49,7 @@ from scalable_shampoo.distributed_shampoo import GraftingType, distributed_shamp
 from tqdm import tqdm
 from transformers import HfArgumentParser
 
+import dalle_mini
 from dalle_mini.data import Dataset
 from dalle_mini.model import (
     DalleBart,
@@ -675,6 +676,7 @@ def main():
                     "transformers": transformers.__version__,
                     "datasets": datasets.__version__,
                     "wandb": wandb.__version__,
+                    "dalle_mini": dalle_mini.__version__,
                 },
             }
         )
