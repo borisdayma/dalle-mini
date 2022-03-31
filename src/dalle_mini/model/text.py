@@ -8,6 +8,7 @@ import random
 import re
 from pathlib import Path
 
+import emoji
 import ftfy
 from huggingface_hub import hf_hub_download
 from unidecode import unidecode
@@ -213,6 +214,8 @@ class TextNormalizer:
         t = ftfy.fix_text(t)
         # fix html
         t = fix_html(t)
+        # decode emojis (would be removed by unidecode)
+        t = emoji.demojize(t)
         # decode and simplify text: see unidecode library
         t = unidecode(t)
         # lower case
