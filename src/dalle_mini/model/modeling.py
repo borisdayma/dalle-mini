@@ -215,8 +215,25 @@ def dot_product_attention_weights(
     # normalize the attention weights
     attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
     for i in range(sinkhorn_iters - 1):
+        # TODO: this is unstable, requires lse space
         axis = -2 if i % 2 == 0 else -1
-        attn_weights /= 1e-8 + jnp.sum(attn_weights, axis=axis, keepdims=True)
+        if mask is not None:
+            attn_weights = jnp.where(
+                mask > 0,
+                attn_weights
+                / (
+                    1e-5
+                    + jax.lax.stop_gradient(
+                        jnp.sum(attn_weights, axis=axis, where=mask, keepdims=True)
+                    )
+                ),
+                0.0,
+            )
+        else:
+            attn_weights = attn_weights / (
+                1e-5
+                + jax.lax.stop_gradient(jnp.sum(attn_weights, axis=axis, keepdims=True))
+            )
 
     # apply attention dropout
     if not deterministic and dropout_rate > 0.0:
@@ -396,6 +413,7 @@ class FlaxBartAttention(FlaxBartAttention):
             query_states,
             key_states,
             bias=attention_bias,
+            mask=attention_mask,
             dropout_rng=dropout_rng,
             dropout_rate=self.dropout,
             broadcast_dropout=True,
