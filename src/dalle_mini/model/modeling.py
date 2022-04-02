@@ -190,6 +190,7 @@ def dot_product_attention_weights(
 ):
     """
     Computes dot-product attention weights given query and key.
+    mask is included into the bias.
 
     Adapted from flax.linen.attention.dot_product_attention_weights"
     """
@@ -207,33 +208,20 @@ def dot_product_attention_weights(
     # apply attention bias: masking, dropout, proximity bias, etc.
     if bias is not None:
         attn_weights = attn_weights + bias
-    # apply attention mask
-    if mask is not None:
-        big_neg = jnp.finfo(dtype).min
-        attn_weights = jnp.where(mask, attn_weights, big_neg)
 
     # normalize the attention weights
-    attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
-    for i in range(sinkhorn_iters - 1):
-        # TODO: this is unstable, requires lse space
-        axis = -2 if i % 2 == 0 else -1
+    if sinkhorn_iters == 1:
+        attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
+    else:
+        for i in range(sinkhorn_iters):
+            # when causal, mask is part of bias as -inf
+            if i % 2 == 0:
+                attn_weights -= jax.nn.logsumexp(attn_weights, axis=-1, keepdims=True)
+            else:
+                attn_weights -= jax.nn.logsumexp(attn_weights, axis=-2, keepdims=True)
+        attn_weights = jnp.exp(attn_weights)
         if mask is not None:
-            attn_weights = jnp.where(
-                mask > 0,
-                attn_weights
-                / (
-                    1e-5
-                    + jax.lax.stop_gradient(
-                        jnp.sum(attn_weights, axis=axis, where=mask, keepdims=True)
-                    )
-                ),
-                0.0,
-            )
-        else:
-            attn_weights = attn_weights / (
-                1e-5
-                + jax.lax.stop_gradient(jnp.sum(attn_weights, axis=axis, keepdims=True))
-            )
+            attn_weights = attn_weights * mask
 
     # apply attention dropout
     if not deterministic and dropout_rate > 0.0:
@@ -392,7 +380,7 @@ class FlaxBartAttention(FlaxBartAttention):
             attention_bias = lax.select(
                 attention_mask > 0,
                 jnp.full(attention_mask.shape, 0.0).astype(self.dtype),
-                jnp.full(attention_mask.shape, float("-inf")).astype(self.dtype),
+                jnp.full(attention_mask.shape, -jnp.inf).astype(self.dtype),
             )
         else:
             attention_bias = None
