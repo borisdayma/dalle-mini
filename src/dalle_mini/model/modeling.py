@@ -215,14 +215,14 @@ def dot_product_attention_weights(
     else:
         # adapted from https://github.com/lucidrains/sinkhorn-transformer
         for i in range(sinkhorn_iters):
-            # when causal, mask is part of bias as -inf
+            # when causal, some attn_weights have been set to -inf through bias
             if i % 2 == 0:
                 attn_weights -= jax.nn.logsumexp(attn_weights, axis=-1, keepdims=True)
             else:
                 attn_weights -= jax.nn.logsumexp(attn_weights, axis=-2, keepdims=True)
-        attn_weights = jnp.exp(attn_weights)
-        if mask is not None:
-            attn_weights = attn_weights * mask
+            if mask is not None:
+                attn_weights = jnp.where(mask, attn_weights, -jnp.inf)
+        attn_weights = jnp.exp(attn_weights).astype(dtype)
 
     # apply attention dropout
     if not deterministic and dropout_rate > 0.0:
