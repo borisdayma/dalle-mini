@@ -213,6 +213,7 @@ def dot_product_attention_weights(
     if sinkhorn_iters == 1:
         attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
     else:
+        # adapted from https://github.com/lucidrains/sinkhorn-transformer
         for i in range(sinkhorn_iters):
             # when causal, mask is part of bias as -inf
             if i % 2 == 0:
