@@ -179,7 +179,6 @@ def dot_product_attention_weights(
     query: Any,
     key: Any,
     bias: Optional[Any] = None,
-    mask: Optional[Any] = None,
     broadcast_dropout: bool = True,
     dropout_rng: Optional[PRNGKey] = None,
     dropout_rate: float = 0.0,
@@ -187,6 +186,7 @@ def dot_product_attention_weights(
     dtype: Any = jnp.float32,
     precision: PrecisionLike = None,
     sinkhorn_iters: int = 1,
+    causal: bool = False,
 ):
     """
     Computes dot-product attention weights given query and key.
@@ -210,7 +210,8 @@ def dot_product_attention_weights(
         attn_weights = attn_weights + bias
 
     # normalize the attention weights
-    if sinkhorn_iters == 1:
+    if causal or sinkhorn_iters == 1:
+        # sinkhorn does not work for causal (leaks info of future tokens into past)
         attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
     else:
         # adapted from https://github.com/lucidrains/sinkhorn-transformer
@@ -220,8 +221,6 @@ def dot_product_attention_weights(
                 attn_weights -= jax.nn.logsumexp(attn_weights, axis=-1, keepdims=True)
             else:
                 attn_weights -= jax.nn.logsumexp(attn_weights, axis=-2, keepdims=True)
-            if mask is not None:
-                attn_weights = jnp.where(mask, attn_weights, -jnp.inf)
         attn_weights = jnp.exp(attn_weights).astype(dtype)
 
     # apply attention dropout
@@ -402,7 +401,6 @@ class FlaxBartAttention(FlaxBartAttention):
             query_states,
             key_states,
             bias=attention_bias,
-            mask=attention_mask,
             dropout_rng=dropout_rng,
             dropout_rate=self.dropout,
             broadcast_dropout=True,
@@ -410,6 +408,7 @@ class FlaxBartAttention(FlaxBartAttention):
             dtype=self.dtype,
             precision=None,
             sinkhorn_iters=self.config.sinkhorn_iters,
+            causal=self.causal,
         )
         if self.config.use_cosine_attention:
             # divide by tau
