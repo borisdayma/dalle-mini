@@ -187,9 +187,11 @@ def dot_product_attention_weights(
     dtype: Any = jnp.float32,
     precision: PrecisionLike = None,
     sinkhorn_iters: int = 1,
+    causal: bool = False,
 ):
     """
     Computes dot-product attention weights given query and key.
+    mask is included into the bias.
 
     Adapted from flax.linen.attention.dot_product_attention_weights"
     """
@@ -207,33 +209,22 @@ def dot_product_attention_weights(
     # apply attention bias: masking, dropout, proximity bias, etc.
     if bias is not None:
         attn_weights = attn_weights + bias
-    # apply attention mask
-    if mask is not None:
-        big_neg = jnp.finfo(dtype).min
-        attn_weights = jnp.where(mask, attn_weights, big_neg)
 
     # normalize the attention weights
-    attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
-    for i in range(sinkhorn_iters - 1):
-        # TODO: this is unstable, requires lse space
-        axis = -2 if i % 2 == 0 else -1
-        if mask is not None:
-            attn_weights = jnp.where(
-                mask > 0,
-                attn_weights
-                / (
-                    1e-5
-                    + jax.lax.stop_gradient(
-                        jnp.sum(attn_weights, axis=axis, where=mask, keepdims=True)
-                    )
-                ),
-                0.0,
-            )
-        else:
-            attn_weights = attn_weights / (
-                1e-5
-                + jax.lax.stop_gradient(jnp.sum(attn_weights, axis=axis, keepdims=True))
-            )
+    if causal or sinkhorn_iters == 1:
+        # sinkhorn does not work for causal (leaks info of future tokens into past)
+        attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
+    else:
+        # adapted from https://github.com/lucidrains/sinkhorn-transformer
+        for i in range(sinkhorn_iters):
+            # when causal, some attn_weights have been set to -inf through bias
+            if i % 2 == 0:
+                attn_weights -= jax.nn.logsumexp(attn_weights, axis=-1, keepdims=True)
+            else:
+                attn_weights -= jax.nn.logsumexp(attn_weights, axis=-2, keepdims=True)
+            if mask is not None:
+                attn_weights = jnp.where(mask, attn_weights, -jnp.inf)
+        attn_weights = jnp.exp(attn_weights).astype(dtype)
 
     # apply attention dropout
     if not deterministic and dropout_rate > 0.0:
@@ -392,7 +383,7 @@ class FlaxBartAttention(FlaxBartAttention):
             attention_bias = lax.select(
                 attention_mask > 0,
                 jnp.full(attention_mask.shape, 0.0).astype(self.dtype),
-                jnp.full(attention_mask.shape, float("-inf")).astype(self.dtype),
+                jnp.full(attention_mask.shape, -jnp.inf).astype(self.dtype),
             )
         else:
             attention_bias = None
@@ -421,6 +412,7 @@ class FlaxBartAttention(FlaxBartAttention):
             dtype=self.dtype,
             precision=None,
             sinkhorn_iters=self.config.sinkhorn_iters,
+            causal=self.causal,
         )
         if self.config.use_cosine_attention:
             # divide by tau
