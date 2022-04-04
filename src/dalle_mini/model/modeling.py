@@ -179,6 +179,7 @@ def dot_product_attention_weights(
     query: Any,
     key: Any,
     bias: Optional[Any] = None,
+    mask: Optional[Any] = None,
     broadcast_dropout: bool = True,
     dropout_rng: Optional[PRNGKey] = None,
     dropout_rate: float = 0.0,
@@ -221,6 +222,8 @@ def dot_product_attention_weights(
                 attn_weights -= jax.nn.logsumexp(attn_weights, axis=-1, keepdims=True)
             else:
                 attn_weights -= jax.nn.logsumexp(attn_weights, axis=-2, keepdims=True)
+            if mask is not None:
+                attn_weights = jnp.where(mask, attn_weights, -jnp.inf)
         attn_weights = jnp.exp(attn_weights).astype(dtype)
 
     # apply attention dropout
@@ -401,6 +404,7 @@ class FlaxBartAttention(FlaxBartAttention):
             query_states,
             key_states,
             bias=attention_bias,
+            mask=attention_mask,
             dropout_rng=dropout_rng,
             dropout_rate=self.dropout,
             broadcast_dropout=True,
