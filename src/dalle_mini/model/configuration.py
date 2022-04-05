@@ -64,12 +64,14 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         use_head_scale=False,  # used in NormFormer
         use_cosine_attention=False,  # used in Swin v2
         tau_init=0.05,  # used only in cosine attention (Swin v2)
+        use_absolute_position_embeddings=True,  # default
+        use_swin_position_embeddings=False,  # used in Swin v1/v2
         use_deepnet_scaling=False,  # used in Deepnet
         use_glu=False,  # "GLU Variants Improve Transformer"
         use_alibi=False,  # Not implemented yet - from "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
         sinkhorn_iters=1,  # used in SinkFormers
-        use_final_ln_encoder=False,  # final layer normalization in encoder
-        use_final_ln_decoder=False,  # final layer normalization in decoder
+        use_final_ln_encoder=True,  # final layer normalization in encoder
+        use_final_ln_decoder=True,  # final layer normalization in decoder
         # parameters that should not be necessary but could affect results
         force_ln_scale=False,  # force scale in layernorm even when followed by dense layers
         **kwargs,
@@ -98,6 +100,8 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.ln_positions = ln_positions
         self.use_cosine_attention = use_cosine_attention
         self.tau_init = tau_init
+        self.use_absolute_position_embeddings = use_absolute_position_embeddings
+        self.use_swin_position_embeddings = use_swin_position_embeddings
         self.use_deepnet_scaling = use_deepnet_scaling
         self.use_glu = use_glu
         self.use_alibi = use_alibi

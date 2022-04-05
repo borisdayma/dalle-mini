@@ -38,6 +38,7 @@ def _get_partition_rules():
         # embeddings
         (("embed_positions", "embedding"), P("mp", None)),
         (("embed_tokens", "embedding"), P("mp", None)),
+        (("rel_bias", "embedding"), P(None, "mp")),
         # attention
         (("(q_proj|k_proj|v_proj)", "kernel"), P(None, "mp")),
         (("out_proj", "kernel"), P("mp", None)),
