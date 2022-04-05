@@ -25,6 +25,7 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import msgpack.exceptions
+from einops import rearrange
 from flax.core.frozen_dict import unfreeze
 from flax.linen import combine_masks, make_causal_mask
 from flax.linen import partitioning as nn_partitioning
@@ -52,8 +53,6 @@ from transformers.modeling_flax_outputs import (
 from transformers.modeling_flax_utils import ACT2FN
 from transformers.models.bart.modeling_flax_bart import (
     FlaxBartAttention,
-    FlaxBartDecoder,
-    FlaxBartEncoder,
     FlaxBartForConditionalGeneration,
     FlaxBartForConditionalGenerationModule,
     FlaxBartModule,
@@ -180,6 +179,7 @@ def dot_product_attention_weights(
     key: Any,
     bias: Optional[Any] = None,
     mask: Optional[Any] = None,
+    embed_pos: Optional[Any] = None,
     broadcast_dropout: bool = True,
     dropout_rng: Optional[PRNGKey] = None,
     dropout_rate: float = 0.0,
@@ -209,6 +209,10 @@ def dot_product_attention_weights(
     # apply attention bias: masking, dropout, proximity bias, etc.
     if bias is not None:
         attn_weights = attn_weights + bias
+
+    # add relative position
+    if embed_pos is not None:
+        attn_weights = attn_weights + embed_pos
 
     # normalize the attention weights
     if causal or sinkhorn_iters == 1:
@@ -251,6 +255,8 @@ class FlaxBartAttention(FlaxBartAttention):
     """
 
     is_encoder: bool = False
+    q_length: int = None
+    k_length: int = None
 
     def setup(self) -> None:
         self.head_dim = self.embed_dim // self.num_heads
@@ -303,6 +309,15 @@ class FlaxBartAttention(FlaxBartAttention):
                 "tau",
                 jax.nn.initializers.constant(self.config.tau_init),
                 (1, self.num_heads, 1, 1),
+            )
+
+        if self.config.use_swin_position_embeddings:
+            self.rel_bias = nn.Embed(
+                self.q_length,
+                self.k_length * self.num_heads,
+                embedding_init=deepnet_init()
+                if self.config.use_deepnet_scaling
+                else jax.nn.initializers.normal(self.config.init_std),
             )
 
         if self.causal:
@@ -400,11 +415,21 @@ class FlaxBartAttention(FlaxBartAttention):
             key_states = key_states / (
                 jnp.linalg.norm(key_states, axis=-1, keepdims=True) + 1e-8
             )
+
+        # relative position embeddings
+        if self.config.use_swin_position_embeddings:
+            position_ids = jnp.arange(self.q_length)
+            embed_pos = self.rel_bias(position_ids)
+            embed_pos = rearrange(embed_pos, "q (k h) -> 1 h q k", h=self.num_heads)
+        else:
+            embed_pos = None
+
         attn_weights = dot_product_attention_weights(
             query_states,
             key_states,
             bias=attention_bias,
             mask=attention_mask,
+            embed_pos=embed_pos,
             dropout_rng=dropout_rng,
             dropout_rate=self.dropout,
             broadcast_dropout=True,
@@ -593,6 +618,8 @@ class FlaxBartEncoderLayer(nn.Module):
             bias=self.config.use_bias,
             dtype=self.dtype,
             is_encoder=True,
+            q_length=self.config.max_text_length,
+            k_length=self.config.max_text_length,
         )(hidden_states=hidden_states, attention_mask=attention_mask)
 
         if self.config.ln_positions in ["normformer", "swinv2", "cogview"]:
@@ -699,6 +726,8 @@ class FlaxBartDecoderLayer(nn.Module):
             bias=self.config.use_bias,
             dtype=self.dtype,
             is_encoder=False,
+            q_length=self.config.image_length,
+            k_length=self.config.image_length,
         )(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -737,6 +766,8 @@ class FlaxBartDecoderLayer(nn.Module):
                 bias=self.config.use_bias,
                 dtype=self.dtype,
                 is_encoder=False,
+                q_length=self.config.image_length,
+                k_length=self.config.max_text_length,
             )(
                 hidden_states=hidden_states,
                 key_value_states=encoder_hidden_states,
@@ -953,7 +984,10 @@ class FlaxBartDecoderLayerCollection(nn.Module):
         )
 
 
-class FlaxBartEncoder(FlaxBartEncoder):
+class FlaxBartEncoder(nn.Module):
+    config: DalleBartConfig
+    embed_tokens: nn.Embed
+    dtype: jnp.dtype = jnp.float32  # the dtype of the computation
     """
     Edits:
     - offset set to 0 (no padding token)
@@ -972,18 +1006,62 @@ class FlaxBartEncoder(FlaxBartEncoder):
         # Bart is set up so that if padding_idx is specified then offset the embedding ids by 2
         # and adjust num_embeddings appropriately. Other models don't have this hack
         self.offset = 0
-        self.embed_positions = nn.Embed(
-            self.config.max_text_length + self.offset,
-            embed_dim,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
-        )
+        if self.config.use_absolute_position_embeddings:
+            self.embed_positions = nn.Embed(
+                self.config.max_text_length + self.offset,  # image length for BOS
+                embed_dim,
+                embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            )
         self.layers = FlaxBartEncoderLayerCollection(self.config, self.dtype)
         self.layernorm_embedding = norm(
             self.config.ln_type, dtype=self.dtype, epsilon=1e-05
         )
 
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        position_ids,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+        deterministic: bool = True,
+    ):
+        input_shape = input_ids.shape
+        input_ids = input_ids.reshape(-1, input_shape[-1])
 
-class FlaxBartDecoder(FlaxBartDecoder):
+        hidden_states = self.embed_tokens(input_ids) * self.embed_scale
+
+        if self.config.use_absolute_position_embeddings:
+            embed_pos = self.embed_positions(position_ids + self.offset)
+            hidden_states = hidden_states + embed_pos
+
+        hidden_states = self.layernorm_embedding(hidden_states)
+        hidden_states = self.dropout_layer(hidden_states, deterministic=deterministic)
+
+        outputs = self.layers(
+            hidden_states,
+            attention_mask,
+            deterministic=deterministic,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        if not return_dict:
+            return outputs
+
+        return FlaxBaseModelOutput(
+            last_hidden_state=outputs.last_hidden_state,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
+class FlaxBartDecoder(nn.Module):
+    config: DalleBartConfig
+    embed_tokens: nn.Embed
+    dtype: jnp.dtype = jnp.float32  # the dtype of the computation
     """
     Edits:
     - offset set to 0 (no padding token)
@@ -1004,15 +1082,63 @@ class FlaxBartDecoder(FlaxBartDecoder):
         # Bart is set up so that if padding_idx is specified then offset the embedding ids by 2
         # and adjust num_embeddings appropriately. Other models don't have this hack
         self.offset = 0
-        self.embed_positions = nn.Embed(
-            self.config.image_length + self.offset,  # image length for BOS
-            embed_dim,
-            embedding_init=jax.nn.initializers.normal(self.config.init_std),
-        )
+        if self.config.use_absolute_position_embeddings:
+            self.embed_positions = nn.Embed(
+                self.config.image_length + self.offset,  # image length for BOS
+                embed_dim,
+                embedding_init=jax.nn.initializers.normal(self.config.init_std),
+            )
 
         self.layers = FlaxBartDecoderLayerCollection(self.config, self.dtype)
         self.layernorm_embedding = norm(
             self.config.ln_type, dtype=self.dtype, epsilon=1e-05
+        )
+
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        position_ids,
+        encoder_hidden_states: Optional[jnp.ndarray] = None,
+        encoder_attention_mask: Optional[jnp.ndarray] = None,
+        init_cache: bool = False,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+        deterministic: bool = True,
+    ):
+        input_shape = input_ids.shape
+        input_ids = input_ids.reshape(-1, input_shape[-1])
+
+        hidden_states = self.embed_tokens(input_ids) * self.embed_scale
+
+        if self.config.use_absolute_position_embeddings:
+            embed_pos = self.embed_positions(position_ids + self.offset)
+            hidden_states = hidden_states + embed_pos
+
+        hidden_states = self.layernorm_embedding(hidden_states)
+        hidden_states = self.dropout_layer(hidden_states, deterministic=deterministic)
+
+        outputs = self.layers(
+            hidden_states,
+            attention_mask,
+            encoder_hidden_states,
+            encoder_attention_mask,
+            deterministic=deterministic,
+            init_cache=init_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        if not return_dict:
+            return outputs
+
+        return FlaxBaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=outputs.last_hidden_state,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            cross_attentions=outputs.cross_attentions,
         )
 
 
