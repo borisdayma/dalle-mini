@@ -32,7 +32,7 @@ from flax.linen import partitioning as nn_partitioning
 from flax.linen.linear import PrecisionLike
 from flax.serialization import from_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
-from jax import lax
+from jax import custom_jvp, lax
 from jax.random import PRNGKey
 from transformers.configuration_utils import PretrainedConfig
 from transformers.file_utils import (
@@ -67,6 +67,30 @@ logger = logging.get_logger(__name__)
 
 remat = nn_partitioning.remat
 
+
+def smelu(beta: Any = 1.0):
+    """
+    Implementation of "Real World Large Scale Recommendation Systems Reproducibility and Smooth Activations"
+    https://arxiv.org/abs/2202.06499
+    """
+
+    @custom_jvp
+    @jax.jit
+    def _smelu(x: Any) -> Any:
+        x = jnp.where(x <= -beta, 0.0, x)
+        return jnp.where(x >= beta, x, jnp.square(x + beta) / (4 * beta))
+
+    _smelu.defjvps(
+        lambda g, ans, x: lax.select(
+            x == -beta,
+            lax.full_like(g, 0),
+            lax.select(x == beta, lax.full_like(g, 1), g),
+        )
+    )
+    return _smelu
+
+
+ACT2FN.update({"smelu": smelu})
 
 # deepnet initialization
 def deepnet_init(gain=1):
