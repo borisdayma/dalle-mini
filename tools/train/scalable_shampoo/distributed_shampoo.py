@@ -25,13 +25,12 @@
 # Authors: Rohan Anil (rohananil at google dot com)
 #    &     Vineet Gupta (vineet at google dot com)
 #
-
 """Distributed Shampoo Implementation."""
 
 import enum
 import functools
 import itertools
-from typing import Any, List, NamedTuple
+from typing import Any, List, NamedTuple, Tuple
 
 import chex
 import jax
@@ -43,6 +42,7 @@ from flax import struct
 from jax import lax
 
 from .quantization_utils import QuantizedValue
+from .symmetric_matrices import symmetric_matrices
 
 # Dtype for inverse-pth root routine
 # Switch to f64 if you have hardware that supports it. Enable the jax flag
@@ -141,7 +141,10 @@ class GraftingType(enum.IntEnum):
 
 
 def power_iteration(
-    matrix, num_iters=100, error_tolerance=1e-6, precision=lax.Precision.HIGHEST
+    matrix,
+    num_iters=100,
+    error_tolerance=1e-6,
+    precision=lax.Precision.HIGHEST,
 ):
     r"""Power iteration algorithm.
 
@@ -156,10 +159,10 @@ def power_iteration(
       matrix: the symmetric PSD matrix.
       num_iters: Number of iterations.
       error_tolerance: Iterative exit condition.
-      precision: precision XLA related flag, the available options are:
-        a) lax.Precision.DEFAULT (better step time, but not precise)
-        b) lax.Precision.HIGH (increased precision, slower)
-        c) lax.Precision.HIGHEST (best possible precision, slowest)
+      precision: precision XLA related flag, the available options are: a)
+        lax.Precision.DEFAULT (better step time, but not precise) b)
+        lax.Precision.HIGH (increased precision, slower) c) lax.Precision.HIGHEST
+        (best possible precision, slowest)
 
     Returns:
       eigen vector, eigen value
@@ -196,7 +199,11 @@ def power_iteration(
     return v_out, s_out
 
 
-def mat_power(mat_m, p, precision=lax.Precision.HIGHEST):
+def mat_power(
+    mat_m,
+    p,
+    precision=lax.Precision.HIGHEST,
+):
     """A simple matrix power method. M^p where p can be TracedValue."""
     power = jnp.eye(mat_m.shape[0], dtype=_MAT_INV_PTH_ROOT_DTYPE)
 
@@ -245,14 +252,18 @@ def matrix_inverse_pth_root(
       num_iters: Maximum number of iterations.
       ridge_epsilon: Ridge epsilon added to make the matrix positive definite.
       error_tolerance: Error indicator, useful for early termination.
-      precision: precision XLA related flag, the available options are:
-        a) lax.Precision.DEFAULT (better step time, but not precise)
-        b) lax.Precision.HIGH (increased precision, slower)
-        c) lax.Precision.HIGHEST (best possible precision, slowest)
+      precision: precision XLA related flag, the available options are: a)
+        lax.Precision.DEFAULT (better step time, but not precise) b)
+        lax.Precision.HIGH (increased precision, slower) c) lax.Precision.HIGHEST
+        (best possible precision, slowest)
 
     Returns:
       matrix^(-1/p)
     """
+
+    # If the input is not square, materialize it from the concatenated form.
+    if matrix.shape[0] != matrix.shape[1]:
+        matrix = symmetric_matrices.materialize_matrix_from_concat(matrix)
 
     assert matrix.shape[0] == matrix.shape[1]
 
@@ -336,8 +347,8 @@ def merge_small_dims(shape_to_merge, max_dim):
     return resulting_shape
 
 
-def pad_matrix(mat, max_size):
-    """Pad a matrix to a max_size.
+def pad_square_matrix(mat, max_size):
+    """Pad a square matrix up to max_size.
 
     Args:
       mat: a matrix to pad.
@@ -346,17 +357,130 @@ def pad_matrix(mat, max_size):
     Returns:
       Given M returns [[M, 0], [0, I]]
     """
-    size = mat.shape[0]
-    assert size <= max_size
-    if size == max_size:
+    rows, cols = mat.shape
+    if rows != cols:
+        raise ValueError(
+            "Must have rows == cols, instead got " f"rows={rows}, cols={cols}"
+        )
+    if cols > max_size:
+        raise ValueError(
+            "Must have cols <= max_size. Instead got "
+            f"cols={cols}, max_size={max_size}."
+        )
+    if rows == max_size:
         return mat
-    pad_size = max_size - size
-    zs1 = jnp.zeros([size, pad_size], dtype=mat.dtype)
-    zs2 = jnp.zeros([pad_size, size], dtype=mat.dtype)
+    pad_size = max_size - rows
+
+    zs1 = jnp.zeros([rows, pad_size], dtype=mat.dtype)
+    zs2 = jnp.zeros([pad_size, rows], dtype=mat.dtype)
     eye = jnp.eye(pad_size, dtype=mat.dtype)
     mat = jnp.concatenate([mat, zs1], 1)
     mat = jnp.concatenate([mat, jnp.concatenate([zs2, eye], 1)], 0)
     return mat
+
+
+def make_sliced_padding(
+    symmetric_block_size,
+    num_blocks,
+    starting_block,
+    dtype,
+):
+    """Returns padding for symmetric block matrix.
+
+    Specifically, the padding is given concatenated rectangular matrices
+    representing the lower-triangular rows below the starting block. For example,
+    if we want to pad the symmetric matrix
+
+    M = [[A, B^T]
+         [B, C]],
+
+    the desired output (in terms of the full matrix) with num_blocks = 4 is
+
+    M_padded = [[A, B^T, 0, 0]
+                [B, C,   0, 0]
+                [0, 0,   I, 0]
+                 0, 0,   0, I].
+
+    We would represent M as the block matrix mat = [A, B, C]. In this form, the
+    additional padding to provide has form [0, 0, I, 0, 0, 0, I] (only the lower
+    triangular parts in the third and fourth rows).
+
+    Args:
+      symmetric_block_size: The size of each block.
+      num_blocks: The total number of blocks.
+      starting_block: The block where to start the padding.
+      dtype: The type to use for the blocks.
+    """
+    if starting_block == num_blocks:
+        return jnp.zeros(shape=(symmetric_block_size, 0), dtype=dtype)
+
+    blocks = []
+    for i in range(starting_block, num_blocks):
+        blocks.append(
+            jnp.zeros(
+                shape=(symmetric_block_size, symmetric_block_size * i), dtype=dtype
+            )
+        )
+        blocks.append(jnp.eye(symmetric_block_size, dtype=dtype))
+    return jnp.concatenate(blocks, axis=-1)
+
+
+def pad_block_symmetric_matrix(
+    mat,
+    symmetric_block_size,
+    max_num_blocks,
+):
+    """Returns the padded blocked symmetric matrix.
+
+    The size of the padded matrix will be:
+      [symmetric_block_size, symmetric_block_size * max_num_blocks]
+
+    The input matrix can either:
+      - Be square with size less or equal to symmetric_block_size. In this case,
+        mat will first be padded to a square matrix of size symmetric_block_size,
+        and then be padded again up to the full size of the blocked matrix.
+      - Be a rectangle with number of rows equal to block size.
+        In this case, number of columns must be a multiple of number of rows, and
+        the ratio must correspond to a block representation of a symmetric matrix.
+        That is, the ratio must have form x * (x + 1) / 2. Here, x represents the
+        number of block rows represented by the matrix.
+
+    Args:
+      mat: The input block matrix.
+      symmetric_block_size: The size of blocks.
+      max_num_blocks: The largest number of blocks to pad to.
+    """
+    rows, cols = mat.shape
+    if rows > symmetric_block_size:
+        raise ValueError(
+            "Must have rows <= symmetric_block_size. Instead got "
+            f"rows={rows}, symmetric_block_size={symmetric_block_size}."
+        )
+    if rows > cols:
+        raise ValueError(
+            "Must have rows <= cols, instead got " f"rows={rows}, cols={cols}."
+        )
+    if cols > symmetric_block_size * max_num_blocks:
+        raise ValueError(
+            "Must have cols <= symmetric_block_size * max_num_blocks "
+            f"Instead got cols={cols}, "
+            f"symmetric_block_size={symmetric_block_size}, "
+            f"max_num_blocks={max_num_blocks}."
+        )
+    if rows < symmetric_block_size:
+        mat = pad_square_matrix(mat, max_size=symmetric_block_size)
+    # Update rows and cols after possibly padding in pad_square_matrix.
+    rows, cols = mat.shape
+    assert rows == symmetric_block_size
+    assert cols % rows == 0
+    filled_blocks = cols // rows
+    padding_blocks = make_sliced_padding(
+        symmetric_block_size=symmetric_block_size,
+        num_blocks=symmetric_matrices.num_blocks_from_total_blocks(max_num_blocks),
+        starting_block=symmetric_matrices.num_blocks_from_total_blocks(filled_blocks),
+        dtype=mat.dtype,
+    )
+    return jnp.concatenate([mat, padding_blocks], axis=-1)
 
 
 def pad_vector(vec, max_size):
@@ -694,18 +818,17 @@ def distributed_shampoo(
       num_devices_for_pjit: Number of devices to parallelize over when using pjit.
       shard_optimizer_states: Shard optimizer states to save memory in model
         parallel training.
-      best_effort_memory_usage_reduction: Best effort memory usage reduction.
-        diagonal_statistics -> jnp.bfloat16
-        momentum buffers (2x) -> jnp.int8
+      best_effort_memory_usage_reduction: Best effort memory usage reduction. -
+        diagonal_statistics -> jnp.bfloat16 - momentum buffers (2x) -> jnp.int8 -
         statistics, preconditioners -> jnp.int16 + diagonals
       inverse_failure_threshold: numerics are hard and inverses fail sometimes; we
         determine that using this threshold.
       moving_average_for_momentum: Whether to use moving average for momentum
         instead of exponential moving average.
       skip_preconditioning_dim_size_gt: Skip if preconditioning dim size is
-          greater than this value.
-      clip_by_scaled_gradient_norm: Clip by scaled gradient norm (only useful
-        when using RMSProp Grafting).
+        greater than this value.
+      clip_by_scaled_gradient_norm: Clip by scaled gradient norm (only useful when
+        using RMSProp Grafting).
       precision: precision XLA related flag, the available options are: a)
         lax.Precision.DEFAULT (better step time, but not precise) b)
         lax.Precision.HIGH (increased precision, slower) c) lax.Precision.HIGHEST
@@ -1167,7 +1290,7 @@ def distributed_shampoo(
         new_padded_statistics = []
         for stat in new_stats_flat:
             new_padded_statistics.extend(
-                [pad_matrix(stat, max_size) for stat in stat.statistics]
+                [pad_square_matrix(stat, max_size) for stat in stat.statistics]
             )
 
         # Create global stats
@@ -1388,7 +1511,7 @@ def distributed_shampoo(
         num_devices = lax.psum(1, batch_axis_name)
         num_statistics = len(statistics)
         # Pad statistics and exponents to next multiple of num_devices.
-        packed_statistics = [pad_matrix(stat, max_size) for stat in statistics]
+        packed_statistics = [pad_square_matrix(stat, max_size) for stat in statistics]
         to_pad = -num_statistics % num_devices
         packed_statistics.extend(
             [jnp.eye(max_size, dtype=packed_statistics[0].dtype) for _ in range(to_pad)]
@@ -1540,7 +1663,7 @@ def distributed_shampoo(
         # diagonals [d] f32
         # bucket_sizes [d] f32
         packed_quantized_statistics = [
-            pad_matrix(stat.quantized, max_size) for stat in statistics
+            pad_square_matrix(stat.quantized, max_size) for stat in statistics
         ]
         packed_quantized_diagonals = [
             pad_vector(stat.diagonal, max_size) for stat in statistics
@@ -1772,7 +1895,7 @@ def distributed_shampoo(
         """
         num_statistics = len(statistics)
         to_pad = -num_statistics % num_devices_for_pjit
-        padded_statistics = [pad_matrix(stat, max_size) for stat in statistics]
+        padded_statistics = [pad_square_matrix(stat, max_size) for stat in statistics]
         padded_statistics.extend(
             [jnp.eye(max_size, dtype=padded_statistics[0].dtype) for _ in range(to_pad)]
         )
