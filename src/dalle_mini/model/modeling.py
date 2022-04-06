@@ -90,7 +90,7 @@ def smelu(beta: Any = 1.0):
     return _smelu
 
 
-ACT2FN.update({"smelu": smelu})
+ACT2FN.update({"smelu": smelu()})
 
 # deepnet initialization
 def deepnet_init(gain=1):
