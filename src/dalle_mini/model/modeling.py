@@ -211,7 +211,7 @@ def dot_product_attention_weights(
     dtype: Any = jnp.float32,
     precision: PrecisionLike = None,
     sinkhorn_iters: int = 1,
-    causal: bool = False,
+    is_encoder: bool = False,
 ):
     """
     Computes dot-product attention weights given query and key.
@@ -239,7 +239,7 @@ def dot_product_attention_weights(
         attn_weights = attn_weights + embed_pos
 
     # normalize the attention weights
-    if causal or sinkhorn_iters == 1:
+    if not is_encoder or sinkhorn_iters == 1:
         # sinkhorn does not work for causal (leaks info of future tokens into past)
         attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
     else:
@@ -461,7 +461,7 @@ class FlaxBartAttention(FlaxBartAttention):
             dtype=self.dtype,
             precision=None,
             sinkhorn_iters=self.config.sinkhorn_iters,
-            causal=self.causal,
+            is_encoder=self.is_encoder,
         )
         if self.config.use_cosine_attention:
             # divide by tau
