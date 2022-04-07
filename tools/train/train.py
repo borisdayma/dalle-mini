@@ -450,6 +450,11 @@ class TrainingArguments:
         metadata={"help": "Verify that TPU is not in use."},
     )
 
+    use_vmap_trick: bool = field(
+        default=True,
+        metadata={"help": "Verify that TPU is not in use."},
+    )
+
     mp_devices: Optional[int] = field(
         default=1,
         metadata={
@@ -924,7 +929,7 @@ def main():
 
     # "vmap trick" avoids a crash when mp_devices > 1 (not sure why it happens)
     # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
-    use_vmap_trick = False
+    use_vmap_trick = training_args.use_vmap_trick
 
     # make grad_param_spec for vmap
     if use_vmap_trick:
