@@ -924,7 +924,7 @@ def main():
 
     # "vmap trick" avoids a crash when mp_devices > 1 (not sure why it happens)
     # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
-    use_vmap_trick = True
+    use_vmap_trick = False
 
     # make grad_param_spec for vmap
     if use_vmap_trick:
