@@ -1219,7 +1219,11 @@ def main():
         # ======================== Evaluating ==============================
         if training_args.do_eval:
             start_eval_time = time.perf_counter()
-            eval_loader = dataset.dataloader("eval", eval_batch_size_per_step)
+            eval_loader = dataset.dataloader(
+                "eval",
+                eval_batch_size_per_step
+                * max(1, training_args.mp_devices // jax.local_device_count()),
+            )
             eval_steps = (
                 len_eval_dataset // eval_batch_size_per_step
                 if len_eval_dataset is not None
@@ -1384,7 +1388,8 @@ def main():
             # Generate an epoch by shuffling sampling indices from the train dataset
             train_loader = dataset.dataloader(
                 "train",
-                batch_size_per_node,
+                batch_size_per_node
+                * max(1, training_args.mp_devices // jax.local_device_count()),
                 epoch,
             )
             # train
