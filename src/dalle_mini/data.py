@@ -324,7 +324,8 @@ def shift_tokens_right(input_ids: np.array, decoder_start_token_id: int):
 def blank_caption_function(example, text_column, blank_caption_prob, rng=None):
     if (
         blank_caption_prob
-        and (rng.rand() if rng is not None else np.random.rand()) < blank_caption_prob
+        and (rng.random() if rng is not None else np.random.random())
+        < blank_caption_prob
     ):
         example[text_column] = ""
     return example
