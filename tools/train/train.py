@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 import datasets
-import einops
 import flax
 import jax
 import jax.numpy as jnp
@@ -936,14 +935,16 @@ def main():
                 training_args.dp_devices,
                 training_args.per_device_train_batch_size,
             )
+            bs_dim = 1
             if training_args.gradient_accumulation_steps > 1:
                 # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
                 # to avoid any data redistribution when sharding
                 bs_shape = (training_args.gradient_accumulation_steps,) + bs_shape
+                bs_dim = 2
 
             # reshape batch
             batch = jax.tree_map(
-                lambda x: x.reshape(bs_shape + x.shape[1:]),
+                lambda x: x.reshape(bs_shape + x.shape[bs_dim:]),
                 batch,
             )
             batch = with_sharding_constraint(
