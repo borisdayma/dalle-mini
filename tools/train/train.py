@@ -929,6 +929,8 @@ def main():
     # Define gradient update step fn
     def train_step(state, batch, train_time):
 
+        print("HERE 2", batch["input_ids"].shape)
+
         # add dp dimension for vmap trick
         if use_vmap_trick:
             bs_shape = (
@@ -943,6 +945,7 @@ def main():
                 bs_dim = 2
 
             # reshape batch
+            print("HERE 3", bs_shape, bs_dim)
             batch = jax.tree_map(
                 lambda x: x.reshape(bs_shape + x.shape[bs_dim:]),
                 batch,
@@ -1411,6 +1414,7 @@ def main():
                 )
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
+                print("HERE 1", batch["input_ids"].shape)
 
                 # train step
                 state, train_metrics = p_train_step(state, batch, train_time)
