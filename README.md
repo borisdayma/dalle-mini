@@ -6,6 +6,7 @@ colorTo: green
 sdk: streamlit
 app_file: app/streamlit/app.py
 pinned: True
+license: apache-2.0
 ---
 
 # DALL·E Mini

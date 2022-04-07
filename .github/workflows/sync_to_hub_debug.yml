@@ -14,4 +14,4 @@ jobs:
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://boris:$HF_TOKEN@huggingface.co/spaces/flax-community/dalle-mini-debug +HEAD:main
+        run: git push --force https://boris:$HF_TOKEN@huggingface.co/spaces/dalle-mini/dalle-mini-debug +HEAD:main
