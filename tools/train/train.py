@@ -963,34 +963,6 @@ def main():
     # Define gradient update step fn
     def train_step(state, batch, train_time):
 
-        print("HERE 2", batch["input_ids"].shape)
-
-        # add dp dimension for vmap trick
-        """ if use_vmap_trick:
-            bs_shape = (
-                training_args.dp_devices,
-                training_args.per_device_train_batch_size,
-            )
-            bs_dim = 1
-            if training_args.gradient_accumulation_steps > 1:
-                # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
-                # to avoid any data redistribution when sharding
-                bs_shape = (training_args.gradient_accumulation_steps,) + bs_shape
-                bs_dim = 2
-
-            # reshape batch
-            print("HERE 3", bs_shape, bs_dim)
-            batch = jax.tree_map(
-                lambda x: x.reshape(bs_shape + x.shape[bs_dim:]),
-                batch,
-            )
-            batch = with_sharding_constraint(
-                batch,
-                grad_batch_spec
-                if training_args.gradient_accumulation_steps > 1
-                else batch_spec,
-            ) """
-
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
             return jax.tree_map(
@@ -1463,7 +1435,6 @@ def main():
                 )
                 # freeze batch to pass safely to jax transforms
                 batch = freeze(batch)
-                print("HERE 1", batch["input_ids"].shape)
 
                 # train step
                 state, train_metrics = p_train_step(state, batch, train_time)
