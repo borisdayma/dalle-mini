@@ -15,7 +15,7 @@
   "encoder_ffn_dim": 6144,
   "encoder_layerdrop": 0.0,
   "encoder_layers": 24,
-  "encoder_vocab_size": 50264,
+  "encoder_vocab_size": 50272,
   "eos_token_id": 16385,
   "force_ln_scale": false,
   "gradient_checkpointing": false,
