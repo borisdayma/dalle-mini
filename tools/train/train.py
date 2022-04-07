@@ -754,8 +754,8 @@ def main():
             graft_type=graft_type,
             nesterov=False,
             exponent_override=0,
-            statistics_partition_spec=PartitionSpec(None, "dp", None),
-            preconditioner_partition_spec=PartitionSpec("dp", None, None),
+            statistics_partition_spec=PartitionSpec(None, "mp", None),
+            preconditioner_partition_spec=PartitionSpec("mp", None, None),
             num_devices_for_pjit=training_args.dp_devices,
             shard_optimizer_states=True,
             inverse_failure_threshold=0.1,
@@ -765,6 +765,7 @@ def main():
             precision=jax.lax.Precision.HIGHEST,
             best_effort_memory_usage_reduction=training_args.optim_quantized,
         )
+        print("switched mp and dp")
         # get the real optimizer and helper functions
         update_fn = optimizer.update
         optimizer = optimizer.init(model.params)
