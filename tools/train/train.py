@@ -530,6 +530,12 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
+    # check arguments
+    if training_args.mp_devices > jax.local_device_count():
+        assert (
+            data_args.seed_dataset is not None
+        ), "Seed dataset must be provided when model is split over multiple hosts"
+
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -1385,11 +1391,12 @@ def main():
             metrics_logger.update_state_metrics(local_state)
             metrics_logger.log({})
 
-            # Generate an epoch by shuffling sampling indices from the train dataset
+            # load data - may be replicated on multiple nodes
+            node_groups = max(1, training_args.mp_devices // jax.local_device_count())
+            loader_bs = batch_size_per_node * node_groups
             train_loader = dataset.dataloader(
                 "train",
-                batch_size_per_node
-                * max(1, training_args.mp_devices // jax.local_device_count()),
+                loader_bs,
                 epoch,
             )
             # train
@@ -1406,7 +1413,7 @@ def main():
 
                 # set correct shape to batch
                 # - add grad_step dim if gradient_accumulation_steps > 1
-                bs_shape = (batch_size_per_node_per_grad_step,)
+                bs_shape = (batch_size_per_node_per_grad_step * node_groups,)
                 if training_args.gradient_accumulation_steps > 1:
                     # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
                     # to avoid any data redistribution when sharding
