@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 import datasets
+import einops
 import flax
 import jax
 import jax.numpy as jnp
@@ -929,6 +930,29 @@ def main():
     # Define gradient update step fn
     def train_step(state, batch, train_time):
 
+        # add dp dimension for vmap trick
+        if use_vmap_trick:
+            bs_shape = (
+                training_args.dp_devices,
+                training_args.per_device_train_batch_size,
+            )
+            if training_args.gradient_accumulation_steps > 1:
+                # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
+                # to avoid any data redistribution when sharding
+                bs_shape = (training_args.gradient_accumulation_steps,) + bs_shape
+
+            # reshape batch
+            batch = jax.tree_map(
+                lambda x: x.reshape(bs_shape + x.shape[1:]),
+                batch,
+            )
+            batch = with_sharding_constraint(
+                batch,
+                grad_batch_spec
+                if training_args.gradient_accumulation_steps > 1
+                else batch_spec,
+            )
+
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
             return jax.tree_map(
@@ -1373,16 +1397,7 @@ def main():
 
                 # set correct shape to batch
                 # - add grad_step dim if gradient_accumulation_steps > 1
-                # - split per dp device if not multi-host for vmap trick (does not work in multi-host)
-                bs_shape = (
-                    (batch_size_per_node_per_grad_step,)
-                    if not use_vmap_trick
-                    else (
-                        jax.local_device_count()
-                        // training_args.mp_devices,  # local dp devices
-                        training_args.per_device_train_batch_size,
-                    )
-                )
+                bs_shape = (batch_size_per_node_per_grad_step,)
                 if training_args.gradient_accumulation_steps > 1:
                     # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
                     # to avoid any data redistribution when sharding
