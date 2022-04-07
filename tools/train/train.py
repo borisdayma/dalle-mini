@@ -939,7 +939,7 @@ def main():
         print("HERE 2", batch["input_ids"].shape)
 
         # add dp dimension for vmap trick
-        if use_vmap_trick:
+        """ if use_vmap_trick:
             bs_shape = (
                 training_args.dp_devices,
                 training_args.per_device_train_batch_size,
@@ -962,7 +962,7 @@ def main():
                 grad_batch_spec
                 if training_args.gradient_accumulation_steps > 1
                 else batch_spec,
-            )
+            ) """
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
@@ -1414,7 +1414,16 @@ def main():
 
                 # set correct shape to batch
                 # - add grad_step dim if gradient_accumulation_steps > 1
-                bs_shape = (batch_size_per_node_per_grad_step * node_groups,)
+                bs_shape = (
+                    (batch_size_per_node_per_grad_step * node_groups,)
+                    if not use_vmap_trick
+                    else (
+                        jax.local_device_count()
+                        * node_groups
+                        // training_args.mp_devices,  # local dp devices
+                        training_args.per_device_train_batch_size,
+                    )
+                )
                 if training_args.gradient_accumulation_steps > 1:
                     # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
                     # to avoid any data redistribution when sharding
