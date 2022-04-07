@@ -20,7 +20,7 @@
   "force_ln_scale": false,
   "gradient_checkpointing": false,
   "image_length": 256,
-  "image_vocab_size": 16399,
+  "image_vocab_size": 16415,
   "init_std": 0.01,
   "is_encoder_decoder": true,
   "ln_positions": "normformer",
