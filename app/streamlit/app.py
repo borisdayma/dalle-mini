@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import streamlit as st
+from datetime import datetime
 
 from backend import ServiceError, get_images_from_backend, get_model_version
 
@@ -65,8 +66,8 @@ if prompt != "":
     )
 
     try:
-        backend_url = st.secrets["BACKEND_SERVER"]
-        print(f"Getting selections: {prompt}")
+        backend_url = st.secrets["BACKEND_SERVER"] + "/generate"
+        print(f"{datetime.now()} Getting selections: {prompt}")
         selected = get_images_from_backend(prompt, backend_url)
 
         margin = 0.1  # for better position of zoom in arrow
