@@ -4,4 +4,4 @@ Files copied from [google-research/scalable_shampoo/optax](https://github.com/go
 
 Imports have been modified to be relative.
 
-This will be replaced with `optax-shampoo` package eventually.
+This will eventually be replaced with `optax-shampoo` package.

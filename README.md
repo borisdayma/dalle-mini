@@ -6,6 +6,7 @@ colorTo: green
 sdk: streamlit
 app_file: app/streamlit/app.py
 pinned: True
+license: apache-2.0
 ---
 
 # DALL·E Mini
@@ -18,7 +19,7 @@ _Generate images from a text prompt_
 
 Our logo was generated with DALL·E mini using the prompt "logo of an armchair in the shape of an avocado".
 
-You can create your own pictures with [the demo](https://huggingface.co/spaces/flax-community/dalle-mini).
+You can create your own pictures with [the demo](https://huggingface.co/spaces/dalle-mini/dalle-mini).
 
 ## How does it work?
 

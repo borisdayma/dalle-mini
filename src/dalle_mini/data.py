@@ -43,6 +43,8 @@ class Dataset:
         if self.seed_dataset is None:
             # create a random seed
             self.seed_dataset = random.randint(0, 2**32 - 1)
+        # set numpy rng
+        self.np_rng = np.random.default_rng(self.seed_dataset)
         self.multi_hosts = jax.process_count() > 1
         # feed blank captions only in streaming mode for now
         # otherwise dataset could be cached with same blanked captions
@@ -173,6 +175,7 @@ class Dataset:
                 blank_caption_function,
                 text_column=self.text_column,
                 blank_caption_prob=self.blank_caption_prob,
+                rng=self.np_rng,
             )
             if hasattr(self, "train_dataset"):
                 self.train_dataset = (
@@ -180,7 +183,9 @@ class Dataset:
                     if self.streaming
                     else self.train_dataset.map(
                         partial_blank_caption_function,
-                        num_proc=self.preprocessing_num_workers,
+                        num_proc=None
+                        if self.seed_dataset
+                        else self.preprocessing_num_workers,
                         load_from_cache_file=False,
                         desc="Blanking some captions",
                     )
@@ -316,8 +321,12 @@ def shift_tokens_right(input_ids: np.array, decoder_start_token_id: int):
     return shifted_input_ids
 
 
-def blank_caption_function(example, text_column, blank_caption_prob):
-    if blank_caption_prob and np.random.rand() < blank_caption_prob:
+def blank_caption_function(example, text_column, blank_caption_prob, rng=None):
+    if (
+        blank_caption_prob
+        and (rng.random() if rng is not None else np.random.random())
+        < blank_caption_prob
+    ):
         example[text_column] = ""
     return example
 
