@@ -77,6 +77,14 @@ if prompt != "":
             cols[(i % n_columns) * 2].image(img)
         container.markdown(f"**{prompt}**")
 
+        version_url = st.secrets["BACKEND_SERVER"] + "/version"
+        version = get_model_version(version_url)
+        st.sidebar.markdown(f"<small><center>{version}</center></small>", unsafe_allow_html=True)
+
+        st.markdown(f"""
+        These results have been obtained using model `{version}` from [an ongoing training run](https://wandb.ai/dalle-mini/dalle-mini/runs/mheh9e55).
+        """)
+
         st.button("Again!", key="again_button")
 
     except ServiceError as error:
