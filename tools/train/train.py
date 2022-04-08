@@ -1179,7 +1179,8 @@ def main():
                 self.log_time("train_per_log", delta_time, offset=False)
 
         def log_time(self, key, duration, offset=True):
-            wandb.log({f"time/{key}": duration, **self.state_dict})
+            if jax.process_index() == 0:
+                wandb.log({f"time/{key}": duration, **self.state_dict})
             if offset:
                 self.offset_time += duration
 
