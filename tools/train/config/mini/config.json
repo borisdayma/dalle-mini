@@ -16,7 +16,7 @@
   "eos_token_id": 16385,
   "gradient_checkpointing": false,
   "image_length": 256,
-  "image_vocab_size": 16384,
+  "image_vocab_size": 16391,
   "init_std": 0.02,
   "is_encoder_decoder": true,
   "max_text_length": 64,

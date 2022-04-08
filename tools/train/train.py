@@ -368,6 +368,12 @@ class TrainingArguments:
             "help": "Whether to quantize optimizer (only supported with Distributed Shampoo)."
         },
     )
+    shard_shampoo_across: str = field(
+        default="dp",
+        metadata={
+            "help": "Whether to shard the optimizer across data devices (dp), model devices (mp) or both (2d)."
+        },
+    )
 
     num_train_epochs: int = field(
         default=3, metadata={"help": "Total number of training epochs to perform."}
@@ -450,6 +456,11 @@ class TrainingArguments:
         metadata={"help": "Verify that TPU is not in use."},
     )
 
+    use_vmap_trick: bool = field(
+        default=True,
+        metadata={"help": "Verify that TPU is not in use."},
+    )
+
     mp_devices: Optional[int] = field(
         default=1,
         metadata={
@@ -500,6 +511,11 @@ class TrainingArguments:
                 f"Output directory ({self.output_dir}) already exists and is not empty."
                 "Use --overwrite_output_dir to overcome."
             )
+        assert self.shard_shampoo_across in [
+            "dp",
+            "mp",
+            "2d",
+        ], f"Shard shampoo across {self.shard_shampoo_across} not supported."
         assert (
             self.mp_devices > 0
         ), f"Number of devices for model parallelism must be > 0"
@@ -529,6 +545,12 @@ def main():
         )
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # check arguments
+    if training_args.mp_devices > jax.local_device_count():
+        assert (
+            data_args.seed_dataset is not None
+        ), "Seed dataset must be provided when model is split over multiple hosts"
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -748,8 +770,20 @@ def main():
             graft_type=graft_type,
             nesterov=False,
             exponent_override=0,
-            statistics_partition_spec=PartitionSpec(None, "dp", None),
-            preconditioner_partition_spec=PartitionSpec("dp", None, None),
+            statistics_partition_spec=PartitionSpec(
+                None, training_args.shard_shampoo_across, None
+            )
+            if training_args.shard_shampoo_across != "2d"
+            else PartitionSpec(None, "dp", "mp"),
+            preconditioner_partition_spec=PartitionSpec(
+                training_args.shard_shampoo_across, None, None
+            )
+            if training_args.shard_shampoo_across != "2d"
+            else PartitionSpec(
+                "mp" if training_args.mp_devices > training_args.dp_devices else "dp",
+                None,
+                None,
+            ),
             num_devices_for_pjit=training_args.dp_devices,
             shard_optimizer_states=True,
             inverse_failure_threshold=0.1,
@@ -917,7 +951,7 @@ def main():
 
     # "vmap trick" avoids a crash when mp_devices > 1 (not sure why it happens)
     # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
-    use_vmap_trick = True
+    use_vmap_trick = training_args.use_vmap_trick
 
     # make grad_param_spec for vmap
     if use_vmap_trick:
@@ -1145,7 +1179,8 @@ def main():
                 self.log_time("train_per_log", delta_time, offset=False)
 
         def log_time(self, key, duration, offset=True):
-            wandb.log({f"time/{key}": duration, **self.state_dict})
+            if jax.process_index() == 0:
+                wandb.log({f"time/{key}": duration, **self.state_dict})
             if offset:
                 self.offset_time += duration
 
@@ -1191,7 +1226,11 @@ def main():
         # ======================== Evaluating ==============================
         if training_args.do_eval:
             start_eval_time = time.perf_counter()
-            eval_loader = dataset.dataloader("eval", eval_batch_size_per_step)
+            eval_loader = dataset.dataloader(
+                "eval",
+                eval_batch_size_per_step
+                * max(1, training_args.mp_devices // jax.local_device_count()),
+            )
             eval_steps = (
                 len_eval_dataset // eval_batch_size_per_step
                 if len_eval_dataset is not None
@@ -1353,10 +1392,12 @@ def main():
             metrics_logger.update_state_metrics(local_state)
             metrics_logger.log({})
 
-            # Generate an epoch by shuffling sampling indices from the train dataset
+            # load data - may be replicated on multiple nodes
+            node_groups = max(1, training_args.mp_devices // jax.local_device_count())
+            loader_bs = batch_size_per_node * node_groups
             train_loader = dataset.dataloader(
                 "train",
-                batch_size_per_node,
+                loader_bs,
                 epoch,
             )
             # train
@@ -1373,12 +1414,12 @@ def main():
 
                 # set correct shape to batch
                 # - add grad_step dim if gradient_accumulation_steps > 1
-                # - split per dp device if not multi-host for vmap trick (does not work in multi-host)
                 bs_shape = (
-                    (batch_size_per_node_per_grad_step,)
+                    (batch_size_per_node_per_grad_step * node_groups,)
                     if not use_vmap_trick
                     else (
                         jax.local_device_count()
+                        * node_groups
                         // training_args.mp_devices,  # local dp devices
                         training_args.per_device_train_batch_size,
                     )
