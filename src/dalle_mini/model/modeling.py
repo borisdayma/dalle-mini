@@ -912,13 +912,12 @@ class FlaxBartEncoderLayerCollection(nn.Module):
                 self.config.use_final_ln_encoder
                 and self.config.ln_positions != "postln"
             )
-            use_scale = self.config.force_ln_scale
             if add_norm:
                 hidden_states = norm(
                     self.config.ln_type,
                     dtype=self.dtype,
                     epsilon=1e-05,
-                    use_scale=use_scale,
+                    use_scale=self.config.force_ln_scale,
                 )(hidden_states)
 
         else:
@@ -1038,16 +1037,15 @@ class FlaxBartDecoderLayerCollection(nn.Module):
             hidden_states = hidden_states[0]
             # add norm (already present in postln config)
             add_norm = (
-                self.config.use_final_ln_encoder
+                self.config.use_final_ln_decoder
                 and self.config.ln_positions != "postln"
             )
-            use_scale = self.config.force_ln_scale
             if add_norm:
                 hidden_states = norm(
                     self.config.ln_type,
                     dtype=self.dtype,
                     epsilon=1e-05,
-                    use_scale=use_scale,
+                    use_scale=self.config.force_ln_scale,
                 )(hidden_states)
 
         else:
