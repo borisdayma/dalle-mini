@@ -52,6 +52,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         init_std=0.02,
         scale_embedding=False,
         gradient_checkpointing=False,
+        use_scan=None,
         use_cache=True,
         is_encoder_decoder=True,
         forced_eos_token_id=None,
@@ -136,6 +137,8 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.init_std = init_std
         self.use_cache = use_cache
         self.gradient_checkpointing = gradient_checkpointing
+        # all layers are the same in most configurations
+        self.use_scan = use_scan if use_scan is not None else ln_positions != "swinv2"
         self.scale_embedding = (
             scale_embedding  # scale factor will be sqrt(d_model) if True
         )

@@ -596,7 +596,7 @@ def main():
     model_metadata = model_args.get_metadata()
 
     # get PartitionSpec for model params (required to be a dict)
-    param_spec = set_partitions(model.params)
+    param_spec = set_partitions(model.params, model.config.use_scan)
 
     # convert params to frozen dict
     model._params = freeze(model.params)
