@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import streamlit as st
 from datetime import datetime
 
+import streamlit as st
 from backend import ServiceError, get_images_from_backend, get_model_version
 
 st.sidebar.markdown(
