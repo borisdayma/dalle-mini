@@ -619,6 +619,9 @@ class FlaxBartEncoderLayer(nn.Module):
         deterministic: bool = True,
     ) -> Tuple[jnp.ndarray]:
 
+        if self.config.use_scan:
+            hidden_states = hidden_states[0]
+
         res_gain = (
             deepnet_gain["encoder"]["alpha"](self.config)
             if self.config.use_deepnet_scaling
@@ -679,12 +682,8 @@ class FlaxBartEncoderLayer(nn.Module):
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual * res_gain + hidden_states
-        if self.add_norm or self.config.ln_positions in ["postln"]:
-            use_scale = (
-                self.use_scale
-                or self.config.ln_positions == "postln"
-                or self.config.force_ln_scale
-            )
+        if self.add_norm:
+            use_scale = self.use_scale or self.config.force_ln_scale
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -696,6 +695,9 @@ class FlaxBartEncoderLayer(nn.Module):
 
         if output_attentions:
             outputs += (attn_weights,)
+
+        if self.config.use_scan:
+            outputs = (outputs, None)
 
         return outputs
 
@@ -710,7 +712,7 @@ class FlaxBartDecoderLayer(nn.Module):
     config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32
     add_norm: bool = False
-    use_scale: bool = False
+    use_scale: bool = True
 
     @nn.compact
     def __call__(
@@ -723,6 +725,9 @@ class FlaxBartDecoderLayer(nn.Module):
         output_attentions: bool = True,
         deterministic: bool = True,
     ) -> Tuple[jnp.ndarray]:
+
+        if self.config.use_scan:
+            hidden_states = hidden_states[0]
 
         res_gain = (
             deepnet_gain["decoder"]["alpha"](self.config)
@@ -831,12 +836,8 @@ class FlaxBartDecoderLayer(nn.Module):
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual * res_gain + hidden_states
-        if self.add_norm or self.config.ln_positions in ["postln"]:
-            use_scale = (
-                self.use_scale
-                or self.config.ln_positions == "postln"
-                or self.config.force_ln_scale
-            )
+        if self.add_norm:
+            use_scale = self.use_scale or self.config.force_ln_scale
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -848,6 +849,9 @@ class FlaxBartDecoderLayer(nn.Module):
 
         if output_attentions:
             outputs += (attn_weights, cross_attn_weights)
+
+        if self.config.use_scan:
+            outputs = (outputs, None)
 
         return outputs
 
@@ -876,35 +880,80 @@ class FlaxBartEncoderLayerCollection(nn.Module):
 
         n_layers = self.config.encoder_layers
         layer = (
-            remat(FlaxBartEncoderLayer, static_argnums=(2, 3))
+            remat(
+                FlaxBartEncoderLayer,
+                static_argnums=(2, 3),
+                prevent_cse=not self.config.use_scan,
+            )
             if self.config.gradient_checkpointing
             else FlaxBartEncoderLayer
         )
-        for i in range(n_layers):
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            # final layernorm on the output of the last layer
-            # or every 6 layers for Swin v2
-            add_norm = (
-                self.config.ln_positions == "swinv2" and ((i + 1) % 6 == 0)
-            ) or (self.config.use_final_ln_encoder and (i == n_layers - 1))
-            # we don't need to scale the norm for the last layer
-            use_scale = i != n_layers - 1
-            layer_outputs = layer(
-                self.config, dtype=self.dtype, add_norm=add_norm, use_scale=use_scale
+
+        if self.config.use_scan:
+            # all blocks are the same so we use nn.scan
+            assert not output_attentions, "cannot scan with output_attentions"
+            assert not output_hidden_states, "cannot scan with output_hidden_states"
+            hidden_states = (hidden_states,)
+            # we use a scale on all norms (even last layer) to allow scanning
+            hidden_states, _ = nn.scan(
+                layer,
+                variable_axes={"params": 0},
+                split_rngs={"params": True, "dropout": True},
+                in_axes=(nn.broadcast, nn.broadcast, nn.broadcast),
+                length=n_layers,
+            )(
+                self.config,
+                dtype=self.dtype,
+                add_norm=self.config.ln_positions == "postln",
+                name="FlaxBartEncoderLayers",
             )(
                 hidden_states,
                 attention_mask,
                 output_attentions,
                 deterministic,
             )
-            hidden_states = layer_outputs[0]
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+            hidden_states = hidden_states[0]
+        else:
+            for i in range(n_layers):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+                # final layernorm on the output of the last layer
+                # or every 6 layers for Swin v2
+                add_norm = self.config.ln_positions == "postln" or (
+                    self.config.ln_positions == "swinv2"
+                    and ((i + 1) % 6 == 0)
+                    and (i != n_layers - 1)
+                )
+                # we don't need to scale the norm for the last layer
+                use_scale = i != n_layers - 1
+                layer_outputs = layer(
+                    self.config,
+                    dtype=self.dtype,
+                    add_norm=add_norm,
+                    use_scale=use_scale,
+                    name=f"FlaxBartEncoderLayer_{i}",
+                )(
+                    hidden_states,
+                    attention_mask,
+                    output_attentions,
+                    deterministic,
+                )
+                hidden_states = layer_outputs[0]
+                if output_attentions:
+                    all_self_attns += (layer_outputs[1],)
 
-        # add hidden states from the last layer
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
+            # add hidden states from the last layer
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+        # postln is already applied in every layer
+        if self.config.use_final_ln_encoder and self.config.ln_positions != "postln":
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.force_ln_scale,
+            )(hidden_states)
 
         outputs = [
             hidden_states,
@@ -953,22 +1002,39 @@ class FlaxBartDecoderLayerCollection(nn.Module):
 
         n_layers = self.config.decoder_layers
         layer = (
-            remat(FlaxBartDecoderLayer, static_argnums=(4, 5, 6))
+            remat(
+                FlaxBartDecoderLayer,
+                static_argnums=(4, 5, 6),
+                prevent_cse=not self.config.use_scan,
+            )
             if self.config.gradient_checkpointing
             else FlaxBartDecoderLayer
         )
-        for i in range(n_layers):
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            # final layernorm on the output of the last layer
-            # or every 6 layers for Swin v2
-            add_norm = (
-                self.config.ln_positions == "swinv2" and ((i + 1) % 6 == 0)
-            ) or (self.config.use_final_ln_decoder and (i == n_layers - 1))
-            # we don't need to scale the norm for the last layer
-            use_scale = i != n_layers - 1
-            layer_outputs = layer(
-                self.config, dtype=self.dtype, add_norm=add_norm, use_scale=use_scale
+
+        if self.config.use_scan:
+            # all blocks are the same so we use nn.scan
+            assert not output_attentions, "cannot scan with output_attentions"
+            assert not output_hidden_states, "cannot scan with output_hidden_states"
+            hidden_states = (hidden_states,)
+            # we use a scale on all norms (even last layer) to allow scanning
+            hidden_states, _ = nn.scan(
+                layer,
+                variable_axes={"params": 0},
+                split_rngs={"params": True, "dropout": True},
+                in_axes=(
+                    nn.broadcast,
+                    nn.broadcast,
+                    nn.broadcast,
+                    nn.broadcast,
+                    nn.broadcast,
+                    nn.broadcast,
+                ),
+                length=n_layers,
+            )(
+                self.config,
+                dtype=self.dtype,
+                add_norm=self.config.ln_positions == "postln",
+                name="FlaxBartEncoderLayers",
             )(
                 hidden_states,
                 attention_mask,
@@ -978,17 +1044,56 @@ class FlaxBartDecoderLayerCollection(nn.Module):
                 output_attentions,
                 deterministic,
             )
+            hidden_states = hidden_states[0]
 
-            hidden_states = layer_outputs[0]
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+        else:
+            for i in range(n_layers):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+                # final layernorm on the output of the last layer
+                # or every 6 layers for Swin v2
+                add_norm = self.config.ln_positions == "postln" or (
+                    self.config.ln_positions == "swinv2"
+                    and ((i + 1) % 6 == 0)
+                    and (i != n_layers - 1)
+                )
+                # we don't need to scale the norm for the last layer
+                use_scale = i != n_layers - 1
+                layer_outputs = layer(
+                    self.config,
+                    dtype=self.dtype,
+                    add_norm=add_norm,
+                    use_scale=use_scale,
+                    name=f"FlaxBartDecoderLayer_{i}",
+                )(
+                    hidden_states,
+                    attention_mask,
+                    encoder_hidden_states,
+                    encoder_attention_mask,
+                    init_cache,
+                    output_attentions,
+                    deterministic,
+                )
 
-                if encoder_hidden_states is not None:
-                    all_cross_attentions += (layer_outputs[2],)
+                hidden_states = layer_outputs[0]
+                if output_attentions:
+                    all_self_attns += (layer_outputs[1],)
 
-        # add hidden states from the last decoder layer
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
+                    if encoder_hidden_states is not None:
+                        all_cross_attentions += (layer_outputs[2],)
+
+            # add hidden states from the last decoder layer
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+        # postln is already applied in every layer
+        if self.config.use_final_ln_decoder and self.config.ln_positions != "postln":
+            hidden_states = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.force_ln_scale,
+            )(hidden_states)
 
         outputs = [
             hidden_states,

@@ -55,7 +55,7 @@ def _get_partition_rules():
     ]
 
 
-def set_partitions(in_dict):
+def set_partitions(in_dict, use_scan):
     rules = _get_partition_rules()
     replace = _replacement_rules(rules)
     initd = {k: _unmatched for k in flatten_dict(in_dict)}
@@ -63,5 +63,14 @@ def set_partitions(in_dict):
     for k, v in result.items():
         if v == _unmatched:
             print(f"Unmatched -> {k}")
+    l = list(result.keys())
+    if use_scan:
+        # add None dimension to scanned layers
+        result = {
+            k: (P(*(None,) + v) if v is not None else None)
+            if any(x in k for x in ["FlaxBartEncoderLayers", "FlaxBartDecoderLayers"])
+            else v
+            for k, v in result.items()
+        }
     assert _unmatched not in result.values(), "Incomplete partition spec."
     return freeze(unflatten_dict(result))

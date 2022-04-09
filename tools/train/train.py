@@ -42,6 +42,7 @@ from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training import train_state
 from flax.training.common_utils import onehot
+from jax import ShapeDtypeStruct
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
@@ -531,6 +532,54 @@ class TrainState(train_state.TrainState):
     train_time: float = 0.0  # total time the model trained
     train_samples: int = 0  # number of samples seen
 
+    def apply_gradients(self, *, grads, **kwargs):
+        params = self.unscan(self.params)
+        updates, new_opt_state = self.tx.update(
+            self.unscan(grads), self.opt_state, params
+        )
+        params = optax.apply_updates(params, updates)
+        return self.replace(
+            step=self.step + 1,
+            params=self.rescan(params),
+            opt_state=new_opt_state,
+            **kwargs,
+        )
+
+    @classmethod
+    def create(cls, *, apply_fn, params, tx, **kwargs):
+        opt_state = tx.init(cls.unscan(params))
+        return cls(
+            step=0,
+            apply_fn=apply_fn,
+            params=params,
+            tx=tx,
+            opt_state=opt_state,
+            **kwargs,
+        )
+
+    @staticmethod
+    def unscan(params):
+        params = unfreeze(params)
+        for l in ["encoder", "decoder"]:
+            params["model"][l]["layers"] = jax.tree_map(
+                lambda x: {f"{i}": x[i] for i in range(len(x))},
+                params["model"][l]["layers"],
+            )
+        params = freeze(params)
+        return params
+
+    @staticmethod
+    def rescan(params):
+        params = unfreeze(params)
+        for l in ["encoder", "decoder"]:
+            params["model"][l]["layers"] = jax.tree_map(
+                lambda x: jnp.stack([x[f"{i}"] for i in range(len(x))]),
+                params["model"][l]["layers"],
+                is_leaf=lambda x: "0" in x,
+            )
+        params = freeze(params)
+        return params
+
 
 def main():
     # See all possible arguments by passing the --help flag to this script.
@@ -618,7 +667,7 @@ def main():
     model_metadata = model_args.get_metadata()
 
     # get PartitionSpec for model params (required to be a dict)
-    param_spec = set_partitions(model.params)
+    param_spec = set_partitions(model.params, model.config.use_scan)
 
     # convert params to frozen dict
     model._params = freeze(model.params)
@@ -743,6 +792,23 @@ def main():
 
     learning_rate_fn = create_learning_rate_fn()
 
+    # reshape params to split scanned layers for optimizers
+    if model.config.use_scan:
+        params_struct = unfreeze(model.params)
+        for l in ["encoder", "decoder"]:
+            params_struct["model"][l]["layers"] = jax.tree_map(
+                lambda x: {
+                    f"{i}": ShapeDtypeStruct(shape=x.shape[1:], dtype=x.dtype)
+                    for i in range(len(x))
+                },
+                params_struct["model"][l]["layers"],
+            )
+        params_struct = freeze(params_struct)
+
+    else:
+        params_struct = model.params
+    opt_param_spec = set_partitions(params_struct, False)
+
     # create adam optimizer
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
@@ -795,10 +861,12 @@ def main():
         )
         # get the real optimizer and helper functions
         update_fn = optimizer.update
-        optimizer = optimizer.init(model.params)
+
+        optimizer = optimizer.init(params_struct)
         opt_fn = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
             optimizer.pspec_fn, optimizer.shape_and_dtype_fn
         )
+
         optimizer = optax.GradientTransformation(optimizer.init_fn, update_fn)
 
     elif training_args.optim == "adam":
@@ -819,7 +887,7 @@ def main():
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape(param_spec):
         # get opt_state shape without actual init
-        opt_state_shape = jax.eval_shape(optimizer.init, model.params)
+        opt_state_shape = jax.eval_shape(optimizer.init, params_struct)
 
         if training_args.optim == "adam":
 
@@ -844,7 +912,7 @@ def main():
 
         elif training_args.optim == "distributed_shampoo":
             opt_state_spec = opt_fn.pspec_fn(
-                params=model.params,
+                params=params_struct,
                 params_partition_spec=param_spec,
                 partition_spec_for_statistics=PartitionSpec(None, "dp", None),
             )
@@ -852,7 +920,7 @@ def main():
             raise NotImplementedError
         return opt_state_spec, opt_state_shape
 
-    opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape(param_spec)
+    opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape(opt_param_spec)
 
     # create a mesh
     mesh_shape = (training_args.dp_devices, training_args.mp_devices)

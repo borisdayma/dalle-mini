@@ -51,7 +51,8 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         activation_dropout=0.0,
         init_std=0.02,
         scale_embedding=False,
-        gradient_checkpointing=False,
+        gradient_checkpointing=True,
+        use_scan=None,
         use_cache=True,
         is_encoder_decoder=True,
         forced_eos_token_id=None,
@@ -59,7 +60,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         do_sample=True,
         # transformer variants
         use_bias=False,  # use bias in attention and dense layers (except for lm_head)
-        ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
+        ln_type="rmsnorm",  # layer normalization type, "rmsnorm", "layernorm"
         ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "preln", "deepnet" (same as postln)
         use_head_scale=False,  # used in NormFormer
         use_cosine_attention=False,  # used in Swin v2
@@ -67,7 +68,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         use_absolute_position_embeddings=True,  # default
         use_swin_position_embeddings=False,  # used in Swin v1/v2
         use_deepnet_scaling=False,  # used in Deepnet
-        use_glu=False,  # "GLU Variants Improve Transformer"
+        use_glu=True,  # "GLU Variants Improve Transformer"
         use_alibi=False,  # Not implemented yet - from "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
         sinkhorn_iters=1,  # used in SinkFormers
         use_final_ln_encoder=True,  # final layer normalization in encoder
@@ -136,6 +137,11 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.init_std = init_std
         self.use_cache = use_cache
         self.gradient_checkpointing = gradient_checkpointing
+        # all layers are the same in most configurations
+        self.use_scan = use_scan if use_scan is not None else ln_positions != "swinv2"
+        assert not (
+            self.use_scan and ln_positions == "swinv2"
+        ), "scan cannot be used with 'swinv2'"
         self.scale_embedding = (
             scale_embedding  # scale factor will be sqrt(d_model) if True
         )
