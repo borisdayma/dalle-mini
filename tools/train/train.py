@@ -529,19 +529,6 @@ class TrainingArguments:
         self.dp_devices = jax.device_count() // self.mp_devices
 
 
-def flattened_traversal(fn):
-    """Helper function for masking flax frozen dicts with optax. Source: Anselm Levskaya"""
-
-    def mask(data):
-        flat = traverse_util.flatten_dict(unfreeze(data))
-        breakpoint()
-        return freeze(
-            traverse_util.unflatten_dict({k: fn(k, v) for k, v in flat.items()})
-        )
-
-    return mask
-
-
 def split_params(data):
     """Split params between scanned and non-scanned"""
     flat = traverse_util.flatten_dict(unfreeze(data))
@@ -584,9 +571,7 @@ class TrainState(struct.PyTreeNode):
             update_fn = self.tx[k].update
             if "scanned" in k:
                 update_fn = jax.vmap(update_fn)
-            updates, new_opt_state = update_fn(
-                grads[k], self.opt_state[k], param
-            )
+            updates, new_opt_state = update_fn(grads[k], self.opt_state[k], param)
             params[k] = optax.apply_updates(param, updates)
             opt_state[k] = new_opt_state
         params = unsplit_params(params)
@@ -603,8 +588,12 @@ class TrainState(struct.PyTreeNode):
         for k, p in split_params(params).items():
             init_fn = tx[k].init
             if "scanned" in k:
+                print(k)
                 init_fn = jax.vmap(init_fn)
             opt_state[k] = init_fn(p)
+
+            # debug
+            print(jax.eval_shape(lambda x: x, opt_state[k]))
         return cls(
             step=0,
             apply_fn=apply_fn,
@@ -842,7 +831,7 @@ def main():
             if training_args.shard_shampoo_across != "2d"
             else PartitionSpec(None, "dp", "mp")
         )
-        optimizer = distributed_shampoo(
+        opt = distributed_shampoo(
             learning_rate_fn,
             block_size=training_args.block_size,
             beta1=training_args.beta1,
@@ -878,12 +867,12 @@ def main():
             best_effort_memory_usage_reduction=training_args.optim_quantized,
         )
         # get the real optimizer and helper functions
-        update_fn = optimizer.update
+        update_fn = opt.update
 
         optimizer = {}
         opt_fn = {}
         for k, p in split_params(model.params).items():
-            optimizer[k] = optimizer.init(p)
+            optimizer[k] = opt.init(p)
             opt_fn[k] = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
                 optimizer[k].pspec_fn, optimizer[k].shape_and_dtype_fn
             )
@@ -914,7 +903,18 @@ def main():
             if "scanned" not in k:
                 opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
             else:
-                opt_state_shape[k] = jax.eval_shape(jax.vmap(optimizer[k].init), p)
+                print("-" * 100)
+                print(k)
+                print(p)
+                dim_0 = list(traverse_util.flatten_dict(unfreeze(p)).values())[0].shape[
+                    0
+                ]
+                p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
+                opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
+                opt_state_shape[k] = jax.eval_shape(
+                    lambda x: jax.tree_map(lambda y: jnp.stack([y] * dim_0), x),
+                    opt_state_shape[k],
+                )
 
         if training_args.optim == "adam":
 
@@ -927,6 +927,7 @@ def main():
                     return None
 
             opt_state_spec = {}
+            # FIXME: needs to be same as distributed_shampoo
             for k, spec in split_params(set_partitions(model.params)).items():
                 opt_state_spec[k] = jax.tree_map(
                     _opt_state_spec_per_leaf,
@@ -941,7 +942,7 @@ def main():
             opt_state_spec = {k: None for k in split_params(model.params)}
 
         elif training_args.optim == "distributed_shampoo":
-            split_spec = split_params(set_partitions(model.params))
+            split_spec = split_params(set_partitions(model.params, False))
             opt_state_spec = {}
             for k, p in split_params(model.params).items():
                 opt_state_spec[k] = opt_fn[k].pspec_fn(

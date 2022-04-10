@@ -1025,7 +1025,7 @@ class FlaxBartDecoderLayerCollection(nn.Module):
                 self.config,
                 dtype=self.dtype,
                 add_norm=self.config.ln_positions == "postln",
-                name="FlaxBartEncoderLayers",
+                name="FlaxBartDecoderLayers",
             )(
                 hidden_states,
                 attention_mask,
@@ -1170,14 +1170,16 @@ class FlaxBartEncoder(nn.Module):
             return_dict=return_dict,
         )
 
-        if self.final_ln is not None:
-            outputs[0] = self.final_ln(outputs[0])
+        if self.final_ln is None:
+            final_output = outputs[0]
+        else:
+            final_output = self.final_ln(outputs[0])
 
         if not return_dict:
-            return outputs
+            return (final_output,) + outputs[1:]
 
         return FlaxBaseModelOutput(
-            last_hidden_state=outputs.last_hidden_state,
+            last_hidden_state=final_output,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
@@ -1265,14 +1267,16 @@ class FlaxBartDecoder(nn.Module):
             return_dict=return_dict,
         )
 
-        if self.final_ln is not None:
-            outputs[0] = self.final_ln(outputs[0])
+        if self.final_ln is None:
+            final_output = outputs[0]
+        else:
+            final_output = self.final_ln(outputs[0])
 
         if not return_dict:
-            return outputs
+            return (final_output,) + outputs[1:]
 
         return FlaxBaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=outputs.last_hidden_state,
+            last_hidden_state=final_output,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
             cross_attentions=outputs.cross_attentions,
