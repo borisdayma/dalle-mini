@@ -576,11 +576,11 @@ class TrainState(struct.PyTreeNode):
             params[k] = optax.apply_updates(param, updates)
             opt_state[k] = new_opt_state
         params = unsplit_params(params)
-        breakpoint()
+
         return self.replace(
             step=self.step + 1,
             params=params,
-            opt_state=opt_state,
+            opt_state=freeze(opt_state),
             **kwargs,
         )
 
@@ -597,7 +597,7 @@ class TrainState(struct.PyTreeNode):
             apply_fn=apply_fn,
             params=params,
             tx=tx,
-            opt_state=opt_state,
+            opt_state=freeze(opt_state),
             **kwargs,
         )
 
@@ -957,7 +957,7 @@ def main():
                     )
         else:
             raise NotImplementedError
-        return opt_state_spec, opt_state_shape
+        return freeze(opt_state_spec), opt_state_shape
 
     opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape()
 
