@@ -546,9 +546,10 @@ def split_params(data):
 
 
 def unsplit_params(data):
-    return freeze(
-        {**data["standard"], **data["scanned_encoder"], **data["scanned_decoder"]}
-    )
+    flat = {}
+    for k in ["standard", "scanned_encoder", "scanned_decoder"]:
+        flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
+    return freeze(traverse_util.unflatten_dict(flat))
 
 
 class TrainState(struct.PyTreeNode):
@@ -564,21 +565,22 @@ class TrainState(struct.PyTreeNode):
 
     def apply_gradients(self, *, grads, **kwargs):
         grads = split_params(grads)
-        params = split_params(params)
+        params = split_params(self.params)
         opt_state = {}
         # we loop over keys: "standard", "scanned_encoder", "scanned_decoder"
         for k, param in params.items():
             update_fn = self.tx[k].update
             if "scanned" in k:
-                update_fn = jax.vmap(update_fn)
+                update_fn = jax.vmap(update_fn, in_axes=(0, 0, 0), out_axes=(0, 0))
             updates, new_opt_state = update_fn(grads[k], self.opt_state[k], param)
             params[k] = optax.apply_updates(param, updates)
             opt_state[k] = new_opt_state
         params = unsplit_params(params)
+        breakpoint()
         return self.replace(
             step=self.step + 1,
             params=params,
-            opt_state=new_opt_state,
+            opt_state=opt_state,
             **kwargs,
         )
 
@@ -588,12 +590,8 @@ class TrainState(struct.PyTreeNode):
         for k, p in split_params(params).items():
             init_fn = tx[k].init
             if "scanned" in k:
-                print(k)
                 init_fn = jax.vmap(init_fn)
             opt_state[k] = init_fn(p)
-
-            # debug
-            print(jax.eval_shape(lambda x: x, opt_state[k]))
         return cls(
             step=0,
             apply_fn=apply_fn,
@@ -872,6 +870,8 @@ def main():
         optimizer = {}
         opt_fn = {}
         for k, p in split_params(model.params).items():
+            if "scanned" in k:
+                p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
             optimizer[k] = opt.init(p)
             opt_fn[k] = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
                 optimizer[k].pspec_fn, optimizer[k].shape_and_dtype_fn
@@ -903,9 +903,6 @@ def main():
             if "scanned" not in k:
                 opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
             else:
-                print("-" * 100)
-                print(k)
-                print(p)
                 dim_0 = list(traverse_util.flatten_dict(unfreeze(p)).values())[0].shape[
                     0
                 ]
@@ -1009,7 +1006,7 @@ def main():
                 in_axis_resources=(param_spec,)
                 if model_args.model_name_or_path
                 else None,
-                out_axis_resources=state_spec,
+                out_axis_resources=None,
                 donate_argnums=(0,),
             )(model.params if model_args.model_name_or_path else None)
 
@@ -1045,6 +1042,8 @@ def main():
 
             # remove opt_state from CPU
             del opt_state
+
+    # compare state.opt_state with opt_state_spec and opt_state_shape
 
     # free CPU memory
     del model._params, opt_state_spec, opt_state_shape
@@ -1244,18 +1243,18 @@ def main():
     p_train_step = pjit(
         train_step,
         in_axis_resources=(
-            state_spec,
+            None,
             grad_batch_spec
             if training_args.gradient_accumulation_steps > 1
             else batch_spec,
             None,
         ),
-        out_axis_resources=(state_spec, None),
+        out_axis_resources=(None, None),
         donate_argnums=(0,),
     )
     p_eval_step = pjit(
         eval_step,
-        in_axis_resources=(state_spec, batch_spec),
+        in_axis_resources=(None, batch_spec),
         out_axis_resources=None,
     )
 
