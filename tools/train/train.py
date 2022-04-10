@@ -903,15 +903,7 @@ def main():
             if "scanned" not in k:
                 opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
             else:
-                dim_0 = list(traverse_util.flatten_dict(unfreeze(p)).values())[0].shape[
-                    0
-                ]
-                p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
-                opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
-                opt_state_shape[k] = jax.eval_shape(
-                    lambda x: jax.tree_map(lambda y: jnp.stack([y] * dim_0), x),
-                    opt_state_shape[k],
-                )
+                opt_state_shape[k] = jax.eval_shape(jax.vmap(optimizer[k].init), p)
 
         if training_args.optim == "adam":
 
@@ -942,10 +934,12 @@ def main():
             split_spec = split_params(set_partitions(model.params, False))
             opt_state_spec = {}
             for k, p in split_params(model.params).items():
+                if "scanned" in k:
+                    p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
                 opt_state_spec[k] = opt_fn[k].pspec_fn(
-                    params=p,
-                    params_partition_spec=split_spec[k],
-                    partition_spec_for_statistics=statistics_partition_spec,
+                    p,
+                    split_spec[k],
+                    statistics_partition_spec,
                 )
                 # add dimension for scanned params
                 if "scanned" in k:
@@ -954,10 +948,11 @@ def main():
                         if x is not None
                         else None,
                         opt_state_spec[k],
+                        is_leaf=lambda x: isinstance(x, PartitionSpec),
                     )
         else:
             raise NotImplementedError
-        return freeze(opt_state_spec), opt_state_shape
+        return freeze(opt_state_spec), freeze(opt_state_shape)
 
     opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape()
 
@@ -1006,7 +1001,7 @@ def main():
                 in_axis_resources=(param_spec,)
                 if model_args.model_name_or_path
                 else None,
-                out_axis_resources=None,
+                out_axis_resources=state_spec,
                 donate_argnums=(0,),
             )(model.params if model_args.model_name_or_path else None)
 
@@ -1042,8 +1037,6 @@ def main():
 
             # remove opt_state from CPU
             del opt_state
-
-    # compare state.opt_state with opt_state_spec and opt_state_shape
 
     # free CPU memory
     del model._params, opt_state_spec, opt_state_shape
@@ -1243,18 +1236,18 @@ def main():
     p_train_step = pjit(
         train_step,
         in_axis_resources=(
-            None,
+            state_spec,
             grad_batch_spec
             if training_args.gradient_accumulation_steps > 1
             else batch_spec,
             None,
         ),
-        out_axis_resources=(None, None),
+        out_axis_resources=(state_spec, None),
         donate_argnums=(0,),
     )
     p_eval_step = pjit(
         eval_step,
-        in_axis_resources=(None, batch_spec),
+        in_axis_resources=(state_spec, batch_spec),
         out_axis_resources=None,
     )
 
