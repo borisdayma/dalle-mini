@@ -18,8 +18,6 @@ Training DALL·E Mini.
 Script adapted from run_summarization_flax.py
 """
 
-from flax import core
-from copy import deepcopy
 import io
 import logging
 import os
@@ -29,7 +27,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
-from flax import traverse_util
+
 import datasets
 import flax
 import jax
@@ -39,13 +37,11 @@ import numpy as np
 import optax
 import transformers
 import wandb
-from flax import struct
 from datasets import Dataset
+from flax import core, struct, traverse_util
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
-from flax.training import train_state
 from flax.training.common_utils import onehot
-from jax import ShapeDtypeStruct
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
