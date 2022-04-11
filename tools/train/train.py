@@ -38,11 +38,10 @@ import optax
 import transformers
 import wandb
 from datasets import Dataset
+from flax import core, struct, traverse_util
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
-from flax.training import train_state
 from flax.training.common_utils import onehot
-from jax import ShapeDtypeStruct
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
@@ -526,59 +525,77 @@ class TrainingArguments:
         self.dp_devices = jax.device_count() // self.mp_devices
 
 
-class TrainState(train_state.TrainState):
+def split_params(data):
+    """Split params between scanned and non-scanned"""
+    flat = traverse_util.flatten_dict(unfreeze(data))
+    split = {"standard": {}, "scanned_encoder": {}, "scanned_decoder": {}}
+    for k, v in flat.items():
+        if "FlaxBartEncoderLayers" in k:
+            split["scanned_encoder"][k] = v
+        elif "FlaxBartDecoderLayers" in k:
+            split["scanned_decoder"][k] = v
+        else:
+            split["standard"][k] = v
+    for k, v in split.items():
+        split[k] = freeze(traverse_util.unflatten_dict(v))
+    return split
+
+
+def unsplit_params(data):
+    flat = {}
+    for k in ["standard", "scanned_encoder", "scanned_decoder"]:
+        flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
+    return freeze(traverse_util.unflatten_dict(flat))
+
+
+class TrainState(struct.PyTreeNode):
+    step: int
+    params: core.FrozenDict[str, Any]
+    opt_state: optax.OptState
+    apply_fn: Callable = struct.field(pytree_node=False)
+    tx: optax.GradientTransformation = struct.field(pytree_node=False)
     dropout_rng: jnp.ndarray = None
     epoch: int = 0
     train_time: float = 0.0  # total time the model trained
     train_samples: int = 0  # number of samples seen
 
     def apply_gradients(self, *, grads, **kwargs):
-        params = self.unscan(self.params)
-        updates, new_opt_state = self.tx.update(
-            self.unscan(grads), self.opt_state, params
-        )
-        params = optax.apply_updates(params, updates)
+        grads = split_params(grads)
+        params = split_params(self.params)
+        opt_state = {}
+        # we loop over keys: "standard", "scanned_encoder", "scanned_decoder"
+        for k, param in params.items():
+            update_fn = self.tx[k].update
+            if "scanned" in k:
+                update_fn = jax.vmap(update_fn, in_axes=(0, 0, 0), out_axes=(0, 0))
+            updates, new_opt_state = update_fn(grads[k], self.opt_state[k], param)
+            params[k] = optax.apply_updates(param, updates)
+            opt_state[k] = new_opt_state
+        params = unsplit_params(params)
+
         return self.replace(
             step=self.step + 1,
-            params=self.rescan(params),
-            opt_state=new_opt_state,
+            params=params,
+            opt_state=freeze(opt_state),
             **kwargs,
         )
 
     @classmethod
     def create(cls, *, apply_fn, params, tx, **kwargs):
-        opt_state = tx.init(cls.unscan(params))
+        opt_state = {}
+        for k, p in split_params(params).items():
+            init_fn = tx[k].init
+            if "scanned" in k:
+                init_fn = jax.vmap(init_fn)
+            opt_state[k] = init_fn(p)
         return cls(
             step=0,
             apply_fn=apply_fn,
             params=params,
             tx=tx,
-            opt_state=opt_state,
+            opt_state=freeze(opt_state),
             **kwargs,
         )
-
-    @staticmethod
-    def unscan(params):
-        params = unfreeze(params)
-        for l in ["encoder", "decoder"]:
-            params["model"][l]["layers"] = jax.tree_map(
-                lambda x: {f"{i}": x[i] for i in range(len(x))},
-                params["model"][l]["layers"],
-            )
-        params = freeze(params)
-        return params
-
-    @staticmethod
-    def rescan(params):
-        params = unfreeze(params)
-        for l in ["encoder", "decoder"]:
-            params["model"][l]["layers"] = jax.tree_map(
-                lambda x: jnp.stack([x[f"{i}"] for i in range(len(x))]),
-                params["model"][l]["layers"],
-                is_leaf=lambda x: "0" in x,
-            )
-        params = freeze(params)
-        return params
 
 
 def main():
@@ -792,23 +809,6 @@ def main():
 
     learning_rate_fn = create_learning_rate_fn()
 
-    # reshape params to split scanned layers for optimizers
-    if model.config.use_scan:
-        params_struct = unfreeze(model.params)
-        for l in ["encoder", "decoder"]:
-            params_struct["model"][l]["layers"] = jax.tree_map(
-                lambda x: {
-                    f"{i}": ShapeDtypeStruct(shape=x.shape[1:], dtype=x.dtype)
-                    for i in range(len(x))
-                },
-                params_struct["model"][l]["layers"],
-            )
-        params_struct = freeze(params_struct)
-
-    else:
-        params_struct = model.params
-    opt_param_spec = set_partitions(params_struct, False)
-
     # create adam optimizer
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
@@ -820,7 +820,12 @@ def main():
             "sqrt_n": GraftingType.SQRT_N,
             "adagrad_normalized": GraftingType.ADAGRAD_NORMALIZED,
         }[training_args.graft_type]
-        optimizer = distributed_shampoo(
+        statistics_partition_spec = (
+            PartitionSpec(None, training_args.shard_shampoo_across, None)
+            if training_args.shard_shampoo_across != "2d"
+            else PartitionSpec(None, "dp", "mp")
+        )
+        opt = distributed_shampoo(
             learning_rate_fn,
             block_size=training_args.block_size,
             beta1=training_args.beta1,
@@ -836,11 +841,7 @@ def main():
             graft_type=graft_type,
             nesterov=False,
             exponent_override=0,
-            statistics_partition_spec=PartitionSpec(
-                None, training_args.shard_shampoo_across, None
-            )
-            if training_args.shard_shampoo_across != "2d"
-            else PartitionSpec(None, "dp", "mp"),
+            statistics_partition_spec=statistics_partition_spec,
             preconditioner_partition_spec=PartitionSpec(
                 training_args.shard_shampoo_across, None, None
             )
@@ -860,14 +861,18 @@ def main():
             best_effort_memory_usage_reduction=training_args.optim_quantized,
         )
         # get the real optimizer and helper functions
-        update_fn = optimizer.update
+        update_fn = opt.update
 
-        optimizer = optimizer.init(params_struct)
-        opt_fn = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
-            optimizer.pspec_fn, optimizer.shape_and_dtype_fn
-        )
-
-        optimizer = optax.GradientTransformation(optimizer.init_fn, update_fn)
+        optimizer = {}
+        opt_fn = {}
+        for k, p in split_params(model.params).items():
+            if "scanned" in k:
+                p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
+            optimizer[k] = opt.init(p)
+            opt_fn[k] = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
+                optimizer[k].pspec_fn, optimizer[k].shape_and_dtype_fn
+            )
+            optimizer[k] = optax.GradientTransformation(optimizer[k].init_fn, update_fn)
 
     elif training_args.optim == "adam":
         optimizer = optax.adamw(
@@ -876,6 +881,8 @@ def main():
             b2=training_args.beta2,
             eps=training_args.adam_epsilon,
         )
+        optimizer = {k: optimizer for k in split_params(model.params)}
+
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
         # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
@@ -883,44 +890,66 @@ def main():
             learning_rate=learning_rate_fn,
             clipping_threshold=training_args.max_grad_norm,
         )
+        optimizer = {k: optimizer for k in split_params(model.params)}
 
     # get PartitionSpec for optimizer state
-    def get_opt_state_spec_and_shape(param_spec):
+    def get_opt_state_spec_and_shape():
         # get opt_state shape without actual init
-        opt_state_shape = jax.eval_shape(optimizer.init, params_struct)
+        opt_state_shape = {}
+        for k, p in split_params(model.params).items():
+            if "scanned" not in k:
+                opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
+            else:
+                opt_state_shape[k] = jax.eval_shape(jax.vmap(optimizer[k].init), p)
 
-        if training_args.optim == "adam":
+        if training_args.optim == "adafactor":
+            # factorized state must be replicated (rank different than params)
+            opt_state_spec = {k: None for k in split_params(model.params)}
 
-            def _opt_state_spec_per_leaf(x):
+        elif training_args.optim in ["adam", "distributed_shampoo"]:
+
+            def _opt_state_spec_per_leaf(x, spec):
                 if isinstance(x, FrozenDict):
                     # variables with same structure as params
-                    return param_spec
+                    return spec
                 else:
                     # other variables such as count
                     return None
 
-            opt_state_spec = jax.tree_map(
-                _opt_state_spec_per_leaf,
-                opt_state_shape,
-                # return None spec for empty elements
-                is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
-            )
+            split_spec = split_params(set_partitions(model.params, False))
+            opt_state_spec = {}
+            for k, p in split_params(model.params).items():
+                if "scanned" in k:
+                    p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
+                if training_args.optim == "adam":
+                    opt_state_spec[k] = jax.tree_map(
+                        _opt_state_spec_per_leaf,
+                        opt_state_shape[k],
+                        split_spec[k],
+                        # return None spec for empty elements
+                        is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
+                    )
+                elif training_args.optim == "distributed_shampoo":
+                    opt_state_spec[k] = opt_fn[k].pspec_fn(
+                        p,
+                        split_spec[k],
+                        statistics_partition_spec,
+                    )
+                # add dimension for scanned params
+                if "scanned" in k:
+                    opt_state_spec[k] = jax.tree_map(
+                        lambda x: PartitionSpec(*(None,) + x)
+                        if x is not None
+                        else None,
+                        opt_state_spec[k],
+                        is_leaf=lambda x: isinstance(x, PartitionSpec),
+                    )
 
-        elif training_args.optim == "adafactor":
-            # factorized state must be replicated (rank different than params)
-            opt_state_spec = None
-
-        elif training_args.optim == "distributed_shampoo":
-            opt_state_spec = opt_fn.pspec_fn(
-                params=params_struct,
-                params_partition_spec=param_spec,
-                partition_spec_for_statistics=PartitionSpec(None, "dp", None),
-            )
         else:
             raise NotImplementedError
-        return opt_state_spec, opt_state_shape
+        return freeze(opt_state_spec), freeze(opt_state_shape)
 
-    opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape(opt_param_spec)
+    opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape()
 
     # create a mesh
     mesh_shape = (training_args.dp_devices, training_args.mp_devices)

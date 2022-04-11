@@ -946,15 +946,6 @@ class FlaxBartEncoderLayerCollection(nn.Module):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-        # postln is already applied in every layer
-        if self.config.use_final_ln_encoder and self.config.ln_positions != "postln":
-            hidden_states = norm(
-                self.config.ln_type,
-                dtype=self.dtype,
-                epsilon=1e-05,
-                use_scale=self.config.force_ln_scale,
-            )(hidden_states)
-
         outputs = [
             hidden_states,
             all_hidden_states,
@@ -1034,7 +1025,7 @@ class FlaxBartDecoderLayerCollection(nn.Module):
                 self.config,
                 dtype=self.dtype,
                 add_norm=self.config.ln_positions == "postln",
-                name="FlaxBartEncoderLayers",
+                name="FlaxBartDecoderLayers",
             )(
                 hidden_states,
                 attention_mask,
@@ -1085,15 +1076,6 @@ class FlaxBartDecoderLayerCollection(nn.Module):
             # add hidden states from the last decoder layer
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-
-        # postln is already applied in every layer
-        if self.config.use_final_ln_decoder and self.config.ln_positions != "postln":
-            hidden_states = norm(
-                self.config.ln_type,
-                dtype=self.dtype,
-                epsilon=1e-05,
-                use_scale=self.config.force_ln_scale,
-            )(hidden_states)
 
         outputs = [
             hidden_states,
@@ -1146,6 +1128,17 @@ class FlaxBartEncoder(nn.Module):
             self.config.ln_type, dtype=self.dtype, epsilon=1e-05
         )
 
+        # postln is already applied in every layer
+        if self.config.use_final_ln_encoder and self.config.ln_positions != "postln":
+            self.final_ln = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.force_ln_scale,
+            )
+        else:
+            self.final_ln = None
+
     def __call__(
         self,
         input_ids,
@@ -1177,11 +1170,16 @@ class FlaxBartEncoder(nn.Module):
             return_dict=return_dict,
         )
 
+        if self.final_ln is None:
+            final_output = outputs[0]
+        else:
+            final_output = self.final_ln(outputs[0])
+
         if not return_dict:
-            return outputs
+            return (final_output,) + outputs[1:]
 
         return FlaxBaseModelOutput(
-            last_hidden_state=outputs.last_hidden_state,
+            last_hidden_state=final_output,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
@@ -1223,6 +1221,15 @@ class FlaxBartDecoder(nn.Module):
             self.config.ln_type, dtype=self.dtype, epsilon=1e-05
         )
 
+        # postln is already applied in every layer
+        if self.config.use_final_ln_decoder and self.config.ln_positions != "postln":
+            self.final_ln = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.force_ln_scale,
+            )
+
     def __call__(
         self,
         input_ids,
@@ -1260,11 +1267,16 @@ class FlaxBartDecoder(nn.Module):
             return_dict=return_dict,
         )
 
+        if self.final_ln is None:
+            final_output = outputs[0]
+        else:
+            final_output = self.final_ln(outputs[0])
+
         if not return_dict:
-            return outputs
+            return (final_output,) + outputs[1:]
 
         return FlaxBaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=outputs.last_hidden_state,
+            last_hidden_state=final_output,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
             cross_attentions=outputs.cross_attentions,
