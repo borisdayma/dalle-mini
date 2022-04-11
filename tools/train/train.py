@@ -886,6 +886,7 @@ def main():
             eps=training_args.adam_epsilon,
         )
         optimizer = {k: optimizer for k in split_params(model.params)}
+
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
         # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
@@ -915,16 +916,27 @@ def main():
                     # other variables such as count
                     return None
 
+            split_spec = split_params(set_partitions(model.params, False))
             opt_state_spec = {}
-            # FIXME: needs to be same as distributed_shampoo
-            for k, spec in split_params(set_partitions(model.params)).items():
+            for k, p in split_params(model.params).items():
+                if "scanned" in k:
+                    p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
                 opt_state_spec[k] = jax.tree_map(
                     _opt_state_spec_per_leaf,
                     opt_state_shape[k],
-                    spec,
+                    split_spec[k],
                     # return None spec for empty elements
                     is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
                 )
+                # add dimension for scanned params
+                if "scanned" in k:
+                    opt_state_spec[k] = jax.tree_map(
+                        lambda x: PartitionSpec(*(None,) + x)
+                        if x is not None
+                        else None,
+                        opt_state_spec[k],
+                        is_leaf=lambda x: isinstance(x, PartitionSpec),
+                    )
 
         elif training_args.optim == "adafactor":
             # factorized state must be replicated (rank different than params)
