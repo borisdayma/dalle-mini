@@ -906,7 +906,11 @@ def main():
             else:
                 opt_state_shape[k] = jax.eval_shape(jax.vmap(optimizer[k].init), p)
 
-        if training_args.optim == "adam":
+        if training_args.optim == "adafactor":
+            # factorized state must be replicated (rank different than params)
+            opt_state_spec = {k: None for k in split_params(model.params)}
+
+        elif training_args.optim in ["adam", "distributed_shampoo"]:
 
             def _opt_state_spec_per_leaf(x, spec):
                 if isinstance(x, FrozenDict):
@@ -921,13 +925,20 @@ def main():
             for k, p in split_params(model.params).items():
                 if "scanned" in k:
                     p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
-                opt_state_spec[k] = jax.tree_map(
-                    _opt_state_spec_per_leaf,
-                    opt_state_shape[k],
-                    split_spec[k],
-                    # return None spec for empty elements
-                    is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
-                )
+                if training_args.optim == "adam":
+                    opt_state_spec[k] = jax.tree_map(
+                        _opt_state_spec_per_leaf,
+                        opt_state_shape[k],
+                        split_spec[k],
+                        # return None spec for empty elements
+                        is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
+                    )
+                elif training_args.optim == "distributed_shampoo":
+                    opt_state_spec[k] = opt_fn[k].pspec_fn(
+                        p,
+                        split_spec[k],
+                        statistics_partition_spec,
+                    )
                 # add dimension for scanned params
                 if "scanned" in k:
                     opt_state_spec[k] = jax.tree_map(
@@ -938,30 +949,6 @@ def main():
                         is_leaf=lambda x: isinstance(x, PartitionSpec),
                     )
 
-        elif training_args.optim == "adafactor":
-            # factorized state must be replicated (rank different than params)
-            opt_state_spec = {k: None for k in split_params(model.params)}
-
-        elif training_args.optim == "distributed_shampoo":
-            split_spec = split_params(set_partitions(model.params, False))
-            opt_state_spec = {}
-            for k, p in split_params(model.params).items():
-                if "scanned" in k:
-                    p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
-                opt_state_spec[k] = opt_fn[k].pspec_fn(
-                    p,
-                    split_spec[k],
-                    statistics_partition_spec,
-                )
-                # add dimension for scanned params
-                if "scanned" in k:
-                    opt_state_spec[k] = jax.tree_map(
-                        lambda x: PartitionSpec(*(None,) + x)
-                        if x is not None
-                        else None,
-                        opt_state_spec[k],
-                        is_leaf=lambda x: isinstance(x, PartitionSpec),
-                    )
         else:
             raise NotImplementedError
         return freeze(opt_state_spec), freeze(opt_state_shape)
