@@ -546,7 +546,7 @@ def split_params(data):
 def unsplit_params(data):
     flat = {}
     for k in ["standard", "scanned_encoder", "scanned_decoder"]:
-        if len(data[k]):
+        if k in data:
             flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
     return freeze(traverse_util.unflatten_dict(flat))
 
