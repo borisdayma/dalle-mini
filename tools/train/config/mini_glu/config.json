@@ -1,6 +1,6 @@
 {
   "activation_dropout": 0.0,
-  "activation_function": "gelu",
+  "activation_function": "swish",
   "attention_dropout": 0.0,
   "bos_token_id": 16385,
   "d_model": 1024,
