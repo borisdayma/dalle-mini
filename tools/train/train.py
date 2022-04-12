@@ -1486,7 +1486,7 @@ def main():
     logger.info("  Ready to start training")
     with mesh:
         for epoch in epochs:
-            state.replace(epoch=epoch)
+            state = state.replace(epoch=epoch)
             local_state["epoch"] = epoch
             # ======================== Training ================================
             metrics_logger.update_state_metrics(local_state)
