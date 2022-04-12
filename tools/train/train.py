@@ -537,14 +537,18 @@ def split_params(data):
         else:
             split["standard"][k] = v
     for k, v in split.items():
-        split[k] = freeze(traverse_util.unflatten_dict(v))
+        if len(split[k]) == 0:
+            split.pop(k)
+        else:
+            split[k] = freeze(traverse_util.unflatten_dict(v))
     return split
 
 
 def unsplit_params(data):
     flat = {}
     for k in ["standard", "scanned_encoder", "scanned_decoder"]:
-        flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
+        if len(data[k]):
+            flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
     return freeze(traverse_util.unflatten_dict(flat))
 
 
