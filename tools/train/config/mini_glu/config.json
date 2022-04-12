@@ -25,5 +25,6 @@
   "pad_token_id": 16385,
   "scale_embedding": false,
   "tie_word_embeddings": false,
+  "use_scan": false,
   "use_cache": true
 }
