@@ -536,11 +536,10 @@ def split_params(data):
             split["scanned_decoder"][k] = v
         else:
             split["standard"][k] = v
+    # remove empty keys
+    split = {k: v for k, v in split.items() if v}
     for k, v in split.items():
-        if len(split[k]) == 0:
-            split.pop(k)
-        else:
-            split[k] = freeze(traverse_util.unflatten_dict(v))
+        split[k] = freeze(traverse_util.unflatten_dict(v))
     return split
 
 
