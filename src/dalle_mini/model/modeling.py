@@ -1391,6 +1391,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         cls,
         pretrained_model_name_or_path: Union[str, os.PathLike],
         dtype: jnp.dtype = jnp.float32,
+        inference_mode: bool = False,
         *model_args,
         **kwargs,
     ):
@@ -1509,6 +1510,13 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
             resolved_archive_file = None
 
         # init random models
+        if inference_mode:
+            # hack to avoid cache issues with scanned layers
+            if config.use_scan:
+                config.use_scan = False
+                unscan_model = True
+            else:
+                unscan_model = False
         model = cls(config, *model_args, **model_kwargs)
 
         with open(resolved_archive_file, "rb") as state_f:
@@ -1547,6 +1555,19 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
 
         # flatten dicts
         state = flatten_dict(state)
+        if inference_mode and unscan_model:
+            scanned_keys = [k for k in state.keys() if "layers" in k]
+            for k in scanned_keys:
+                v = state[k]
+                name_idx = k.index("layers") + 1
+                for i in range(len(v)):
+                    new_k = (
+                        *k[:name_idx],
+                        f"{k[name_idx][:-1]}_{i}",
+                        *k[name_idx + 1 :],
+                    )
+                    state[new_k] = v[i]
+                del state[k]
 
         random_state = flatten_dict(unfreeze(model.params))
 
