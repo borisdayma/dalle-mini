@@ -536,6 +536,8 @@ def split_params(data):
             split["scanned_decoder"][k] = v
         else:
             split["standard"][k] = v
+    # remove empty keys
+    split = {k: v for k, v in split.items() if v}
     for k, v in split.items():
         split[k] = freeze(traverse_util.unflatten_dict(v))
     return split
@@ -544,7 +546,8 @@ def split_params(data):
 def unsplit_params(data):
     flat = {}
     for k in ["standard", "scanned_encoder", "scanned_decoder"]:
-        flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
+        if k in data:
+            flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
     return freeze(traverse_util.unflatten_dict(flat))
 
 
@@ -1483,7 +1486,7 @@ def main():
     logger.info("  Ready to start training")
     with mesh:
         for epoch in epochs:
-            state.replace(epoch=epoch)
+            state = state.replace(epoch=epoch)
             local_state["epoch"] = epoch
             # ======================== Training ================================
             metrics_logger.update_state_metrics(local_state)
