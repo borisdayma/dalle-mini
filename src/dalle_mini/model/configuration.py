@@ -60,7 +60,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         do_sample=True,
         # transformer variants
         use_bias=False,  # use bias in attention and dense layers (except for lm_head)
-        ln_type="rmsnorm",  # layer normalization type, "rmsnorm", "layernorm"
+        ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
         ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "preln", "deepnet" (same as postln)
         use_head_scale=False,  # used in NormFormer
         use_cosine_attention=False,  # used in Swin v2
