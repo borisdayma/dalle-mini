@@ -67,7 +67,6 @@ if prompt != "":
 
     try:
         backend_url = st.secrets["BACKEND_SERVER"] + "/generate"
-        print(f"{datetime.now()} Getting selections: {prompt}")
         selected = get_images_from_backend(prompt, backend_url)
 
         margin = 0.1  # for better position of zoom in arrow
