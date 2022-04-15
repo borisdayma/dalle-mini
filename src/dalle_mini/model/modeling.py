@@ -897,7 +897,7 @@ class FlaxBartEncoderLayerCollection(nn.Module):
             # we use a scale on all norms (even last layer) to allow scanning
             hidden_states, _ = nn.scan(
                 layer,
-                variable_axes={"params": 0},
+                variable_axes={"params": 0, "cache": 0},
                 split_rngs={"params": True, "dropout": True},
                 in_axes=(nn.broadcast, nn.broadcast, nn.broadcast),
                 length=n_layers,
@@ -1010,7 +1010,7 @@ class FlaxBartDecoderLayerCollection(nn.Module):
             # we use a scale on all norms (even last layer) to allow scanning
             hidden_states, _ = nn.scan(
                 layer,
-                variable_axes={"params": 0},
+                variable_axes={"params": 0, "cache": 0},
                 split_rngs={"params": True, "dropout": True},
                 in_axes=(
                     nn.broadcast,
@@ -1391,6 +1391,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         cls,
         pretrained_model_name_or_path: Union[str, os.PathLike],
         dtype: jnp.dtype = jnp.float32,
+        use_scan: bool = None,
         *model_args,
         **kwargs,
     ):
@@ -1508,6 +1509,16 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         else:
             resolved_archive_file = None
 
+        # unscan model
+        unscan_model = None
+        if use_scan is not None:
+            assert (config.use_scan and use_scan is True) or (
+                not use_scan
+            ), f"Wrong setting of use_scan: {use_scan} vs config.use_scan: {config.use_scan}"
+            if config.use_scan and not use_scan:
+                config.use_scan = False
+                unscan_model = True
+
         # init random models
         model = cls(config, *model_args, **model_kwargs)
 
@@ -1547,6 +1558,19 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
 
         # flatten dicts
         state = flatten_dict(state)
+        if unscan_model:
+            scanned_keys = [k for k in state.keys() if "layers" in k]
+            for k in scanned_keys:
+                v = state[k]
+                name_idx = k.index("layers") + 1
+                for i in range(len(v)):
+                    new_k = (
+                        *k[:name_idx],
+                        f"{k[name_idx][:-1]}_{i}",
+                        *k[name_idx + 1 :],
+                    )
+                    state[new_k] = v[i]
+                del state[k]
 
         random_state = flatten_dict(unfreeze(model.params))
 
