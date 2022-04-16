@@ -786,11 +786,13 @@ def main():
             transition_steps=training_args.warmup_steps + 1,  # ensure not 0
         )
         # offset step when resuming
+        last_boundary = training_args.warmup_steps
         if model_metadata.get("step", 0) and training_args.lr_resume_offset:
             warmup_fn = optax.join_schedules(
                 schedules=[optax.constant_schedule(0.0), warmup_fn],
                 boundaries=[model_metadata["step"]],
             )
+            last_boundary += model_metadata["step"]
         if training_args.lr_decay is None:
             return warmup_fn
         elif training_args.lr_decay == "linear":
@@ -811,7 +813,7 @@ def main():
             )
         schedule_fn = optax.join_schedules(
             schedules=[warmup_fn, decay_fn],
-            boundaries=[model_metadata.get("step", 0) + training_args.warmup_steps],
+            boundaries=[last_boundary],
         )
         return schedule_fn
 
