@@ -4,7 +4,7 @@
 from datetime import datetime
 
 import streamlit as st
-from backend import ServiceError, get_images_from_backend, get_model_version
+from backend import ServiceError, get_images_from_backend
 
 st.sidebar.markdown(
     """
@@ -67,7 +67,9 @@ if prompt != "":
 
     try:
         backend_url = st.secrets["BACKEND_SERVER"] + "/generate"
-        selected = get_images_from_backend(prompt, backend_url)
+        response = get_images_from_backend(prompt, backend_url)
+        selected = response["images"]
+        version = response["version"]
 
         margin = 0.1  # for better position of zoom in arrow
         n_columns = 3
@@ -76,8 +78,6 @@ if prompt != "":
             cols[(i % n_columns) * 2].image(img)
         container.markdown(f"**{prompt}**")
 
-        version_url = st.secrets["BACKEND_SERVER"] + "/version"
-        version = get_model_version(version_url)
         st.sidebar.markdown(
             f"<small><center>{version}</center></small>", unsafe_allow_html=True
         )

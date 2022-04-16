@@ -15,9 +15,11 @@ class ServiceError(Exception):
 def get_images_from_backend(prompt, backend_url):
     r = requests.post(backend_url, json={"prompt": prompt})
     if r.status_code == 200:
-        images = r.json()["images"]
+        json = r.json()
+        images = json["images"]
         images = [Image.open(BytesIO(base64.b64decode(img))) for img in images]
-        return images
+        version = json.get("version", "unknown")
+        return {"images": images, "version": version}
     else:
         raise ServiceError(r.status_code)
 
