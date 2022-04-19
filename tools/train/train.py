@@ -672,12 +672,12 @@ def main():
 
     # Load or create new model
     if model_args.model_name_or_path:
-        model = DalleBart.from_pretrained(
+        model, params = DalleBart.from_pretrained(
             model_args.model_name_or_path,
             config=config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            abstract_init=True,  # we overwrite them with loaded checkpoint
+            _do_init=False,  # we overwrite them with loaded checkpoint
             gradient_checkpointing=training_args.gradient_checkpointing,
         )
     else:
@@ -685,17 +685,19 @@ def main():
             config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            abstract_init=True,
+            _do_init=False,
         )
+        params = None
+    params_shape = model.params_shape_tree
 
     # get model metadata
     model_metadata = model_args.get_metadata()
 
     # get PartitionSpec for model params (required to be a dict)
-    param_spec = set_partitions(model.params, model.config.use_scan)
-
-    # convert params to frozen dict
-    model._params = freeze(model.params)
+    param_spec = set_partitions(params_shape, model.config.use_scan)
+    params_shape = freeze(params_shape)
+    if params is not None:
+        params = freeze(params)
 
     # Load tokenizer
     tokenizer = DalleBartTokenizer.from_pretrained(
@@ -736,7 +738,7 @@ def main():
     num_train_steps = (
         steps_per_epoch * num_epochs if steps_per_epoch is not None else None
     )
-    num_params = model.num_params
+    num_params = model.num_params(params_shape)
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len_train_dataset}")
@@ -875,7 +877,7 @@ def main():
 
         optimizer = {}
         opt_fn = {}
-        for k, p in split_params(model.params).items():
+        for k, p in split_params(params_shape).items():
             if "scanned" in k:
                 p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
             optimizer[k] = opt.init(p)
@@ -891,7 +893,7 @@ def main():
             b2=training_args.beta2,
             eps=training_args.adam_epsilon,
         )
-        optimizer = {k: optimizer for k in split_params(model.params)}
+        optimizer = {k: optimizer for k in split_params(params_shape)}
 
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
@@ -900,13 +902,13 @@ def main():
             learning_rate=learning_rate_fn,
             clipping_threshold=training_args.max_grad_norm,
         )
-        optimizer = {k: optimizer for k in split_params(model.params)}
+        optimizer = {k: optimizer for k in split_params(params_shape)}
 
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape():
         # get opt_state shape without actual init
         opt_state_shape = {}
-        for k, p in split_params(model.params).items():
+        for k, p in split_params(params_shape).items():
             if "scanned" not in k:
                 opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
             else:
@@ -914,7 +916,7 @@ def main():
 
         if training_args.optim == "adafactor":
             # factorized state must be replicated (rank different than params)
-            opt_state_spec = {k: None for k in split_params(model.params)}
+            opt_state_spec = {k: None for k in split_params(params_shape)}
 
         elif training_args.optim in ["adam", "distributed_shampoo"]:
 
@@ -926,9 +928,9 @@ def main():
                     # other variables such as count
                     return None
 
-            split_spec = split_params(set_partitions(model.params, False))
+            split_spec = split_params(set_partitions(params_shape, False))
             opt_state_spec = {}
-            for k, p in split_params(model.params).items():
+            for k, p in split_params(params_shape).items():
                 if "scanned" in k:
                     p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
                 if training_args.optim == "adam":
@@ -982,12 +984,12 @@ def main():
 
     # init params if not available yet
     def maybe_init_params(params):
-        if model_args.model_name_or_path:
+        if params is not None:
             # model params are correctly loaded
             return params
         else:
             # params have not been initialized yet
-            return model.init_weights()
+            return model.init_weights(model.key, model.input_shape)
 
     with mesh:
         logger.info("  Creating state")
@@ -1008,7 +1010,7 @@ def main():
                 else None,
                 out_axis_resources=state_spec,
                 donate_argnums=(0,),
-            )(model.params if model_args.model_name_or_path else None)
+            )(params)
 
         else:
             # load opt_state
@@ -1038,13 +1040,13 @@ def main():
                 ),
                 out_axis_resources=state_spec,
                 donate_argnums=(0, 1),
-            )(model.params, opt_state)
+            )(params, opt_state)
 
             # remove opt_state from CPU
             del opt_state
 
     # free CPU memory
-    del model._params, opt_state_spec, opt_state_shape
+    del params, opt_state_spec, opt_state_shape
 
     # define batch specs
     batch_spec = PartitionSpec("dp")
