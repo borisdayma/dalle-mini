@@ -43,6 +43,9 @@ from transformers.file_utils import (
     is_offline_mode,
     is_remote_url,
 )
+from transformers.modeling_flax_pytorch_utils import (
+    load_pytorch_checkpoint_in_flax_state_dict,
+)
 from transformers.generation_flax_utils import FlaxSampleOutput
 from transformers.modeling_flax_outputs import (
     FlaxBaseModelOutput,
@@ -58,7 +61,15 @@ from transformers.models.bart.modeling_flax_bart import (
     FlaxBartModule,
     FlaxBartPreTrainedModel,
 )
-from transformers.utils import logging
+from requests import HTTPError
+from transformers.utils import (
+    logging,
+    RepositoryNotFoundError,
+    RevisionNotFoundError,
+    EntryNotFoundError,
+    has_file,
+    HUGGINGFACE_CO_RESOLVE_ENDPOINT,
+)
 
 from .configuration import DalleBartConfig
 from .utils import PretrainedFromWandbMixin
@@ -1314,70 +1325,10 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
     """
     Edits:
     - added num_params property
-    - config_class replaced to DalleBartConfig
-    - __init__ accepts abstract_init which does uses parameter shape to initialize the model
-    - init weights on CPU with `load_on_cpu`
-    - restore weights on CPU with custom `from_pretrained`
+    - use_scan parameter
     """
 
     config_class = DalleBartConfig
-
-    def __init__(
-        self,
-        config: DalleBartConfig,
-        input_shape: Tuple[int] = (1, 1),
-        seed: int = 0,
-        dtype: jnp.dtype = jnp.float32,
-        abstract_init: bool = False,
-        load_on_cpu: bool = False,
-        init_weights: bool = True,
-        **kwargs,
-    ):
-        module = self.module_class(config=config, dtype=dtype, **kwargs)
-
-        # adapted from HuggingFace FlaxPreTrainedModel
-        if config is None:
-            raise ValueError("config cannot be None")
-
-        if module is None:
-            raise ValueError("module cannot be None")
-
-        # Those are private to be exposed as typed property on derived classes.
-        self._config = config
-        self._module = module
-
-        # Those are public as their type is generic to every derived classes.
-        self.key = PRNGKey(seed)
-        self.dtype = dtype
-
-        if init_weights:
-            # get shape of params only
-            random_params = self.init_weights(
-                self.key,
-                input_shape,
-                abstract_init=abstract_init,
-                load_on_cpu=load_on_cpu,
-            )
-
-            # save required_params as set
-            self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
-            self.params = random_params
-
-    def init_weights(
-        self, rng=None, input_shape=(1, 1), abstract_init=False, load_on_cpu=False
-    ):
-        if rng is None:
-            rng = self.key
-        init_fn = super().init_weights
-        if load_on_cpu:
-            init_fn = jax.jit(init_fn, static_argnums=(1,), backend="cpu")
-        if abstract_init:
-            # only set shape and dtype, load parameters separately
-            init_fn = partial(init_fn, input_shape=input_shape)
-            params = jax.eval_shape(init_fn, rng)
-        else:
-            params = init_fn(rng, input_shape)
-        return params
 
     @property
     def num_params(self):
@@ -1407,6 +1358,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         revision = kwargs.pop("revision", None)
         from_pipeline = kwargs.pop("_from_pipeline", None)
         from_auto_class = kwargs.pop("_from_auto", False)
+        _do_init = kwargs.pop("_do_init", True)
 
         user_agent = {
             "file_type": "model",
@@ -1462,19 +1414,27 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
                     archive_file = os.path.join(
                         pretrained_model_name_or_path, FLAX_WEIGHTS_NAME
                     )
+                # At this stage we don't have a weight file so we will raise an error.
+                elif os.path.join(pretrained_model_name_or_path, WEIGHTS_NAME):
+                    raise EnvironmentError(
+                        f"Error no file named {FLAX_WEIGHTS_NAME} found in directory {pretrained_model_name_or_path} "
+                        "but there is a file for PyTorch weights. Use `from_pt=True` to load this model from those "
+                        "weights."
+                    )
                 else:
                     raise EnvironmentError(
-                        f"Error no file named {[FLAX_WEIGHTS_NAME, WEIGHTS_NAME]} found in directory "
-                        f"{pretrained_model_name_or_path} or `from_pt` set to False"
+                        f"Error no file named {FLAX_WEIGHTS_NAME} or {WEIGHTS_NAME} found in directory "
+                        f"{pretrained_model_name_or_path}."
                     )
             elif os.path.isfile(pretrained_model_name_or_path) or is_remote_url(
                 pretrained_model_name_or_path
             ):
                 archive_file = pretrained_model_name_or_path
             else:
+                filename = WEIGHTS_NAME if from_pt else FLAX_WEIGHTS_NAME
                 archive_file = hf_bucket_url(
                     pretrained_model_name_or_path,
-                    filename=WEIGHTS_NAME if from_pt else FLAX_WEIGHTS_NAME,
+                    filename=filename,
                     revision=revision,
                 )
 
@@ -1490,15 +1450,64 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
                     use_auth_token=use_auth_token,
                     user_agent=user_agent,
                 )
-            except EnvironmentError as err:
-                logger.error(err)
-                msg = (
-                    f"Can't load weights for '{pretrained_model_name_or_path}'. Make sure that:\n\n"
-                    f"- '{pretrained_model_name_or_path}' is a correct model identifier listed on 'https://huggingface.co/models'\n"
-                    f"  (make sure '{pretrained_model_name_or_path}' is not a path to a local directory with something else, in that case)\n\n"
-                    f"- or '{pretrained_model_name_or_path}' is the correct path to a directory containing a file named {WEIGHTS_NAME}.\n\n"
+
+            except RepositoryNotFoundError:
+                raise EnvironmentError(
+                    f"{pretrained_model_name_or_path} is not a local folder and is not a valid model identifier "
+                    "listed on 'https://huggingface.co/models'\nIf this is a private repository, make sure to pass a "
+                    "token having permission to this repo with `use_auth_token` or log in with `huggingface-cli "
+                    "login` and pass `use_auth_token=True`."
                 )
-                raise EnvironmentError(msg)
+            except RevisionNotFoundError:
+                raise EnvironmentError(
+                    f"{revision} is not a valid git identifier (branch name, tag name or commit id) that exists for "
+                    "this model name. Check the model page at "
+                    f"'https://huggingface.co/{pretrained_model_name_or_path}' for available revisions."
+                )
+            except EntryNotFoundError:
+                if filename == FLAX_WEIGHTS_NAME:
+                    has_file_kwargs = {
+                        "revision": revision,
+                        "proxies": proxies,
+                        "use_auth_token": use_auth_token,
+                    }
+                    if has_file(
+                        pretrained_model_name_or_path, WEIGHTS_NAME, **has_file_kwargs
+                    ):
+                        raise EnvironmentError(
+                            f"{pretrained_model_name_or_path} does not appear to have a file named {FLAX_WEIGHTS_NAME} "
+                            "but there is a file for PyTorch weights. Use `from_pt=True` to load this model from "
+                            "those weights."
+                        )
+                    else:
+                        raise EnvironmentError(
+                            f"{pretrained_model_name_or_path} does not appear to have a file named {FLAX_WEIGHTS_NAME} "
+                            f"or {WEIGHTS_NAME}."
+                        )
+                else:
+                    raise EnvironmentError(
+                        f"{pretrained_model_name_or_path} does not appear to have a file named {filename}."
+                    )
+            except HTTPError as err:
+                raise EnvironmentError(
+                    f"There was a specific connection error when trying to load {pretrained_model_name_or_path}:\n"
+                    f"{err}"
+                )
+            except ValueError:
+                raise EnvironmentError(
+                    f"We couldn't connect to '{HUGGINGFACE_CO_RESOLVE_ENDPOINT}' to load this model, couldn't find it in the cached "
+                    f"files and it looks like {pretrained_model_name_or_path} is not the path to a directory "
+                    f"containing a file named {FLAX_WEIGHTS_NAME} or {WEIGHTS_NAME}.\n"
+                    "Checkout your internet connection or see how to run the library in offline mode at "
+                    "'https://huggingface.co/docs/transformers/installation#offline-mode'."
+                )
+            except EnvironmentError:
+                raise EnvironmentError(
+                    f"Can't load the model for '{pretrained_model_name_or_path}'. If you were trying to load it from "
+                    "'https://huggingface.co/models', make sure you don't have a local directory with the same name. "
+                    f"Otherwise, make sure '{pretrained_model_name_or_path}' is the correct path to a directory "
+                    f"containing a file named {FLAX_WEIGHTS_NAME} or {WEIGHTS_NAME}."
+                )
 
             if resolved_archive_file == archive_file:
                 logger.info(f"loading weights file {archive_file}")
@@ -1520,30 +1529,45 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
                 unscan_model = True
 
         # init random models
-        model = cls(config, *model_args, **model_kwargs)
+        model = cls(config, *model_args, _do_init=_do_init, **model_kwargs)
 
-        with open(resolved_archive_file, "rb") as state_f:
-            try:
-                state = from_bytes(cls, state_f.read())
-            except (UnpicklingError, msgpack.exceptions.ExtraData) as e:
+        if from_pt:
+            state = load_pytorch_checkpoint_in_flax_state_dict(
+                model, resolved_archive_file
+            )
+        else:
+            with open(resolved_archive_file, "rb") as state_f:
                 try:
-                    with open(resolved_archive_file) as f:
-                        if f.read().startswith("version"):
-                            raise OSError(
-                                "You seem to have cloned a repository without having git-lfs installed. Please install "
-                                "git-lfs and run `git lfs install` followed by `git lfs pull` in the folder "
-                                "you cloned."
-                            )
-                        else:
-                            raise ValueError from e
-                except (UnicodeDecodeError, ValueError):
-                    raise EnvironmentError(
-                        f"Unable to convert {archive_file} to Flax deserializable object. "
-                    )
+                    state = from_bytes(cls, state_f.read())
+                except (UnpicklingError, msgpack.exceptions.ExtraData) as e:
+                    try:
+                        with open(resolved_archive_file) as f:
+                            if f.read().startswith("version"):
+                                raise OSError(
+                                    "You seem to have cloned a repository without having git-lfs installed. Please install "
+                                    "git-lfs and run `git lfs install` followed by `git lfs pull` in the folder "
+                                    "you cloned."
+                                )
+                            else:
+                                raise ValueError from e
+                    except (UnicodeDecodeError, ValueError):
+                        raise EnvironmentError(
+                            f"Unable to convert {archive_file} to Flax deserializable object. "
+                        )
+            # make sure all arrays are stored as jnp.arrays
+            # NOTE: This is to prevent a bug this will be fixed in Flax >= v0.3.4:
+            # https://github.com/google/flax/issues/1261
+            if _do_init:
+                state = jax.tree_util.tree_map(jnp.array, state)
+            else:
+                # keep the params on CPU if we don't want to initialize
+                state = jax.tree_util.tree_map(
+                    lambda x: jax.device_put(x, jax.devices("cpu")[0]), state
+                )
 
         # if model is base model only use model_prefix key
         if (
-            cls.base_model_prefix not in dict(model.params)
+            cls.base_model_prefix not in dict(model.params_shape_tree)
             and cls.base_model_prefix in state
         ):
             state = state[cls.base_model_prefix]
@@ -1551,7 +1575,7 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
         # if model is head model and we are loading weights from base model
         # we initialize new params dict with base_model_prefix
         if (
-            cls.base_model_prefix in dict(model.params)
+            cls.base_model_prefix in dict(model.params_shape_tree)
             and cls.base_model_prefix not in state
         ):
             state = {cls.base_model_prefix: state}
@@ -1572,10 +1596,19 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
                     state[new_k] = v[i]
                 del state[k]
 
-        random_state = flatten_dict(unfreeze(model.params))
+        random_state = flatten_dict(
+            unfreeze(model.params if _do_init else model.params_shape_tree)
+        )
 
         missing_keys = model.required_params - set(state.keys())
         unexpected_keys = set(state.keys()) - model.required_params
+
+        if missing_keys and not _do_init:
+            logger.warn(
+                f"The checkpoint {pretrained_model_name_or_path} is missing required keys: {missing_keys}. "
+                f"Make sure to call model.init_weights to initialize the missing weights."
+            )
+            cls._missing_keys = missing_keys
 
         # Mistmatched keys contains tuples key/shape1/shape2 of weights in the checkpoint that have a shape not
         # matching the weights in the model.
@@ -1595,9 +1628,10 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
                         "model."
                     )
 
-        # add missing keys as random parameters
-        for missing_key in missing_keys:
-            state[missing_key] = random_state[missing_key]
+        # add missing keys as random parameters if we are initializing
+        if missing_keys and _do_init:
+            for missing_key in missing_keys:
+                state[missing_key] = random_state[missing_key]
 
         # remove unexpected keys to not be saved again
         for unexpected_key in unexpected_keys:
@@ -1642,10 +1676,35 @@ class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
                 f"You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference."
             )
 
-        # set correct parameters
-        model.params = unflatten_dict(state)
+        # dictionary of key: dtypes for the model params
+        param_dtypes = jax.tree_map(lambda x: x.dtype, state)
+        # extract keys of parameters not in jnp.float32
+        fp16_params = [k for k in param_dtypes if param_dtypes[k] == jnp.float16]
+        bf16_params = [k for k in param_dtypes if param_dtypes[k] == jnp.bfloat16]
 
-        return model
+        # raise a warning if any of the parameters are not in jnp.float32
+        if len(fp16_params) > 0:
+            logger.warning(
+                f"Some of the weights of {model.__class__.__name__} were initialized in float16 precision from "
+                f"the model checkpoint at {pretrained_model_name_or_path}:\n{fp16_params}\n"
+                "You should probably UPCAST the model weights to float32 if this was not intended. "
+                "See [`~FlaxPreTrainedModel.to_fp32`] for further information on how to do this."
+            )
+
+        if len(bf16_params) > 0:
+            logger.warning(
+                f"Some of the weights of {model.__class__.__name__} were initialized in bfloat16 precision from "
+                f"the model checkpoint at {pretrained_model_name_or_path}:\n{bf16_params}\n"
+                "You should probably UPCAST the model weights to float32 if this was not intended. "
+                "See [`~FlaxPreTrainedModel.to_fp32`] for further information on how to do this."
+            )
+
+        if _do_init:
+            # set correct parameters
+            model.params = unflatten_dict(state)
+            return model
+        else:
+            return model, unflatten_dict(state)
 
 
 class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
