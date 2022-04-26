@@ -119,7 +119,7 @@ class ModelArguments:
             ), "Restoring state only available with W&B artifact reference"
 
     def get_metadata(self):
-        if self.restore_state:
+        if ":" in self.model_name_or_path:
             if jax.process_index() == 0:
                 artifact = wandb.run.use_artifact(self.model_name_or_path)
             else:
@@ -991,6 +991,16 @@ def main():
 
     with mesh:
         logger.info("  Creating state")
+
+        # restore metadata
+        attr_state = {}
+        keys = ["train_time", "train_samples"]
+        if model_args.restore_state:
+            keys += ["step", "epoch"]
+        for k in keys:
+            if k in state:
+                attr_state[k] = state[k]
+
         if not model_args.restore_state:
 
             def init_state(params):
@@ -999,6 +1009,7 @@ def main():
                     tx=optimizer,
                     params=maybe_init_params(params),
                     dropout_rng=dropout_rng,
+                    **attr_state,
                 )
 
             state = pjit(
@@ -1013,12 +1024,6 @@ def main():
         else:
             # load opt_state
             opt_state = from_bytes(opt_state_shape, model_args.get_opt_state())
-
-            # restore other attributes
-            attr_state = {
-                k: model_metadata[k]
-                for k in ["step", "epoch", "train_time", "train_samples"]
-            }
 
             def restore_state(params, opt_state):
                 return TrainState(
