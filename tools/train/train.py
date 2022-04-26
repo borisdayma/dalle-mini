@@ -997,9 +997,7 @@ def main():
         keys = ["train_time", "train_samples"]
         if model_args.restore_state:
             keys += ["step", "epoch"]
-        for k in keys:
-            if k in state:
-                attr_state[k] = state[k]
+        attr_state = {k: v for k, v in model_metadata.items() if k in keys}
 
         if not model_args.restore_state:
 
