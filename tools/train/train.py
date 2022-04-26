@@ -406,11 +406,9 @@ class TrainingArguments:
             "help": "Whether to use staircase or continuous learning rate when using exponential decay."
         },
     )
-    lr_resume_offset: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to offset the learning rate function with current step when resuming a run."
-        },
+    lr_offset: int = field(
+        default=0,
+        metadata={"help": "Number of steps to offset learning rate and keep it at 0."},
     )
     logging_steps: int = field(
         default=40, metadata={"help": "Log every X updates steps."}
@@ -789,18 +787,12 @@ def main():
         )
         last_boundary = training_args.warmup_steps
         # offset step when resuming
-        if training_args.lr_resume_offset:
-            offset = (
-                model_metadata.get("step", 0)
-                if training_args.lr_resume_offset is True
-                else int(training_args.lr_resume_offset)
-            )
-            logger.info(f"Learning rate function will start at step {offset}")
+        if training_args.lr_offset:
             warmup_fn = optax.join_schedules(
                 schedules=[optax.constant_schedule(0.0), warmup_fn],
-                boundaries=[offset],
+                boundaries=[training_args.lr_offset],
             )
-            last_boundary += offset
+            last_boundary += training_args.lr_offset
         if training_args.lr_decay is None:
             return warmup_fn
         elif training_args.lr_decay == "linear":
