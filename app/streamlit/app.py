@@ -78,9 +78,9 @@ if prompt != "":
             cols[(i % n_columns) * 2].image(img)
         container.markdown(f"**{prompt}**")
 
-        st.sidebar.markdown(
-            f"<small><center>{version}</center></small>", unsafe_allow_html=True
-        )
+        # st.sidebar.markdown(
+        #    f"<small><center>{version}</center></small>", unsafe_allow_html=True
+        # )
 
         # st.markdown(
         #    f"""
