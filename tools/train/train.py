@@ -787,14 +787,20 @@ def main():
             end_value=training_args.learning_rate,
             transition_steps=training_args.warmup_steps + 1,  # ensure not 0
         )
-        # offset step when resuming
         last_boundary = training_args.warmup_steps
-        if model_metadata.get("step", 0) and training_args.lr_resume_offset:
+        # offset step when resuming
+        if training_args.lr_resume_offset:
+            offset = (
+                model_metadata.get("step", 0)
+                if training_args.lr_resume_offset is True
+                else int(training_args.lr_resume_offset)
+            )
+            logger.info(f"Learning rate function will start at step {offset}")
             warmup_fn = optax.join_schedules(
                 schedules=[optax.constant_schedule(0.0), warmup_fn],
-                boundaries=[model_metadata["step"]],
+                boundaries=[offset],
             )
-            last_boundary += model_metadata["step"]
+            last_boundary += offset
         if training_args.lr_decay is None:
             return warmup_fn
         elif training_args.lr_decay == "linear":
