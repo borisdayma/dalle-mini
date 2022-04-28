@@ -331,6 +331,9 @@ class TrainingArguments:
             "help": 'The optimizer to use. Can be "distributed_shampoo" (default), "adam" or "adafactor"'
         },
     )
+    weight_decay: float = field(
+        default=0.0, metadata={"help": "Weight decay applied to parameters."}
+    )
     beta1: float = field(
         default=0.9,
         metadata={"help": "Beta1 for Adam & Distributed Shampoo."},
@@ -489,6 +492,8 @@ class TrainingArguments:
             "adam",
             "adafactor",
         ], f"Selected optimizer not supported: {self.optim}"
+        if self.optim == "adafactor" and self.weight_decay == 0:
+            self.weight_decay = None
         assert self.graft_type in [
             "rmsprop_normalized",
             "rmsprop",
@@ -844,6 +849,7 @@ def main():
             beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
             matrix_epsilon=1e-6,
+            weight_decay=training_args.weight_decay,
             start_preconditioning_step=max(
                 training_args.preconditioning_compute_steps + 1, 101
             ),
@@ -892,6 +898,7 @@ def main():
             b1=training_args.beta1,
             b2=training_args.beta2,
             eps=training_args.adam_epsilon,
+            weight_decay=training_args.weight_decay,
         )
         optimizer = {k: optimizer for k in split_params(params_shape)}
 
@@ -901,6 +908,7 @@ def main():
         optimizer = optax.adafactor(
             learning_rate=learning_rate_fn,
             clipping_threshold=training_args.max_grad_norm,
+            weight_decay_rate=training_args.weight_decay,
         )
         optimizer = {k: optimizer for k in split_params(params_shape)}
 
