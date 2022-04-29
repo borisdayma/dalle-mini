@@ -3,8 +3,8 @@ title: DALL·E mini
 emoji: 🥑
 colorFrom: yellow
 colorTo: green
-sdk: streamlit
-app_file: app/streamlit/app.py
+sdk: gradio
+app_file: app/gradio/app.py
 pinned: True
 license: apache-2.0
 ---
