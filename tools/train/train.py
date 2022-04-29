@@ -365,6 +365,10 @@ class TrainingArguments:
             "help": "The type of grafting to use. Can be 'rmsprop_normalized' (default), 'rmsprop', 'adagrad', 'adagrad_normalized', 'sgd' or 'sqrt_n'"
         },
     )
+    nesterov: bool = field(
+        default=False,
+        metadata={"help": "Use Nesterov momentum for Distributed Shampoo."},
+    )
     optim_quantized: bool = field(
         default=False,
         metadata={
@@ -857,7 +861,7 @@ def main():
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
             graft_type=graft_type,
-            nesterov=False,
+            nesterov=training_args.nesterov,
             exponent_override=0,
             statistics_partition_spec=statistics_partition_spec,
             preconditioner_partition_spec=PartitionSpec(
