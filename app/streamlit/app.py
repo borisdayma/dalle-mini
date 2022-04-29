@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-from datetime import datetime
-
 import streamlit as st
 from backend import ServiceError, get_images_from_backend
 
