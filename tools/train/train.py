@@ -119,7 +119,7 @@ class ModelArguments:
             ), "Restoring state only available with W&B artifact reference"
 
     def get_metadata(self):
-        if self.restore_state:
+        if ":" in self.model_name_or_path:
             if jax.process_index() == 0:
                 artifact = wandb.run.use_artifact(self.model_name_or_path)
             else:
@@ -413,11 +413,9 @@ class TrainingArguments:
             "help": "Whether to use staircase or continuous learning rate when using exponential decay."
         },
     )
-    lr_resume_offset: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to offset the learning rate function with current step when resuming a run."
-        },
+    lr_offset: int = field(
+        default=0,
+        metadata={"help": "Number of steps to offset learning rate and keep it at 0."},
     )
     logging_steps: int = field(
         default=40, metadata={"help": "Log every X updates steps."}
@@ -796,14 +794,14 @@ def main():
             end_value=training_args.learning_rate,
             transition_steps=training_args.warmup_steps + 1,  # ensure not 0
         )
-        # offset step when resuming
         last_boundary = training_args.warmup_steps
-        if model_metadata.get("step", 0) and training_args.lr_resume_offset:
+        # offset step when resuming
+        if training_args.lr_offset:
             warmup_fn = optax.join_schedules(
                 schedules=[optax.constant_schedule(0.0), warmup_fn],
-                boundaries=[model_metadata["step"]],
+                boundaries=[training_args.lr_offset],
             )
-            last_boundary += model_metadata["step"]
+            last_boundary += training_args.lr_offset
         if training_args.lr_decay is None:
             return warmup_fn
         elif training_args.lr_decay == "linear":
@@ -1005,6 +1003,14 @@ def main():
 
     with mesh:
         logger.info("  Creating state")
+
+        # restore metadata
+        attr_state = {}
+        keys = ["train_time", "train_samples"]
+        if model_args.restore_state:
+            keys += ["step", "epoch"]
+        attr_state = {k: v for k, v in model_metadata.items() if k in keys}
+
         if not model_args.restore_state:
 
             def init_state(params):
@@ -1013,6 +1019,7 @@ def main():
                     tx=optimizer,
                     params=maybe_init_params(params),
                     dropout_rng=dropout_rng,
+                    **attr_state,
                 )
 
             state = pjit(
@@ -1027,12 +1034,6 @@ def main():
         else:
             # load opt_state
             opt_state = from_bytes(opt_state_shape, model_args.get_opt_state())
-
-            # restore other attributes
-            attr_state = {
-                k: model_metadata[k]
-                for k in ["step", "epoch", "train_time", "train_samples"]
-            }
 
             def restore_state(params, opt_state):
                 return TrainState(
