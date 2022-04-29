@@ -23,7 +23,7 @@ Our logo was generated with DALL·E mini using the prompt "logo of an armchair i
 
 There are several ways to use DALL·E mini to create your own images:
 
-* use [the official DALL·E Mini demo](https://huggingface.co/spaces/dalle-mini/dalle-mini)
+* use [the official DALL·E Mini demo](https://huggingface.co/spaces/akhaliq/dalle-mini)
 
 * experiment with the pipeline step by step through our [`inference pipeline notebook`](tools/inference/inference_pipeline.ipynb)
 
