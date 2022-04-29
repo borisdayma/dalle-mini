@@ -60,4 +60,4 @@ Created by Boris Dayma et al. 2021-2022
     )
 
 
-block.launch(enable_queue=True)
+block.launch()
