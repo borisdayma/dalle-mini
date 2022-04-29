@@ -2,11 +2,10 @@
 # coding: utf-8
 import os
 
-os.system("pip install gradio==2.9b12")
-from datetime import datetime
+os.system("pip install gradio==2.9b13")
 
 import gradio as gr
-from backend import ServiceError, get_images_from_backend
+from backend import get_images_from_backend
 from PIL import Image
 
 block = gr.Blocks()
@@ -18,7 +17,6 @@ def image_grid(imgs, rows, cols):
 
     w, h = imgs[0].size
     grid = Image.new("RGB", size=(cols * w, rows * h))
-    grid_w, grid_h = grid.size
 
     for i, img in enumerate(imgs):
         grid.paste(img, box=(i % cols * w, i // cols * h))
@@ -32,7 +30,7 @@ def infer(prompt):
 
     images_list = []
 
-    for i, img in enumerate(selected):
+    for _, img in enumerate(selected):
         images_list.append(img)
 
     grid = image_grid(images_list, rows=3, cols=3)
