@@ -24,8 +24,8 @@ with block:
     prompt = gr.inputs.Textbox(
         placeholder="An astronaut riding a horse in a photorealistic style"
     )
-    result = gr.Gallery()
     text_run = gr.Button("Run")
+    result = gr.Gallery()
     text_run.click(infer, inputs=prompt, outputs=result)
 
     gr.Markdown(
