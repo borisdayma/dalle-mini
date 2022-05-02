@@ -31,6 +31,11 @@ There are several ways to use DALL·E mini to create your own images:
 
 * spin off your own app with [DALL-E Playground repository](https://github.com/saharmor/dalle-playground) (thanks [Sahar](https://twitter.com/theaievangelist))
 
+* try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, upscaling in a Human-in-the-Loop workflow. 
+
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jina-ai/dalle-flow/blob/main/client.ipynb)
+
+
 ## How does it work?
 
 Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
