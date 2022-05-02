@@ -2,40 +2,18 @@
 # coding: utf-8
 import os
 
-os.system("pip install gradio==2.9b13")
+os.system("pip install gradio==2.9b15")
 
 import gradio as gr
 from backend import get_images_from_backend
-from PIL import Image
 
 block = gr.Blocks()
 backend_url = os.environ["BACKEND_SERVER"] + "/generate"
 
 
-def image_grid(imgs, rows, cols):
-    assert len(imgs) == rows * cols
-
-    w, h = imgs[0].size
-    grid = Image.new("RGB", size=(cols * w, rows * h))
-
-    for i, img in enumerate(imgs):
-        grid.paste(img, box=(i % cols * w, i // cols * h))
-    return grid
-
-
 def infer(prompt):
     response = get_images_from_backend(prompt, backend_url)
-    selected = response["images"]
-    version = response["version"]
-
-    images_list = []
-
-    for _, img in enumerate(selected):
-        images_list.append(img)
-
-    grid = image_grid(images_list, rows=3, cols=3)
-    print(grid)
-    return grid
+    return response["images"]
 
 
 with block:
@@ -44,9 +22,9 @@ with block:
         "DALL·E mini is an AI model that generates images from any prompt you give!"
     )
     prompt = gr.inputs.Textbox(
-        lines=3, placeholder="An astronaut riding a horse in a photorealistic style"
+        placeholder="An astronaut riding a horse in a photorealistic style"
     )
-    result = gr.outputs.Image(type="pil")
+    result = gr.Gallery()
     text_run = gr.Button("Run")
     text_run.click(infer, inputs=prompt, outputs=result)
 
