@@ -106,6 +106,18 @@ class ModelArguments:
             "help": "Restore optimizer and training state. Can be True (will retrieve associated wandb artifact), a local directory or a Google bucket path."
         },
     )
+    dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Dropout rate. Overwrites config."},
+    )
+    activation_dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Activation dropout rate. Overwrites config."},
+    )
+    attention_dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Attention dropout rate. Overwrites config."},
+    )
 
     def __post_init__(self):
         if self.tokenizer_name is None:
@@ -674,6 +686,9 @@ def main():
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
         config.gradient_checkpointing = training_args.gradient_checkpointing
+        config.dropout = model_args.dropout
+        config.activation_dropout = model_args.activation_dropout
+        config.attention_dropout = model_args.attention_dropout
     else:
         config = None
 
@@ -686,6 +701,9 @@ def main():
             dtype=getattr(jnp, model_args.dtype),
             _do_init=False,  # we overwrite them with loaded checkpoint
             gradient_checkpointing=training_args.gradient_checkpointing,
+            dropout=model_args.dropout,
+            activation_dropout=model_args.activation_dropout,
+            attention_dropout=model_args.attention_dropout,
         )
     else:
         model = DalleBart(
