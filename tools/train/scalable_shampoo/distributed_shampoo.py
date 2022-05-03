@@ -2110,7 +2110,7 @@ def distributed_shampoo(
             if graft_type == GraftingType.ADAGRAD_NORMALIZED:
                 scaled_grad = grad / (jnp.linalg.norm(grad) + 1e-16)
 
-            w1, w2 = 1.0, 1.0
+            w1, w2 = 1.0 + 1e-30 * jnp.linalg.norm(grad), 1.0 + 1e-30 * jnp.linalg.norm(grad)
             new_diagonal_statistics = (
                 w1 * state.diagonal_statistics.to_float() + w2 * jnp.square(scaled_grad)
             )
@@ -2129,7 +2129,6 @@ def distributed_shampoo(
 
             w1 = beta2
             w2 = beta2 if beta2 == 1.0 else (1.0 - beta2)
-            w1, w2 = 1.0, 1.0
 
             new_diagonal_statistics = (
                 w1 * state.diagonal_statistics.to_float() + w2 * jnp.square(scaled_grad)
