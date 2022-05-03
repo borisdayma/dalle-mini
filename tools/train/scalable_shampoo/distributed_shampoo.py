@@ -2112,7 +2112,7 @@ def distributed_shampoo(
 
             w1, w2 = 1.0 + 1e-30 * jnp.linalg.norm(grad), 1.0 + 1e-30 * jnp.linalg.norm(grad)
             new_diagonal_statistics = (
-                w1 * state.diagonal_statistics.to_float() + w2 * jnp.square(scaled_grad)
+                w1/w1 * state.diagonal_statistics.to_float() + w2/w2 * jnp.square(scaled_grad)
             )
             adagrad_update = scaled_grad / (
                 jnp.sqrt(new_diagonal_statistics) + diagonal_epsilon
