@@ -2129,6 +2129,7 @@ def distributed_shampoo(
 
             w1 = beta2
             w2 = beta2 if beta2 == 1.0 else (1.0 - beta2)
+            w1, w2 = 1.0, 1.0
 
             new_diagonal_statistics = (
                 w1 * state.diagonal_statistics.to_float() + w2 * jnp.square(scaled_grad)
