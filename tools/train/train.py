@@ -525,6 +525,8 @@ class TrainingArguments:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
         if self.log_norm_steps is True:
             self.log_norm_steps = self.logging_steps
+        if not self.do_train:
+            self.num_train_epochs = 1
         if (
             os.path.exists(self.output_dir)
             and os.listdir(self.output_dir)
@@ -1354,6 +1356,8 @@ def main():
     # init variables
     start_time = time.perf_counter() - local_state["train_time"]
     train_metrics = None
+    evaluation_ran = False
+    save_model_ran = False
     metrics_logger = MetricsLogger(local_state["step"])
     epochs = tqdm(
         range(local_state["epoch"], num_epochs),
@@ -1532,85 +1536,98 @@ def main():
             metrics_logger.update_state_metrics(local_state)
             metrics_logger.log({})
 
-            # load data - may be replicated on multiple nodes
-            node_groups = max(1, training_args.mp_devices // jax.local_device_count())
-            loader_bs = batch_size_per_node * node_groups
-            train_loader = dataset.dataloader(
-                "train",
-                loader_bs,
-                epoch,
-            )
-            # train
-            for batch in tqdm(
-                train_loader,
-                desc="Training...",
-                position=1,
-                leave=False,
-                total=steps_per_epoch,
-                disable=jax.process_index() > 0,
-            ):
-                # calculate delta time (we have a lag of one step but it's ok)
-                train_time = time.perf_counter() - start_time
-
-                # set correct shape to batch
-                # - add grad_step dim if gradient_accumulation_steps > 1
-                bs_shape = (
-                    (batch_size_per_node_per_grad_step * node_groups,)
-                    if not use_vmap_trick
-                    else (
-                        jax.local_device_count()
-                        * node_groups
-                        // training_args.mp_devices,  # local dp devices
-                        training_args.per_device_train_batch_size,
-                    )
+            if training_args.do_train:
+                # load data - may be replicated on multiple nodes
+                node_groups = max(
+                    1, training_args.mp_devices // jax.local_device_count()
                 )
-                if training_args.gradient_accumulation_steps > 1:
-                    # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
-                    # to avoid any data redistribution when sharding
-                    bs_shape = (training_args.gradient_accumulation_steps,) + bs_shape
-
-                # reshape batch
-                batch = jax.tree_map(
-                    lambda x: x.reshape(bs_shape + x.shape[1:]),
-                    batch,
+                loader_bs = batch_size_per_node * node_groups
+                train_loader = dataset.dataloader(
+                    "train",
+                    loader_bs,
+                    epoch,
                 )
-                # freeze batch to pass safely to jax transforms
-                batch = freeze(batch)
-
-                # train step
-                state, train_metrics = p_train_step(state, batch, train_time)
-                local_state["step"] += 1
-                local_state["train_time"] = train_time
-                local_state["train_samples"] += batch_size_per_step
-
-                if (
-                    local_state["step"] % training_args.logging_steps == 0
-                    and jax.process_index() == 0
+                # train
+                for batch in tqdm(
+                    train_loader,
+                    desc="Training...",
+                    position=1,
+                    leave=False,
+                    total=steps_per_epoch,
+                    disable=jax.process_index() > 0,
                 ):
-                    metrics_logger.update_state_metrics(local_state)
+                    # calculate delta time (we have a lag of one step but it's ok)
+                    train_time = time.perf_counter() - start_time
+
+                    # reset control variables
+                    evaluation_ran = False
+                    save_model_ran = False
+
+                    # set correct shape to batch
+                    # - add grad_step dim if gradient_accumulation_steps > 1
+                    bs_shape = (
+                        (batch_size_per_node_per_grad_step * node_groups,)
+                        if not use_vmap_trick
+                        else (
+                            jax.local_device_count()
+                            * node_groups
+                            // training_args.mp_devices,  # local dp devices
+                            training_args.per_device_train_batch_size,
+                        )
+                    )
+                    if training_args.gradient_accumulation_steps > 1:
+                        # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
+                        # to avoid any data redistribution when sharding
+                        bs_shape = (
+                            training_args.gradient_accumulation_steps,
+                        ) + bs_shape
+
+                    # reshape batch
+                    batch = jax.tree_map(
+                        lambda x: x.reshape(bs_shape + x.shape[1:]),
+                        batch,
+                    )
+                    # freeze batch to pass safely to jax transforms
+                    batch = freeze(batch)
+
+                    # train step
+                    state, train_metrics = p_train_step(state, batch, train_time)
+                    local_state["step"] += 1
+                    local_state["train_time"] = train_time
+                    local_state["train_samples"] += batch_size_per_step
+
+                    if (
+                        local_state["step"] % training_args.logging_steps == 0
+                        and jax.process_index() == 0
+                    ):
+                        metrics_logger.update_state_metrics(local_state)
+                        metrics_logger.log(train_metrics, prefix="train")
+
+                    eval_metrics = None
+                    if local_state["step"] % training_args.eval_steps == 0:
+                        eval_metrics = run_evaluation()
+                        evaluation_ran = True
+
+                    if local_state["step"] % training_args.save_steps == 0:
+                        run_save_model(state, eval_metrics)
+                        save_model_ran = True
+
+                # log final train metrics
+                if train_metrics is not None:
+                    metrics_logger.update_state_metrics(state)
                     metrics_logger.log(train_metrics, prefix="train")
 
-                eval_metrics = None
-                if local_state["step"] % training_args.eval_steps == 0:
-                    eval_metrics = run_evaluation()
+                    epochs.write(
+                        f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
+                    )
 
-                if local_state["step"] % training_args.save_steps == 0:
-                    run_save_model(state, eval_metrics)
-
-            # log final train metrics
-            if train_metrics is not None:
-                metrics_logger.update_state_metrics(state)
-                metrics_logger.log(train_metrics, prefix="train")
-
-                epochs.write(
-                    f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
-                )
-
-            # Final evaluation
-            eval_metrics = run_evaluation()
+            # Final evaluation at the end of each epoch
+            if not evaluation_ran:
+                eval_metrics = run_evaluation()
 
             # save checkpoint after each epoch
-            run_save_model(state, eval_metrics)
+            if not save_model_ran:
+                run_save_model(state, eval_metrics)
 
 
 if __name__ == "__main__":
