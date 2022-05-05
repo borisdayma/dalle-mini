@@ -131,7 +131,7 @@ class ModelArguments:
             ), "Restoring state only available with W&B artifact reference"
 
     def get_metadata(self):
-        if ":" in self.model_name_or_path:
+        if self.model_name_or_path is not None and ":" in self.model_name_or_path:
             if jax.process_index() == 0:
                 artifact = wandb.run.use_artifact(self.model_name_or_path)
             else:
@@ -685,12 +685,16 @@ def main():
         )
 
     # Set up our new model config
+    config_args = {
+        k: getattr(model_args, k)
+        for k in ["dropout", "activation_dropout", "attention_dropout"]
+        if getattr(model_args, k) is not None
+    }
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
         config.gradient_checkpointing = training_args.gradient_checkpointing
-        config.dropout = model_args.dropout
-        config.activation_dropout = model_args.activation_dropout
-        config.attention_dropout = model_args.attention_dropout
+        for k, v in config_args.items():
+            setattr(config, k, v)
     else:
         config = None
 
@@ -703,9 +707,7 @@ def main():
             dtype=getattr(jnp, model_args.dtype),
             _do_init=False,  # we overwrite them with loaded checkpoint
             gradient_checkpointing=training_args.gradient_checkpointing,
-            dropout=model_args.dropout,
-            activation_dropout=model_args.activation_dropout,
-            attention_dropout=model_args.attention_dropout,
+            **config_args,
         )
     else:
         model = DalleBart(
