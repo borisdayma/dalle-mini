@@ -2,8 +2,6 @@
 # coding: utf-8
 import os
 
-os.system("pip install gradio==2.9b15")
-
 import gradio as gr
 from backend import get_images_from_backend
 

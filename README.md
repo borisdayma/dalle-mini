@@ -4,6 +4,7 @@ emoji: 🥑
 colorFrom: yellow
 colorTo: green
 sdk: gradio
+sdk_version: 2.9b23
 app_file: app/gradio/app.py
 pinned: True
 license: apache-2.0
