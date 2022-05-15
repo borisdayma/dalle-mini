@@ -50,4 +50,4 @@ with block:
     )
 
 
-block.launch()
+block.launch(enable_queue=False)
