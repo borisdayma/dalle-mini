@@ -106,6 +106,18 @@ class ModelArguments:
             "help": "Restore optimizer and training state. Can be True (will retrieve associated wandb artifact), a local directory or a Google bucket path."
         },
     )
+    dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Dropout rate. Overwrites config."},
+    )
+    activation_dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Activation dropout rate. Overwrites config."},
+    )
+    attention_dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Attention dropout rate. Overwrites config."},
+    )
 
     def __post_init__(self):
         if self.tokenizer_name is None:
@@ -119,7 +131,7 @@ class ModelArguments:
             ), "Restoring state only available with W&B artifact reference"
 
     def get_metadata(self):
-        if self.restore_state:
+        if self.model_name_or_path is not None and ":" in self.model_name_or_path:
             if jax.process_index() == 0:
                 artifact = wandb.run.use_artifact(self.model_name_or_path)
             else:
@@ -413,11 +425,9 @@ class TrainingArguments:
             "help": "Whether to use staircase or continuous learning rate when using exponential decay."
         },
     )
-    lr_resume_offset: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to offset the learning rate function with current step when resuming a run."
-        },
+    lr_offset: int = field(
+        default=0,
+        metadata={"help": "Number of steps to offset learning rate and keep it at 0."},
     )
     logging_steps: int = field(
         default=40, metadata={"help": "Log every X updates steps."}
@@ -515,6 +525,8 @@ class TrainingArguments:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
         if self.log_norm_steps is True:
             self.log_norm_steps = self.logging_steps
+        if not self.do_train:
+            self.num_train_epochs = 1
         if (
             os.path.exists(self.output_dir)
             and os.listdir(self.output_dir)
@@ -673,9 +685,16 @@ def main():
         )
 
     # Set up our new model config
+    config_args = {
+        k: getattr(model_args, k)
+        for k in ["dropout", "activation_dropout", "attention_dropout"]
+        if getattr(model_args, k) is not None
+    }
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
         config.gradient_checkpointing = training_args.gradient_checkpointing
+        for k, v in config_args.items():
+            setattr(config, k, v)
     else:
         config = None
 
@@ -688,6 +707,7 @@ def main():
             dtype=getattr(jnp, model_args.dtype),
             _do_init=False,  # we overwrite them with loaded checkpoint
             gradient_checkpointing=training_args.gradient_checkpointing,
+            **config_args,
         )
     else:
         model = DalleBart(
@@ -796,14 +816,14 @@ def main():
             end_value=training_args.learning_rate,
             transition_steps=training_args.warmup_steps + 1,  # ensure not 0
         )
-        # offset step when resuming
         last_boundary = training_args.warmup_steps
-        if model_metadata.get("step", 0) and training_args.lr_resume_offset:
+        # offset step when resuming
+        if training_args.lr_offset:
             warmup_fn = optax.join_schedules(
                 schedules=[optax.constant_schedule(0.0), warmup_fn],
-                boundaries=[model_metadata["step"]],
+                boundaries=[training_args.lr_offset],
             )
-            last_boundary += model_metadata["step"]
+            last_boundary += training_args.lr_offset
         if training_args.lr_decay is None:
             return warmup_fn
         elif training_args.lr_decay == "linear":
@@ -1005,6 +1025,14 @@ def main():
 
     with mesh:
         logger.info("  Creating state")
+
+        # restore metadata
+        attr_state = {}
+        keys = ["train_time", "train_samples"]
+        if model_args.restore_state:
+            keys += ["step", "epoch"]
+        attr_state = {k: v for k, v in model_metadata.items() if k in keys}
+
         if not model_args.restore_state:
 
             def init_state(params):
@@ -1013,6 +1041,7 @@ def main():
                     tx=optimizer,
                     params=maybe_init_params(params),
                     dropout_rng=dropout_rng,
+                    **attr_state,
                 )
 
             state = pjit(
@@ -1027,12 +1056,6 @@ def main():
         else:
             # load opt_state
             opt_state = from_bytes(opt_state_shape, model_args.get_opt_state())
-
-            # restore other attributes
-            attr_state = {
-                k: model_metadata[k]
-                for k in ["step", "epoch", "train_time", "train_samples"]
-            }
 
             def restore_state(params, opt_state):
                 return TrainState(
@@ -1335,6 +1358,8 @@ def main():
     # init variables
     start_time = time.perf_counter() - local_state["train_time"]
     train_metrics = None
+    evaluation_ran = False
+    save_model_ran = False
     metrics_logger = MetricsLogger(local_state["step"])
     epochs = tqdm(
         range(local_state["epoch"], num_epochs),
@@ -1513,85 +1538,98 @@ def main():
             metrics_logger.update_state_metrics(local_state)
             metrics_logger.log({})
 
-            # load data - may be replicated on multiple nodes
-            node_groups = max(1, training_args.mp_devices // jax.local_device_count())
-            loader_bs = batch_size_per_node * node_groups
-            train_loader = dataset.dataloader(
-                "train",
-                loader_bs,
-                epoch,
-            )
-            # train
-            for batch in tqdm(
-                train_loader,
-                desc="Training...",
-                position=1,
-                leave=False,
-                total=steps_per_epoch,
-                disable=jax.process_index() > 0,
-            ):
-                # calculate delta time (we have a lag of one step but it's ok)
-                train_time = time.perf_counter() - start_time
-
-                # set correct shape to batch
-                # - add grad_step dim if gradient_accumulation_steps > 1
-                bs_shape = (
-                    (batch_size_per_node_per_grad_step * node_groups,)
-                    if not use_vmap_trick
-                    else (
-                        jax.local_device_count()
-                        * node_groups
-                        // training_args.mp_devices,  # local dp devices
-                        training_args.per_device_train_batch_size,
-                    )
+            if training_args.do_train:
+                # load data - may be replicated on multiple nodes
+                node_groups = max(
+                    1, training_args.mp_devices // jax.local_device_count()
                 )
-                if training_args.gradient_accumulation_steps > 1:
-                    # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
-                    # to avoid any data redistribution when sharding
-                    bs_shape = (training_args.gradient_accumulation_steps,) + bs_shape
-
-                # reshape batch
-                batch = jax.tree_map(
-                    lambda x: x.reshape(bs_shape + x.shape[1:]),
-                    batch,
+                loader_bs = batch_size_per_node * node_groups
+                train_loader = dataset.dataloader(
+                    "train",
+                    loader_bs,
+                    epoch,
                 )
-                # freeze batch to pass safely to jax transforms
-                batch = freeze(batch)
-
-                # train step
-                state, train_metrics = p_train_step(state, batch, train_time)
-                local_state["step"] += 1
-                local_state["train_time"] = train_time
-                local_state["train_samples"] += batch_size_per_step
-
-                if (
-                    local_state["step"] % training_args.logging_steps == 0
-                    and jax.process_index() == 0
+                # train
+                for batch in tqdm(
+                    train_loader,
+                    desc="Training...",
+                    position=1,
+                    leave=False,
+                    total=steps_per_epoch,
+                    disable=jax.process_index() > 0,
                 ):
-                    metrics_logger.update_state_metrics(local_state)
+                    # calculate delta time (we have a lag of one step but it's ok)
+                    train_time = time.perf_counter() - start_time
+
+                    # reset control variables
+                    evaluation_ran = False
+                    save_model_ran = False
+
+                    # set correct shape to batch
+                    # - add grad_step dim if gradient_accumulation_steps > 1
+                    bs_shape = (
+                        (batch_size_per_node_per_grad_step * node_groups,)
+                        if not use_vmap_trick
+                        else (
+                            jax.local_device_count()
+                            * node_groups
+                            // training_args.mp_devices,  # local dp devices
+                            training_args.per_device_train_batch_size,
+                        )
+                    )
+                    if training_args.gradient_accumulation_steps > 1:
+                        # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
+                        # to avoid any data redistribution when sharding
+                        bs_shape = (
+                            training_args.gradient_accumulation_steps,
+                        ) + bs_shape
+
+                    # reshape batch
+                    batch = jax.tree_map(
+                        lambda x: x.reshape(bs_shape + x.shape[1:]),
+                        batch,
+                    )
+                    # freeze batch to pass safely to jax transforms
+                    batch = freeze(batch)
+
+                    # train step
+                    state, train_metrics = p_train_step(state, batch, train_time)
+                    local_state["step"] += 1
+                    local_state["train_time"] = train_time
+                    local_state["train_samples"] += batch_size_per_step
+
+                    if (
+                        local_state["step"] % training_args.logging_steps == 0
+                        and jax.process_index() == 0
+                    ):
+                        metrics_logger.update_state_metrics(local_state)
+                        metrics_logger.log(train_metrics, prefix="train")
+
+                    eval_metrics = None
+                    if local_state["step"] % training_args.eval_steps == 0:
+                        eval_metrics = run_evaluation()
+                        evaluation_ran = True
+
+                    if local_state["step"] % training_args.save_steps == 0:
+                        run_save_model(state, eval_metrics)
+                        save_model_ran = True
+
+                # log final train metrics
+                if train_metrics is not None:
+                    metrics_logger.update_state_metrics(state)
                     metrics_logger.log(train_metrics, prefix="train")
 
-                eval_metrics = None
-                if local_state["step"] % training_args.eval_steps == 0:
-                    eval_metrics = run_evaluation()
+                    epochs.write(
+                        f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
+                    )
 
-                if local_state["step"] % training_args.save_steps == 0:
-                    run_save_model(state, eval_metrics)
-
-            # log final train metrics
-            if train_metrics is not None:
-                metrics_logger.update_state_metrics(state)
-                metrics_logger.log(train_metrics, prefix="train")
-
-                epochs.write(
-                    f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
-                )
-
-            # Final evaluation
-            eval_metrics = run_evaluation()
+            # Final evaluation at the end of each epoch
+            if not evaluation_ran:
+                eval_metrics = run_evaluation()
 
             # save checkpoint after each epoch
-            run_save_model(state, eval_metrics)
+            if not save_model_ran:
+                run_save_model(state, eval_metrics)
 
 
 if __name__ == "__main__":
