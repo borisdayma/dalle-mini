@@ -3,8 +3,9 @@ title: DALL·E mini
 emoji: 🥑
 colorFrom: yellow
 colorTo: green
-sdk: streamlit
-app_file: app/streamlit/app.py
+sdk: gradio
+sdk_version: 3.0b6
+app_file: app/gradio/app.py
 pinned: True
 license: apache-2.0
 ---
@@ -30,6 +31,11 @@ There are several ways to use DALL·E mini to create your own images:
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/tools/inference/inference_pipeline.ipynb)
 
 * spin off your own app with [DALL-E Playground repository](https://github.com/saharmor/dalle-playground) (thanks [Sahar](https://twitter.com/theaievangelist))
+
+* try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, upscaling in a Human-in-the-Loop workflow. 
+
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jina-ai/dalle-flow/blob/main/client.ipynb)
+
 
 ## How does it work?
 
