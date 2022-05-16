@@ -38,7 +38,7 @@ There are several ways to use DALL·E mini to create your own images:
 
 ## How does it work?
 
-Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA).
+Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini-Generate-images-from-any-text-prompt--VmlldzoyMDE4NDAy).
 
 ## Contributing
 
