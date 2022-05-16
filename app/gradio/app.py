@@ -43,7 +43,7 @@ with block:
     gr.Markdown(
         """___
    <p style='text-align: center'>
-   Created by Boris Dayma et al. 2021-2022
+   Created by <a href="https://twitter.com/borisdayma" target="_blank">Boris Dayma</a> et al. 2021-2022
    <br/>
    <a href="https://github.com/borisdayma/dalle-mini" target="_blank">GitHub</a> | <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA" target="_blank">Project Report</a>
    </p>"""

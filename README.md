@@ -32,10 +32,9 @@ There are several ways to use DALL·E mini to create your own images:
 
 * spin off your own app with [DALL-E Playground repository](https://github.com/saharmor/dalle-playground) (thanks [Sahar](https://twitter.com/theaievangelist))
 
-* try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, upscaling in a Human-in-the-Loop workflow. 
+* try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, upscaling in a Human-in-the-Loop workflow.
 
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jina-ai/dalle-flow/blob/main/client.ipynb)
-
 
 ## How does it work?
 
@@ -96,9 +95,10 @@ DALL·E mini was initially developed by:
 Many thanks to the people who helped make it better:
 
 * the [DALLE-Pytorch](https://discord.gg/xBPBXfcFHd) and [EleutherAI](https://www.eleuther.ai/) communities for testing and exchanging cool ideas
-* [Rohan Anil](https://github.com/rohan-anil) for adding Distributed Shampoo optimizer
+* [Rohan Anil](https://github.com/rohan-anil) for adding Distributed Shampoo optimizer and always giving great suggestions
 * [Phil Wang](https://github.com/lucidrains) has provided a lot of cool implementations of transformer variants and gives interesting insights with [x-transformers](https://github.com/lucidrains/x-transformers)
 * [Katherine Crowson](https://github.com/crowsonkb) for [super conditioning](https://twitter.com/RiversHaveWings/status/1478093658716966912)
+* the [Gradio team](https://gradio.app/) made an amazing UI for our app
 
 ## Citing DALL·E mini
 
