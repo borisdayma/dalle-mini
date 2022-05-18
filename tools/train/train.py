@@ -1257,10 +1257,21 @@ def main():
         return state, metrics
 
     # Define eval fn
+    eval_model = (
+        model
+        if model_args.dtype == "float32"
+        else DalleBart(
+            model.config,
+            seed=training_args.seed_model,
+            dtype=jnp.float32,
+            _do_init=False,
+        )
+    )
+
     def eval_step(state, batch):
         def compute_eval_loss(batch):
             batch, labels = batch.pop("labels")
-            logits = model(**batch, params=state.params, train=False)[0]
+            logits = eval_model(**batch, params=state.params, train=False)[0]
             return loss_fn(logits, labels)
 
         if use_vmap_trick:
