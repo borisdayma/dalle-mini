@@ -1627,7 +1627,7 @@ def main():
 
                 # log final train metrics
                 if train_metrics is not None:
-                    metrics_logger.update_state_metrics(state)
+                    metrics_logger.update_state_metrics(local_state)
                     metrics_logger.log(train_metrics, prefix="train")
 
                     epochs.write(
