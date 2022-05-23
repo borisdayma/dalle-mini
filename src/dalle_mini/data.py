@@ -1,13 +1,13 @@
 import random
 from dataclasses import dataclass, field
 from functools import partial
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from braceexpand import braceexpand
 from datasets import Dataset, load_dataset
-from pathlib import Path
 
 from .model.text import TextNormalizer
 
