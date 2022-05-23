@@ -250,6 +250,12 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "Class value to be kept during filtering."},
     )
+    multi_eval_ds: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "Whether to look for multiple validation datasets (local support only)."
+        },
+    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
