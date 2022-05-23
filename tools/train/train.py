@@ -1395,7 +1395,7 @@ def main():
                 if hasattr(dataset, "other_eval_datasets")
                 else []
             )
-            val_dataset += "eval"
+            val_datasets += ["eval"]
             for val_dataset in val_datasets:
                 eval_loader = dataset.dataloader(
                     val_dataset,

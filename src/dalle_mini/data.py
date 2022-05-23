@@ -38,7 +38,7 @@ class Dataset:
     multi_eval_ds: bool = False
     train_dataset: Dataset = field(init=False)
     eval_dataset: Dataset = field(init=False)
-    other_eval_datasets = field(init=False)
+    other_eval_datasets: list = field(init=False)
     rng_dataset: jnp.ndarray = field(init=False)
     multi_hosts: bool = field(init=False)
 
@@ -87,6 +87,11 @@ class Dataset:
                 split.name: [str(f) for f in split.glob("*.parquet")]
                 for split in Path(self.dataset_repo_or_path).glob("*")
             }
+            # rename "valid" to "validation" if present for consistency
+            if "valid" in data_files:
+                data_files["validation"] = data_files["valid"]
+                del data_files["valid"]
+            self.dataset_repo_or_path = "parquet"
 
         # load dataset
         dataset = load_dataset(
@@ -116,7 +121,7 @@ class Dataset:
                     else self.eval_dataset.select(range(self.max_eval_samples))
                 )
             # other eval datasets
-            other_eval_splits = dataset.keys() - {"train", "valid"}
+            other_eval_splits = dataset.keys() - {"train", "validation"}
             self.other_eval_datasets = {
                 split: dataset[split] for split in other_eval_splits
             }
