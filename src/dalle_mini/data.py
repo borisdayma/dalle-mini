@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from braceexpand import braceexpand
 from datasets import Dataset, load_dataset
+from pathlib import Path
 
 from .model.text import TextNormalizer
 
@@ -34,8 +35,10 @@ class Dataset:
     max_clip_score: float = None
     filter_column: str = None
     filter_value: str = None
+    multi_eval_ds: bool = False
     train_dataset: Dataset = field(init=False)
     eval_dataset: Dataset = field(init=False)
+    other_eval_datasets = field(init=False)
     rng_dataset: jnp.ndarray = field(init=False)
     multi_hosts: bool = field(init=False)
 
@@ -75,6 +78,16 @@ class Dataset:
         else:
             data_files = None
 
+        # multiple validation datasets
+        if self.multi_eval_ds:
+            assert Path(
+                self.dataset_repo_or_path
+            ).is_dir(), f"{self.dataset_repo_or_path} is not a directory, required for multi_eval_ds"
+            data_files = {
+                split.name: [str(f) for f in split.glob("*.parquet")]
+                for split in Path(self.dataset_repo_or_path).glob("*")
+            }
+
         # load dataset
         dataset = load_dataset(
             self.dataset_repo_or_path,
@@ -102,6 +115,11 @@ class Dataset:
                     if self.streaming
                     else self.eval_dataset.select(range(self.max_eval_samples))
                 )
+            # other eval datasets
+            other_eval_splits = dataset.keys() - {"train", "valid"}
+            self.other_eval_datasets = {
+                split: dataset[split] for split in other_eval_splits
+            }
 
     def preprocess(self, tokenizer, config):
         # get required config variables
@@ -143,6 +161,20 @@ class Dataset:
                         )
                     ),
                 )
+        if hasattr(self, "other_eval_datasets"):
+            self.other_eval_datasets = {
+                split: (
+                    ds.filter(partial_filter_function)
+                    if self.streaming
+                    else ds.filter(
+                        partial_filter_function,
+                        num_proc=self.preprocessing_num_workers,
+                        load_from_cache_file=not self.overwrite_cache,
+                        desc="Filtering datasets",
+                    )
+                )
+                for split, ds in self.other_eval_datasets.items()
+            }
 
         # normalize text
         if normalize_text:
@@ -168,6 +200,20 @@ class Dataset:
                             )
                         ),
                     )
+            if hasattr(self, "other_eval_datasets"):
+                self.other_eval_datasets = {
+                    split: (
+                        ds.map(partial_normalize_function)
+                        if self.streaming
+                        else ds.map(
+                            partial_normalize_function,
+                            num_proc=self.preprocessing_num_workers,
+                            load_from_cache_file=not self.overwrite_cache,
+                            desc="Normalizing datasets",
+                        )
+                    )
+                    for split, ds in self.other_eval_datasets.items()
+                }
 
         # blank captions
         if self.blank_caption_prob:
@@ -225,6 +271,29 @@ class Dataset:
                         )
                     ),
                 )
+        if hasattr(self, "other_eval_datasets"):
+            self.other_eval_datasets = {
+                split: (
+                    ds.map(
+                        partial_preprocess_function,
+                        batched=True,
+                        remove_columns=[
+                            self.text_column,
+                            self.encoding_column,
+                        ],
+                    )
+                    if self.streaming
+                    else ds.map(
+                        partial_preprocess_function,
+                        batched=True,
+                        remove_columns=getattr(ds, "column_names"),
+                        num_proc=self.preprocessing_num_workers,
+                        load_from_cache_file=not self.overwrite_cache,
+                        desc="Preprocessing datasets",
+                    )
+                )
+                for split, ds in self.other_eval_datasets.items()
+            }
 
     def dataloader(self, split, batch_size, epoch=None):
         def _dataloader_datasets_non_streaming(
@@ -283,7 +352,7 @@ class Dataset:
         elif split == "eval":
             ds = self.eval_dataset
         else:
-            raise ValueError(f'split must be "train" or "eval", got {split}')
+            ds = self.other_eval_datasets[split]
 
         if self.streaming:
             return _dataloader_datasets_streaming(ds, epoch)
