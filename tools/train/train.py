@@ -250,6 +250,12 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "Class value to be kept during filtering."},
     )
+    multi_eval_ds: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "Whether to look for multiple validation datasets (local support only)."
+        },
+    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
@@ -1383,62 +1389,73 @@ def main():
         # ======================== Evaluating ==============================
         if training_args.do_eval:
             start_eval_time = time.perf_counter()
-            eval_loader = dataset.dataloader(
-                "eval",
-                eval_batch_size_per_step
-                * max(1, training_args.mp_devices // jax.local_device_count()),
+            # get validation datasets
+            val_datasets = list(
+                dataset.other_eval_datasets.keys()
+                if hasattr(dataset, "other_eval_datasets")
+                else []
             )
-            eval_steps = (
-                len_eval_dataset // eval_batch_size_per_step
-                if len_eval_dataset is not None
-                else None
-            )
-            eval_loss = []
-            for batch in tqdm(
-                eval_loader,
-                desc="Evaluating...",
-                position=2,
-                leave=False,
-                total=eval_steps,
-                disable=jax.process_index() > 0,
-            ):
-                # need to keep only eval_batch_size_per_node items relevant to the node
-                batch = jax.tree_map(
-                    lambda x: x.reshape(
-                        (jax.process_count(), eval_batch_size_per_node) + x.shape[1:]
-                    ),
-                    batch,
+            val_datasets += ["eval"]
+            for val_dataset in val_datasets:
+                eval_loader = dataset.dataloader(
+                    val_dataset,
+                    eval_batch_size_per_step
+                    * max(1, training_args.mp_devices // jax.local_device_count()),
                 )
-                batch = jax.tree_map(lambda x: x[jax.process_index()], batch)
-
-                # add dp dimension when using "vmap trick"
-                if use_vmap_trick:
-                    bs_shape = (
-                        jax.local_device_count() // training_args.mp_devices,
-                        training_args.per_device_eval_batch_size,
-                    )
+                eval_steps = (
+                    len_eval_dataset // eval_batch_size_per_step
+                    if len_eval_dataset is not None
+                    else None
+                )
+                eval_loss = []
+                for batch in tqdm(
+                    eval_loader,
+                    desc="Evaluating...",
+                    position=2,
+                    leave=False,
+                    total=eval_steps,
+                    disable=jax.process_index() > 0,
+                ):
+                    # need to keep only eval_batch_size_per_node items relevant to the node
                     batch = jax.tree_map(
-                        lambda x: x.reshape(bs_shape + x.shape[1:]), batch
+                        lambda x: x.reshape(
+                            (jax.process_count(), eval_batch_size_per_node)
+                            + x.shape[1:]
+                        ),
+                        batch,
                     )
+                    batch = jax.tree_map(lambda x: x[jax.process_index()], batch)
 
-                # freeze batch to pass safely to jax transforms
-                batch = freeze(batch)
-                # accumulate losses async
-                eval_loss.append(p_eval_step(state, batch))
+                    # add dp dimension when using "vmap trick"
+                    if use_vmap_trick:
+                        bs_shape = (
+                            jax.local_device_count() // training_args.mp_devices,
+                            training_args.per_device_eval_batch_size,
+                        )
+                        batch = jax.tree_map(
+                            lambda x: x.reshape(bs_shape + x.shape[1:]), batch
+                        )
 
-            # get the mean of the loss
-            eval_loss = jnp.stack(eval_loss)
-            eval_loss = jnp.mean(eval_loss)
-            eval_metrics = {"loss": eval_loss}
+                    # freeze batch to pass safely to jax transforms
+                    batch = freeze(batch)
+                    # accumulate losses async
+                    eval_loss.append(p_eval_step(state, batch))
 
-            # log metrics
-            metrics_logger.log(eval_metrics, prefix="eval")
+                # get the mean of the loss
+                eval_loss = jnp.stack(eval_loss)
+                eval_loss = jnp.mean(eval_loss)
+                eval_metrics = {"loss": eval_loss}
+
+                # log metrics
+                metrics_logger.log(eval_metrics, prefix=val_dataset)
+
+                # Print metrics and update progress bar
+                desc = f"Epoch... ({epoch + 1}/{num_epochs} | {val_dataset} Loss: {eval_metrics['loss']})"
+                epochs.write(desc)
+                epochs.desc = desc
+
+            # log time
             metrics_logger.log_time("eval", time.perf_counter() - start_eval_time)
-
-            # Print metrics and update progress bar
-            desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
-            epochs.write(desc)
-            epochs.desc = desc
 
             return eval_metrics
 
