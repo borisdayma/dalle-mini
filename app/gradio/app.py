@@ -6,12 +6,12 @@ import gradio as gr
 from backend import get_images_from_backend
 
 block = gr.Blocks(css=".container { max-width: 800px; margin: auto; }")
-backend_url = os.environ["BACKEND_SERVER"] + "/generate"
+# backend_url = os.environ["BACKEND_SERVER"] + "/generate"
 
 
-def infer(prompt):
-    response = get_images_from_backend(prompt, backend_url)
-    return response["images"]
+# def infer(prompt):
+#     response = get_images_from_backend(prompt, backend_url)
+#     return response["images"]
 
 
 with block:
@@ -26,19 +26,20 @@ with block:
                 text = gr.Textbox(
                     label="Enter your prompt", show_label=False, max_lines=1
                 ).style(
-                    border=(True, False, True, True),
                     margin=False,
-                    rounded=(True, False, False, True),
                     container=False,
                 )
-                btn = gr.Button("Run").style(
-                    margin=False,
-                    rounded=(False, True, True, False),
-                )
+                btn = gr.Button("Run", variant="primary")
         gallery = gr.Gallery(label="Generated images", show_label=False).style(
             grid=[3], height="auto"
         )
-        btn.click(infer, inputs=text, outputs=gallery)
+        btn.click(None, _js="""
+        async (text) => {
+            response = await fetch('https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exlimit=1&titles=pizza&format=json&origin=*');
+            IMG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg=="
+            return Array(9).fill(IMG)
+        }
+        """, inputs=text, outputs=gallery)
 
     gr.Markdown(
         """___
@@ -50,4 +51,60 @@ with block:
     )
 
 
-block.launch(enable_queue=False)
+import json
+
+blocks_config = json.dumps(block.get_config_file())
+HTML_TEMPLATE = f"""
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, shrink-to-fit=no, maximum-scale=1"
+		/>
+
+		
+		<script>
+			window.__gradio_mode__ = "app";
+            window.gradio_config = {blocks_config};
+        </script>
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link
+			rel="preconnect"
+			href="https://fonts.gstatic.com"
+			crossorigin="anonymous"
+		/>
+		<link
+			href="https://fonts.googleapis.com/css?family=Source Sans Pro"
+			rel="stylesheet"
+		/>
+		<link
+			href="https://fonts.googleapis.com/css?family=IBM Plex Mono"
+			rel="stylesheet"
+		/>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.1/iframeResizer.contentWindow.min.js"></script>
+		<script type="module" crossorigin src="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b10/assets/index.32048461.js"></script>
+		<link rel="stylesheet" href="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b10/assets/index.9ef0c275.css">
+	</head>
+
+	<body
+		style="
+			margin: 0;
+			padding: 0;
+			display: flex;
+			flex-direction: column;
+			flex-grow: 1;
+		"
+	>
+		<div
+			id="root"
+			style="display: flex; flex-direction: column; flex-grow: 1"
+		></div>
+	</body>
+</html>
+"""
+
+with open("index.html", "w") as index_html:
+    index_html.write(HTML_TEMPLATE)

@@ -1,0 +1,50 @@
+
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, shrink-to-fit=no, maximum-scale=1"
+		/>
+
+		
+		<script>
+			window.__gradio_mode__ = "app";
+            window.gradio_config = {"version": "3.0.9b10", "mode": "blocks", "dev_mode": true, "components": [{"id": 1, "type": "markdown", "props": {"value": "<h1><center>DALL\u00b7E mini</center></h1>", "name": "markdown", "visible": true, "style": {}}}, {"id": 2, "type": "markdown", "props": {"value": "<p>DALL\u00b7E mini is an AI model that generates images from any prompt you give!</p>\n", "name": "markdown", "visible": true, "style": {}}}, {"id": 3, "type": "group", "props": {"type": "group", "visible": true, "style": {}}}, {"id": 4, "type": "box", "props": {"type": "box", "visible": true, "style": {}}}, {"id": 5, "type": "row", "props": {"type": "row", "visible": true, "style": {"equal_height": true, "mobile_collapse": false}}}, {"id": 6, "type": "textbox", "props": {"lines": 1, "max_lines": 1, "value": "", "label": "Enter your prompt", "show_label": false, "name": "textbox", "visible": true, "style": {"margin": false, "container": false}}}, {"id": 7, "type": "button", "props": {"value": "Run", "variant": "primary", "name": "button", "visible": true, "style": {}}}, {"id": 8, "type": "gallery", "props": {"label": "Generated images", "show_label": false, "name": "gallery", "visible": true, "style": {"grid": [3], "height": "auto"}}}, {"id": 9, "type": "markdown", "props": {"value": "<hr />\n<p style='text-align: center'>\nCreated by <a href=\"https://twitter.com/borisdayma\" target=\"_blank\">Boris Dayma</a> et al. 2021-2022\n<br/>\n<a href=\"https://github.com/borisdayma/dalle-mini\" target=\"_blank\">GitHub</a> | <a href=\"https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini-Generate-images-from-any-text-prompt--VmlldzoyMDE4NDAy\" target=\"_blank\">Project Report</a>\n</p>", "name": "markdown", "visible": true, "style": {}}}], "theme": "default", "css": ".container { max-width: 800px; margin: auto; }", "enable_queue": false, "layout": {"id": 0, "children": [{"id": 1}, {"id": 2}, {"id": 3, "children": [{"id": 4, "children": [{"id": 5, "children": [{"id": 6}, {"id": 7}]}]}, {"id": 8}]}, {"id": 9}]}, "dependencies": [{"targets": [7], "trigger": "click", "inputs": [6], "outputs": [8], "backend_fn": false, "js": "\n        async (text) => {\n            response = await fetch('https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exlimit=1&titles=pizza&format=json&origin=*');\n            IMG = \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==\"\n            return Array(9).fill(IMG)\n        }\n        ", "status_tracker": null, "queue": null}]};
+        </script>
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link
+			rel="preconnect"
+			href="https://fonts.gstatic.com"
+			crossorigin="anonymous"
+		/>
+		<link
+			href="https://fonts.googleapis.com/css?family=Source Sans Pro"
+			rel="stylesheet"
+		/>
+		<link
+			href="https://fonts.googleapis.com/css?family=IBM Plex Mono"
+			rel="stylesheet"
+		/>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.1/iframeResizer.contentWindow.min.js"></script>
+		<script type="module" crossorigin src="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b10/assets/index.32048461.js"></script>
+		<link rel="stylesheet" href="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b10/assets/index.9ef0c275.css">
+	</head>
+
+	<body
+		style="
+			margin: 0;
+			padding: 0;
+			display: flex;
+			flex-direction: column;
+			flex-grow: 1;
+		"
+	>
+		<div
+			id="root"
+			style="display: flex; flex-direction: column; flex-grow: 1"
+		></div>
+	</body>
+</html>
