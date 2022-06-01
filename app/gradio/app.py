@@ -85,8 +85,8 @@ HTML_TEMPLATE = f"""
 			rel="stylesheet"
 		/>
 		<script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.1/iframeResizer.contentWindow.min.js"></script>
-		<script type="module" crossorigin src="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b10/assets/index.32048461.js"></script>
-		<link rel="stylesheet" href="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b10/assets/index.9ef0c275.css">
+		<script type="module" crossorigin src="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b11/assets/index.6dd03536.js"></script>
+		<link rel="stylesheet" href="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b11/assets/index.9ef0c275.css">
 	</head>
 
 	<body
