@@ -1,4 +1,4 @@
-name: Sync to Hugging Face hub
+name: Sync to Hugging Face hub - Obsolete to avoid app disruptions
 
 on:
   push:
