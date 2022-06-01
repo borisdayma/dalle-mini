@@ -3,9 +3,7 @@ title: DALL·E mini
 emoji: 🥑
 colorFrom: yellow
 colorTo: green
-sdk: gradio
-sdk_version: 3.0.3
-app_file: app/gradio/app.py
+sdk: static
 pinned: True
 license: apache-2.0
 ---
