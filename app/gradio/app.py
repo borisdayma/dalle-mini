@@ -103,6 +103,11 @@ HTML_TEMPLATE = f"""
 		<script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.1/iframeResizer.contentWindow.min.js"></script>
 		<script type="module" crossorigin src="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b9/assets/index.01245d42.js"></script>
 		<link rel="stylesheet" href="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b9/assets/index.cbea297d.css">
+        <style>
+            footer img {{
+                display: none !important;
+            }}
+        </style>
 	</head>
 
 	<body
