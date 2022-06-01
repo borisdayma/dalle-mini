@@ -1,18 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
-import os
 
 import gradio as gr
-# from backend import get_images_from_backend
 
 block = gr.Blocks(css=".container { max-width: 800px; margin: auto; }")
-# backend_url = os.environ["BACKEND_SERVER"] + "/generate"
-
-
-# def infer(prompt):
-#     response = get_images_from_backend(prompt, backend_url)
-#     return response["images"]
-
 
 with block:
     gr.Markdown("<h1><center>DALL·E mini</center></h1>")
