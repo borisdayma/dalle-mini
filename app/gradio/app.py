@@ -3,7 +3,7 @@
 import os
 
 import gradio as gr
-from backend import get_images_from_backend
+# from backend import get_images_from_backend
 
 block = gr.Blocks(css=".container { max-width: 800px; margin: auto; }")
 # backend_url = os.environ["BACKEND_SERVER"] + "/generate"
@@ -26,20 +26,34 @@ with block:
                 text = gr.Textbox(
                     label="Enter your prompt", show_label=False, max_lines=1
                 ).style(
-                    margin=False,
                     container=False,
                 )
                 btn = gr.Button("Run", variant="primary")
         gallery = gr.Gallery(label="Generated images", show_label=False).style(
             grid=[3], height="auto"
         )
-        btn.click(None, _js="""
+        btn.click(
+            None,
+            _js="""
         async (text) => {
-            response = await fetch('https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exlimit=1&titles=pizza&format=json&origin=*');
-            IMG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg=="
-            return Array(9).fill(IMG)
+            response = await fetch('http://backend.dallemini.ai/generate', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    prompt: text
+                })
+            });
+            response = await response.json()
+            let imgs = response.images.map(r => "data:image/png;base64," + r)
+            return imgs
         }
-        """, inputs=text, outputs=gallery)
+        """,
+            inputs=text,
+            outputs=gallery,
+        )
 
     gr.Markdown(
         """___
@@ -53,7 +67,9 @@ with block:
 
 import json
 
-blocks_config = json.dumps(block.get_config_file())
+blocks_config = block.get_config_file()
+blocks_config["dev_mode"] = False
+blocks_config = json.dumps(blocks_config)
 HTML_TEMPLATE = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -85,8 +101,8 @@ HTML_TEMPLATE = f"""
 			rel="stylesheet"
 		/>
 		<script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.1/iframeResizer.contentWindow.min.js"></script>
-		<script type="module" crossorigin src="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b11/assets/index.6dd03536.js"></script>
-		<link rel="stylesheet" href="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b11/assets/index.9ef0c275.css">
+		<script type="module" crossorigin src="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b9/assets/index.01245d42.js"></script>
+		<link rel="stylesheet" href="https://gradio.s3-us-west-2.amazonaws.com/3.0.9b9/assets/index.cbea297d.css">
 	</head>
 
 	<body
