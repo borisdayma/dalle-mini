@@ -1,15 +1,3 @@
----
-title: DALL·E mini
-emoji: 🥑
-colorFrom: yellow
-colorTo: green
-sdk: gradio
-sdk_version: 3.0.3
-app_file: app/gradio/app.py
-pinned: True
-license: apache-2.0
----
-
 # DALL·E Mini
 
 [![Join us on Discord](https://img.shields.io/discord/823813159592001537?color=5865F2&logo=discord&logoColor=white)](https://discord.gg/xBPBXfcFHd)
