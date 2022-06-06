@@ -385,7 +385,7 @@ def row_abs_maxes(mat):
 
     For example the symmetric matrix M = [[1, 6], [6, 2]] is represented using
     mat = [1, 6, 2] with block_size = 1. In this case the function returns the
-    aboslute row maxes of the original symmetric matrix, [6, 6].
+    absolute row maxes of the original symmetric matrix, [6, 6].
 
     Args:
       mat: The symmetric matrix represented as the concatenated blocks.
