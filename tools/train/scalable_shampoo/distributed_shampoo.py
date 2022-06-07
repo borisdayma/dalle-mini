@@ -677,7 +677,7 @@ def _convert_to_parameter_stats(global_stats, local_stat):
 
 
 def _convert_from_parameter_stats(parameter_stats, local_stats):
-    """Creates sharded stats from paramter stats."""
+    """Creates sharded stats from parameter stats."""
     return LocalShardedParameterStats(
         parameter_stats.diagonal_statistics,
         parameter_stats.diagonal_momentum,
@@ -846,7 +846,7 @@ def distributed_shampoo(
     """
 
     def _graft_type_has_diagonal_statistics():
-        """Returns True if using diagonal firt order method for grafting."""
+        """Returns True if using diagonal first order method for grafting."""
         return graft_type != GraftingType.SGD and graft_type != GraftingType.SQRT_N
 
     def _graft_type_has_diagonal_momentum_states():

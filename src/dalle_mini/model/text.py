@@ -13,7 +13,7 @@ import ftfy
 from huggingface_hub import hf_hub_download
 from unidecode import unidecode
 
-# based on wiki word occurence
+# based on wiki word occurrence
 person_token = [("a person", 282265), ("someone", 121194), ("somebody", 12219)]
 temp_token = "xtokx"  # avoid repeating chars
 
