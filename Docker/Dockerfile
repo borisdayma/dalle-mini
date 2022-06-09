@@ -11,5 +11,7 @@ RUN pip install --upgrade "jax[cuda]" -f https://storage.googleapis.com/jax-rele
   git+https://github.com/borisdayma/dalle-mini.git \
   git+https://github.com/patil-suraj/vqgan-jax.git
 
+RUN pip install jupyter
+
 WORKDIR /workspace
 
