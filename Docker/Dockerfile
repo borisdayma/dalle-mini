@@ -10,7 +10,7 @@ RUN pip install --upgrade "jax[cuda]" -f https://storage.googleapis.com/jax-rele
   pip install -q \
   git+https://github.com/borisdayma/dalle-mini.git \
   git+https://github.com/patil-suraj/vqgan-jax.git \
-|| pip install --upgrade https://storage.googleapis.com/jax-releases/nocuda/jaxlib-0.3.10-cp38-none-manylinux2014_x86_64.whl \
+|| pip install --upgrade https://storage.googleapis.com/jax-releases/cuda11/jaxlib-0.3.10+cuda11.cudnn82-cp38-none-manylinux2014_x86_64.whl \
   pip install -q \
   git+https://github.com/borisdayma/dalle-mini.git \
   git+https://github.com/patil-suraj/vqgan-jax.git
