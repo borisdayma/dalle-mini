@@ -1,8 +1,8 @@
 DEVICE=auto
 
 case "$1" in
---cpu) DEVICE=cpu ;;
---gpu) DEVICE=gpu ;;
+--cuda) DEVICE=cuda ;;
+--nocuda) DEVICE=nocuda ;;
 --auto) DEVICE=auto ;;
 esac
 shift
