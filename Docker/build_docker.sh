@@ -1,3 +1,4 @@
+#!/bin/bash
 DEVICE=auto
 
 case "$1" in
