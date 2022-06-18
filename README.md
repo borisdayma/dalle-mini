@@ -22,7 +22,7 @@ You can also use these great projects from the community:
 
 * spin off your own app with [DALL-E Playground repository](https://github.com/saharmor/dalle-playground) (thanks [Sahar](https://twitter.com/theaievangelist))
 
-* try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, upscaling in a Human-in-the-Loop workflow (thanks [Han Xiao](https://github.com/hanxiao))
+* try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, and upscaling in a Human-in-the-Loop workflow (thanks [Han Xiao](https://github.com/hanxiao))
 
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jina-ai/dalle-flow/blob/main/client.ipynb)
 
@@ -61,7 +61,7 @@ Trained models are on 🤗 Model Hub:
 
 ### Where does the logo come from?
 
-The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone to us.
+The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone for us.
 
 ## Acknowledgements
 
