@@ -28,7 +28,10 @@ You can also use these great projects from the community:
 
 ## How does it work?
 
-Refer to [our report](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini-Generate-images-from-any-text-prompt--VmlldzoyMDE4NDAy).
+Refer to our reports 
+* [DALL·E mini - Generate Images from Any Text Prompt](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini-Generate-images-from-any-text-prompt--VmlldzoyMDE4NDAy)
+* [DALL-E Mini Explained with Demo](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-Mini-Explained-with-Demo--Vmlldzo4NjIxODA)
+* [DALL·E Mega - Training Journal](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-Mega-Training-Journal--VmlldzoxODMxMDI2)
 
 ## Contributing
 
