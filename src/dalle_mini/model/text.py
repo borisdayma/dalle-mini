@@ -188,7 +188,7 @@ def remove_urls(t):
 
 
 def remove_html_tags(t):
-    return re.sub("<[^<]+?>", "", t)
+    return re.sub("<[^<]+?>", " ", t)
 
 
 def remove_first_last_commas(t):
