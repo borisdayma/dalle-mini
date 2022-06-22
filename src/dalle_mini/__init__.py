@@ -1,3 +1,3 @@
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .model import DalleBart, DalleBartProcessor
