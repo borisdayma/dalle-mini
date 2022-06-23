@@ -26,6 +26,8 @@ You can also use these great projects from the community:
 
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jina-ai/dalle-flow/blob/main/client.ipynb)
 
+* run on [Replicate](https://replicate.com/borisdayma/dalle-mini), in the browser or via API
+
 ## How does it work?
 
 Refer to our reports:
