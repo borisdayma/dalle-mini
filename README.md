@@ -23,10 +23,10 @@ You can also use these great projects from the community:
 * spin off your own app with [DALL-E Playground repository](https://github.com/saharmor/dalle-playground) (thanks [Sahar](https://twitter.com/theaievangelist))
 
 * try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, upscaling in a Human-in-the-Loop workflow (thanks [Han Xiao](https://github.com/hanxiao))
-
-* [run on Replicate](https://replicate.com/borisdayma/dalle-mini), in the browser or via API
   
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jina-ai/dalle-flow/blob/main/client.ipynb)
+
+* run on [Replicate](https://replicate.com/borisdayma/dalle-mini), in the browser or via API
 
 ## How does it work?
 
