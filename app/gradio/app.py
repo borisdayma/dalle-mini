@@ -38,6 +38,7 @@ with block:
         gallery = gr.Gallery(label="Generated images", show_label=False).style(
             grid=[3], height="auto"
         )
+        text.submit(infer, inputs=text, outputs=gallery)
         btn.click(infer, inputs=text, outputs=gallery)
 
     gr.Markdown(
