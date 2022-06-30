@@ -13,4 +13,4 @@ Steps to run inference with Dalle-mini are as follows:
 
 ### Inference Video Tutorial
 
-Alteratively check out a video tutorial on how to run Dalle-mini on [Linux](https://www.youtube.com/watch?v=eWpzLIa6v9E&t=9s) and [Windows](https://www.youtube.com/watch?v=OqEuEe-xSKk&t=59s)
+Alteratively check out a video tutorial on how to run Dalle-mini on [Linux](https://www.youtube.com/watch?v=eWpzLIa6v9E) and [Windows](https://www.youtube.com/watch?v=OqEuEe-xSKk)
