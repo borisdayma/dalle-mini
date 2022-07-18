@@ -1,32 +1,10 @@
 # DALL·E Mini
 
-[![Join us on Discord](https://img.shields.io/discord/823813159592001537?color=5865F2&logo=discord&logoColor=white)](https://discord.gg/xBPBXfcFHd)
-
-_Generate images from a text prompt_
-
-<img src="https://github.com/borisdayma/dalle-mini/raw/main/img/logo.png" width="200">
-
-Our logo was generated with DALL·E mini using the prompt "logo of an armchair in the shape of an avocado".
+<a href="https://www.craiyon.com/"><img src="https://www.craiyon.com/craiyon_preview.png" width="480"></a>
 
 ## How to use it?
 
-There are several ways to use DALL·E mini to create your own images:
-
-* use [the app at 🖍️ craiyon](https://www.craiyon.com/)
-
-* experiment with the pipeline step by step through our [`inference pipeline notebook`](tools/inference/inference_pipeline.ipynb)
-
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/tools/inference/inference_pipeline.ipynb)
-
-You can also use these great projects from the community:
-
-* spin off your own app with [DALL-E Playground repository](https://github.com/saharmor/dalle-playground) (thanks [Sahar](https://twitter.com/theaievangelist))
-
-* try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, and upscaling in a Human-in-the-Loop workflow (thanks [Han Xiao](https://github.com/hanxiao))
-
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jina-ai/dalle-flow/blob/main/client.ipynb)
-
-* run on [Replicate](https://replicate.com/borisdayma/dalle-mini), in the browser or via API
+You can use the model on [🖍️ craiyon](https://www.craiyon.com/)
 
 ## How does it work?
 
@@ -36,11 +14,6 @@ Refer to our reports:
 * [DALL·E mini - Explained](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-Mini-Explained-with-Demo--Vmlldzo4NjIxODA)
 * [DALL·E mega - Training Journal](https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-Mega-Training-Journal--VmlldzoxODMxMDI2)
 
-## Contributing
-
-Join the community on the [LAION Discord](https://discord.gg/xBPBXfcFHd).
-Any contribution is welcome, from reporting issues to proposing fixes/improvements or testing the model with cool prompts!
-
 ## Development
 
 ### Dependencies Installation
@@ -49,6 +22,10 @@ For inference only, use `pip install git+https://github.com/borisdayma/dalle-min
 
 For development, clone the repo and use `pip install -e ".[dev]"`.
 Before making a PR, check style with `make style`.
+
+You can experiment with the pipeline step by step through our [`inference pipeline notebook`](tools/inference/inference_pipeline.ipynb)
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/borisdayma/dalle-mini/blob/main/tools/inference/inference_pipeline.ipynb)
 
 ### Training of DALL·E mini
 
@@ -68,6 +45,21 @@ Trained models are on 🤗 Model Hub:
 ### Where does the logo come from?
 
 The "armchair in the shape of an avocado" was used by OpenAI when releasing DALL·E to illustrate the model's capabilities. Having successful predictions on this prompt represents a big milestone for us.
+
+## Contributing
+
+Join the community on the [LAION Discord](https://discord.gg/xBPBXfcFHd).
+Any contribution is welcome, from reporting issues to proposing fixes/improvements or testing the model with cool prompts!
+
+You can also use these great projects from the community:
+
+* spin off your own app with [DALL-E Playground repository](https://github.com/saharmor/dalle-playground) (thanks [Sahar](https://twitter.com/theaievangelist))
+
+* try [DALL·E Flow](https://github.com/jina-ai/dalle-flow) project for generating, diffusion, and upscaling in a Human-in-the-Loop workflow (thanks [Han Xiao](https://github.com/hanxiao))
+
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jina-ai/dalle-flow/blob/main/client.ipynb)
+
+* run on [Replicate](https://replicate.com/borisdayma/dalle-mini), in the browser or via API
 
 ## Acknowledgements
 
