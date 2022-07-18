@@ -18,7 +18,7 @@ Refer to our reports:
 
 ### Dependencies Installation
 
-For inference only, use `pip install git+https://github.com/borisdayma/dalle-mini.git`.
+For inference only, use `pip install dalle-mini`.
 
 For development, clone the repo and use `pip install -e ".[dev]"`.
 Before making a PR, check style with `make style`.
@@ -40,7 +40,7 @@ You can also adjust the [sweep configuration file](https://docs.wandb.ai/guides/
 Trained models are on 🤗 Model Hub:
 
 * [VQGAN-f16-16384](https://huggingface.co/dalle-mini/vqgan_imagenet_f16_16384) for encoding/decoding images
-* [DALL·E mini](https://huggingface.co/flax-community/dalle-mini) for generating images from a text prompt
+* [DALL·E mini](https://huggingface.co/dalle-mini/dalle-mini) or [DALL·E mega](https://huggingface.co/dalle-mini/dalle-mega) for generating images from a text prompt
 
 ### Where does the logo come from?
 
