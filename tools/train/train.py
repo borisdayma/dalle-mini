@@ -466,6 +466,11 @@ class TrainingArguments:
         },
     )
 
+    only_train_embeddings: bool = field(
+        default=False,
+        metadata={"help": "Freeze all layers except decoder embeddings"},
+    )
+
     wandb_entity: Optional[str] = field(
         default=None,
         metadata={"help": "The wandb entity to use (for teams)."},
@@ -581,6 +586,51 @@ def unsplit_params(data):
         if k in data:
             flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
     return freeze(traverse_util.unflatten_dict(flat))
+
+
+def get_layers_to_train():
+    '''Keypaths of layers to train, when using `only_train_embeddings`'''
+    to_train = set()
+    for layer in ['embed_positions', 'embed_tokens', 'final_ln', 'layernorm_embedding']:
+        layer_path = ['model', 'decoder'] + [layer]
+        to_train.add('.'.join(layer_path))
+    return to_train
+
+
+def create_train_mask(params, is_train_fn):
+    '''
+    Create mask for frozen / train layers.
+    Adapted from:
+    https://colab.research.google.com/drive/1g_pt2Rc3bv6H6qchvGHD-BpgF-Pt4vrC#scrollTo=WWHlukuvIpXb
+    https://github.com/google/flax/discussions/1706
+    '''
+    def _map(params, mask, is_train_fn, path):
+        for k in params:
+            if is_train_fn(k, path + [k]):
+                mask[k] = 'train'
+            else:
+                if isinstance(params[k], FrozenDict):
+                    mask[k] = {}
+                    _map(params[k], mask[k], is_train_fn, path + [k])
+                else:
+                    mask[k] = 'frozen'
+    mask = {}
+    _map(params, mask, is_train_fn, [])
+    return freeze(mask)
+
+
+def masked_optimizer(opt, param_spec, only_train_embeddings=False):
+    # Mask optimizer using a transformation
+    if only_train_embeddings:
+        to_train = get_layers_to_train()
+        train_mask = create_train_mask(param_spec, lambda _, p: '.'.join(p) in to_train)
+        print("Freezing layers according to mask:")
+        print(train_mask)
+        opt = optax.multi_transform(
+            {'train': opt, 'frozen': optax.set_to_zero()},
+            train_mask
+        )
+    return opt
 
 
 class TrainState(struct.PyTreeNode):
@@ -856,7 +906,7 @@ def main():
 
     learning_rate_fn = create_learning_rate_fn()
 
-    # create adam optimizer
+    # create optimizer
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         graft_type = {
@@ -930,7 +980,10 @@ def main():
             eps=training_args.adam_epsilon,
             weight_decay=training_args.weight_decay,
         )
-        optimizer = {k: optimizer for k in split_params(params_shape)}
+        optimizer = {
+            k: masked_optimizer(optimizer, p, training_args.only_train_embeddings)
+            for k, p in split_params(params_shape).items()
+        }
 
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
@@ -940,7 +993,10 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
             weight_decay_rate=training_args.weight_decay,
         )
-        optimizer = {k: optimizer for k in split_params(params_shape)}
+        optimizer = {
+            k: masked_optimizer(optimizer, p, training_args.only_train_embeddings)
+            for k, p in split_params(params_shape).items()
+        }
 
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape():
