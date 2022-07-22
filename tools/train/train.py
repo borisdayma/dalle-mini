@@ -671,11 +671,9 @@ def main():
         for k in ["dropout", "activation_dropout", "attention_dropout"]
         if getattr(model_args, k) is not None
     }
+    config_args["gradient_checkpointing"] = training_args.gradient_checkpointing
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
-        config.gradient_checkpointing = training_args.gradient_checkpointing
-        for k, v in config_args.items():
-            setattr(config, k, v)
     else:
         config = None
 
@@ -686,9 +684,7 @@ def main():
             config=config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            _do_init=False,  # we overwrite them with loaded checkpoint
-            gradient_checkpointing=training_args.gradient_checkpointing,
-            **config_args,
+            _do_init=False,
         )
     else:
         model = DalleBart(
@@ -698,6 +694,8 @@ def main():
             _do_init=False,
         )
         params = None
+    for k, v in config_args.items():
+        setattr(model.config, k, v)
     params_shape = model.params_shape_tree
 
     # get model metadata
