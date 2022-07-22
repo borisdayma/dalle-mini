@@ -584,7 +584,7 @@ def unsplit_params(data):
     return freeze(traverse_util.unflatten_dict(flat))
 
 
-def trainable_params(data, embeddings_only=False):
+def trainable_params(data, embeddings_only):
     """Keep only trainable parameters"""
 
     if not embeddings_only:
@@ -831,7 +831,10 @@ def main():
 
     learning_rate_fn = create_learning_rate_fn()
 
-    # create adam optimizer
+    # create optimizer
+    trainable_params_shape = trainable_params(
+        params_shape, training_args.embeddings_only
+    )
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         graft_type = {
@@ -888,9 +891,7 @@ def main():
 
         optimizer = {}
         opt_fn = {}
-        for k, p in split_params(
-            trainable_params(params_shape, training_args.embeddings_only)
-        ).items():
+        for k, p in split_params(trainable_params_shape).items():
             if "scanned" in k:
                 p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
             optimizer[k] = opt.init(p)
@@ -907,12 +908,7 @@ def main():
             eps=training_args.adam_epsilon,
             weight_decay=training_args.weight_decay,
         )
-        optimizer = {
-            k: optimizer
-            for k in split_params(
-                trainable_params(params_shape, training_args.embeddings_only)
-            )
-        }
+        optimizer = {k: optimizer for k in split_params(trainable_params_shape)}
 
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
@@ -922,20 +918,13 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
             weight_decay_rate=training_args.weight_decay,
         )
-        optimizer = {
-            k: optimizer
-            for k in split_params(
-                trainable_params(params_shape, training_args.embeddings_only)
-            )
-        }
+        optimizer = {k: optimizer for k in split_params(trainable_params_shape)}
 
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape():
         # get opt_state shape without actual init
         opt_state_shape = {}
-        for k, p in split_params(
-            trainable_params(params_shape, training_args.embeddings_only)
-        ).items():
+        for k, p in split_params(trainable_params_shape).items():
             if "scanned" not in k:
                 opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
             else:
@@ -943,12 +932,7 @@ def main():
 
         if training_args.optim == "adafactor":
             # factorized state must be replicated (rank different than params)
-            opt_state_spec = {
-                k: None
-                for k in split_params(
-                    trainable_params(params_shape, training_args.embeddings_only)
-                )
-            }
+            opt_state_spec = {k: None for k in split_params(trainable_params_shape)}
 
         elif training_args.optim in ["adam", "distributed_shampoo"]:
 
@@ -960,15 +944,9 @@ def main():
                     # other variables such as count
                     return None
 
-            split_spec = split_params(
-                set_partitions(
-                    trainable_params(params_shape, training_args.embeddings_only), False
-                )
-            )
+            split_spec = split_params(set_partitions(trainable_params_shape, False))
             opt_state_spec = {}
-            for k, p in split_params(
-                trainable_params(params_shape, training_args.embeddings_only)
-            ).items():
+            for k, p in split_params(trainable_params_shape).items():
                 if "scanned" in k:
                     p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
                 if training_args.optim == "adam":
