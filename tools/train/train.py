@@ -466,6 +466,11 @@ class TrainingArguments:
         },
     )
 
+    only_train_embeddings: bool = field(
+        default=False,
+        metadata={"help": "Freeze all layers except decoder embeddings"},
+    )
+
     wandb_entity: Optional[str] = field(
         default=None,
         metadata={"help": "The wandb entity to use (for teams)."},
@@ -557,12 +562,23 @@ class TrainingArguments:
         self.dp_devices = jax.device_count() // self.mp_devices
 
 
-def split_params(data):
+def split_params(data, with_frozen_layers = False):
     """Split params between scanned and non-scanned"""
+
+    layers_to_train = get_layers_to_train()
+    def should_train(k):
+        k_keypath = ".".join(k)
+        for trainable in layers_to_train:
+            if k_keypath.startswith(trainable):
+                return True
+        return False
+
     flat = traverse_util.flatten_dict(unfreeze(data))
-    split = {"standard": {}, "scanned_encoder": {}, "scanned_decoder": {}}
+    split = {"standard": {}, "scanned_encoder": {}, "scanned_decoder": {}, "frozen": {}}
     for k, v in flat.items():
-        if "FlaxBartEncoderLayers" in k:
+        if with_frozen_layers and not should_train(k):
+            split["frozen"][k] = v
+        elif "FlaxBartEncoderLayers" in k:
             split["scanned_encoder"][k] = v
         elif "FlaxBartDecoderLayers" in k:
             split["scanned_decoder"][k] = v
@@ -583,6 +599,51 @@ def unsplit_params(data):
     return freeze(traverse_util.unflatten_dict(flat))
 
 
+def get_layers_to_train():
+    '''Keypaths of layers to train, when using `only_train_embeddings`'''
+    to_train = set()
+    for layer in ['embed_positions', 'embed_tokens', 'final_ln', 'layernorm_embedding']:
+        layer_path = ['model', 'decoder'] + [layer]
+        to_train.add('.'.join(layer_path))
+    return to_train
+
+
+def create_train_mask(params, is_train_fn):
+    '''
+    Create mask for frozen / train layers.
+    Adapted from:
+    https://colab.research.google.com/drive/1g_pt2Rc3bv6H6qchvGHD-BpgF-Pt4vrC#scrollTo=WWHlukuvIpXb
+    https://github.com/google/flax/discussions/1706
+    '''
+    def _map(params, mask, is_train_fn, path):
+        for k in params:
+            if is_train_fn(k, path + [k]):
+                mask[k] = 'train'
+            else:
+                if isinstance(params[k], FrozenDict):
+                    mask[k] = {}
+                    _map(params[k], mask[k], is_train_fn, path + [k])
+                else:
+                    mask[k] = 'frozen'
+    mask = {}
+    _map(params, mask, is_train_fn, [])
+    return freeze(mask)
+
+
+def masked_optimizer(opt, param_spec, only_train_embeddings=False):
+    # Mask optimizer using a transformation
+    if only_train_embeddings:
+        to_train = get_layers_to_train()
+        train_mask = create_train_mask(param_spec, lambda _, p: '.'.join(p) in to_train)
+        print("Freezing layers according to mask:")
+        print(train_mask)
+        opt = optax.multi_transform(
+            {'train': opt, 'frozen': optax.set_to_zero()},
+            train_mask
+        )
+    return opt
+
+
 class TrainState(struct.PyTreeNode):
     step: int
     params: core.FrozenDict[str, Any]
@@ -593,10 +654,11 @@ class TrainState(struct.PyTreeNode):
     epoch: int = 0
     train_time: float = 0.0  # total time the model trained
     train_samples: int = 0  # number of samples seen
+    with_frozen_layers: bool = False
 
     def apply_gradients(self, *, grads, **kwargs):
-        grads = split_params(grads)
-        params = split_params(self.params)
+        grads = split_params(grads, self.with_frozen_layers)
+        params = split_params(self.params, self.with_frozen_layers)
         opt_state = {}
         # we loop over keys: "standard", "scanned_encoder", "scanned_decoder"
         for k, param in params.items():
@@ -616,9 +678,9 @@ class TrainState(struct.PyTreeNode):
         )
 
     @classmethod
-    def create(cls, *, apply_fn, params, tx, **kwargs):
+    def create(cls, *, apply_fn, params, tx, with_frozen_layers, **kwargs):
         opt_state = {}
-        for k, p in split_params(params).items():
+        for k, p in split_params(params, with_frozen_layers).items():
             init_fn = tx[k].init
             if "scanned" in k:
                 init_fn = jax.vmap(init_fn)
@@ -629,6 +691,7 @@ class TrainState(struct.PyTreeNode):
             params=params,
             tx=tx,
             opt_state=freeze(opt_state),
+            with_frozen_layers = with_frozen_layers,
             **kwargs,
         )
 
@@ -712,7 +775,7 @@ def main():
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
             _do_init=False,  # we overwrite them with loaded checkpoint
-            gradient_checkpointing=training_args.gradient_checkpointing,
+            # gradient_checkpointing=training_args.gradient_checkpointing,
             **config_args,
         )
     else:
@@ -855,8 +918,9 @@ def main():
         return schedule_fn
 
     learning_rate_fn = create_learning_rate_fn()
+    with_frozen_layers = training_args.only_train_embeddings
 
-    # create adam optimizer
+    # create optimizer
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         graft_type = {
@@ -913,7 +977,7 @@ def main():
 
         optimizer = {}
         opt_fn = {}
-        for k, p in split_params(params_shape).items():
+        for k, p in split_params(params_shape, with_frozen_layers).items():
             if "scanned" in k:
                 p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
             optimizer[k] = opt.init(p)
@@ -930,7 +994,10 @@ def main():
             eps=training_args.adam_epsilon,
             weight_decay=training_args.weight_decay,
         )
-        optimizer = {k: optimizer for k in split_params(params_shape)}
+        optimizer = {
+            k: masked_optimizer(optimizer, p, training_args.only_train_embeddings)
+            for k, p in split_params(params_shape, with_frozen_layers).items()
+        }
 
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
@@ -940,13 +1007,16 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
             weight_decay_rate=training_args.weight_decay,
         )
-        optimizer = {k: optimizer for k in split_params(params_shape)}
+        optimizer = {
+            k: masked_optimizer(optimizer, p, training_args.only_train_embeddings)
+            for k, p in split_params(params_shape, with_frozen_layers).items()
+        }
 
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape():
         # get opt_state shape without actual init
         opt_state_shape = {}
-        for k, p in split_params(params_shape).items():
+        for k, p in split_params(params_shape, with_frozen_layers).items():
             if "scanned" not in k:
                 opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
             else:
@@ -954,7 +1024,7 @@ def main():
 
         if training_args.optim == "adafactor":
             # factorized state must be replicated (rank different than params)
-            opt_state_spec = {k: None for k in split_params(params_shape)}
+            opt_state_spec = {k: None for k in split_params(params_shape, with_frozen_layers)}
 
         elif training_args.optim in ["adam", "distributed_shampoo"]:
 
@@ -966,9 +1036,9 @@ def main():
                     # other variables such as count
                     return None
 
-            split_spec = split_params(set_partitions(params_shape, False))
+            split_spec = split_params(set_partitions(params_shape, False), with_frozen_layers)
             opt_state_spec = {}
-            for k, p in split_params(params_shape).items():
+            for k, p in split_params(params_shape, with_frozen_layers).items():
                 if "scanned" in k:
                     p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
                 if training_args.optim == "adam":
