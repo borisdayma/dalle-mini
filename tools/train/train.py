@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
@@ -972,9 +973,8 @@ def main():
                     p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
                 if training_args.optim == "adam":
                     opt_state_spec[k] = jax.tree_map(
-                        _opt_state_spec_per_leaf,
+                        partial(_opt_state_spec_per_leaf, spec=split_spec[k]),
                         opt_state_shape[k],
-                        split_spec[k],
                         # return None spec for empty elements
                         is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
                     )
