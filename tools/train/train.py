@@ -43,7 +43,6 @@ from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training.common_utils import onehot
 from jax.experimental import PartitionSpec, maps
-from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from scalable_shampoo.distributed_shampoo import GraftingType, distributed_shampoo
 from tqdm import tqdm
@@ -62,8 +61,6 @@ try:
     from google.cloud import storage
 except:
     storage = None
-
-cc.initialize_cache("./jax_cache", max_cache_size_bytes=10 * 2**30)
 
 logger = logging.getLogger(__name__)
 
@@ -465,6 +462,9 @@ class TrainingArguments:
             "help": "Random seed for the model that will be set at the beginning of training."
         },
     )
+    embeddings_only: bool = field(
+        default=False, metadata={"help": "Train only embedding layers."}
+    )
 
     wandb_entity: Optional[str] = field(
         default=None,
@@ -583,54 +583,28 @@ def unsplit_params(data):
     return freeze(traverse_util.unflatten_dict(flat))
 
 
-class TrainState(struct.PyTreeNode):
-    step: int
-    params: core.FrozenDict[str, Any]
-    opt_state: optax.OptState
-    apply_fn: Callable = struct.field(pytree_node=False)
-    tx: optax.GradientTransformation = struct.field(pytree_node=False)
-    dropout_rng: jnp.ndarray = None
-    epoch: int = 0
-    train_time: float = 0.0  # total time the model trained
-    train_samples: int = 0  # number of samples seen
+def trainable_params(data, embeddings_only=False):
+    """Keep only trainable parameters"""
 
-    def apply_gradients(self, *, grads, **kwargs):
-        grads = split_params(grads)
-        params = split_params(self.params)
-        opt_state = {}
-        # we loop over keys: "standard", "scanned_encoder", "scanned_decoder"
-        for k, param in params.items():
-            update_fn = self.tx[k].update
-            if "scanned" in k:
-                update_fn = jax.vmap(update_fn, in_axes=(0, 0, 0), out_axes=(0, 0))
-            updates, new_opt_state = update_fn(grads[k], self.opt_state[k], param)
-            params[k] = optax.apply_updates(param, updates)
-            opt_state[k] = new_opt_state
-        params = unsplit_params(params)
+    if not embeddings_only:
+        return data
 
-        return self.replace(
-            step=self.step + 1,
-            params=params,
-            opt_state=freeze(opt_state),
-            **kwargs,
-        )
-
-    @classmethod
-    def create(cls, *, apply_fn, params, tx, **kwargs):
-        opt_state = {}
-        for k, p in split_params(params).items():
-            init_fn = tx[k].init
-            if "scanned" in k:
-                init_fn = jax.vmap(init_fn)
-            opt_state[k] = init_fn(p)
-        return cls(
-            step=0,
-            apply_fn=apply_fn,
-            params=params,
-            tx=tx,
-            opt_state=freeze(opt_state),
-            **kwargs,
-        )
+    data = unfreeze(data)
+    trainable = {
+        "lm_head": data["lm_head"],
+        "model": {
+            "decoder": {
+                layer: data["model"]["decoder"][layer]
+                for layer in [
+                    "embed_positions",
+                    "embed_tokens",
+                    "final_ln",
+                    "layernorm_embedding",
+                ]
+            }
+        },
+    }
+    return freeze(trainable)
 
 
 def main():
@@ -913,7 +887,9 @@ def main():
 
         optimizer = {}
         opt_fn = {}
-        for k, p in split_params(params_shape).items():
+        for k, p in split_params(
+            trainable_params(params_shape, training_args.embeddings_only)
+        ).items():
             if "scanned" in k:
                 p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
             optimizer[k] = opt.init(p)
@@ -930,7 +906,12 @@ def main():
             eps=training_args.adam_epsilon,
             weight_decay=training_args.weight_decay,
         )
-        optimizer = {k: optimizer for k in split_params(params_shape)}
+        optimizer = {
+            k: optimizer
+            for k in split_params(
+                trainable_params(params_shape, training_args.embeddings_only)
+            )
+        }
 
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
@@ -940,13 +921,20 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
             weight_decay_rate=training_args.weight_decay,
         )
-        optimizer = {k: optimizer for k in split_params(params_shape)}
+        optimizer = {
+            k: optimizer
+            for k in split_params(
+                trainable_params(params_shape, training_args.embeddings_only)
+            )
+        }
 
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape():
         # get opt_state shape without actual init
         opt_state_shape = {}
-        for k, p in split_params(params_shape).items():
+        for k, p in split_params(
+            trainable_params(params_shape, training_args.embeddings_only)
+        ).items():
             if "scanned" not in k:
                 opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
             else:
@@ -954,7 +942,12 @@ def main():
 
         if training_args.optim == "adafactor":
             # factorized state must be replicated (rank different than params)
-            opt_state_spec = {k: None for k in split_params(params_shape)}
+            opt_state_spec = {
+                k: None
+                for k in split_params(
+                    trainable_params(params_shape, training_args.embeddings_only)
+                )
+            }
 
         elif training_args.optim in ["adam", "distributed_shampoo"]:
 
@@ -966,9 +959,15 @@ def main():
                     # other variables such as count
                     return None
 
-            split_spec = split_params(set_partitions(params_shape, False))
+            split_spec = split_params(
+                set_partitions(
+                    trainable_params(params_shape, training_args.embeddings_only), False
+                )
+            )
             opt_state_spec = {}
-            for k, p in split_params(params_shape).items():
+            for k, p in split_params(
+                trainable_params(params_shape, training_args.embeddings_only)
+            ).items():
                 if "scanned" in k:
                     p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
                 if training_args.optim == "adam":
@@ -1006,6 +1005,66 @@ def main():
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
     mesh = maps.Mesh(devices, ("dp", "mp"))
     logger.info(f"  Mesh shape: {mesh_shape}")
+
+    # define TrainState
+    class TrainState(struct.PyTreeNode):
+        step: int
+        params: core.FrozenDict[str, Any]
+        opt_state: optax.OptState
+        apply_fn: Callable = struct.field(pytree_node=False)
+        tx: optax.GradientTransformation = struct.field(pytree_node=False)
+        dropout_rng: jnp.ndarray = None
+        epoch: int = 0
+        train_time: float = 0.0  # total time the model trained
+        train_samples: int = 0  # number of samples seen
+
+        def apply_gradients(self, *, grads, **kwargs):
+            grads = split_params(trainable_params(grads, training_args.embeddings_only))
+            params = split_params(
+                trainable_params(self.params, training_args.embeddings_only)
+            )
+            opt_state = {}
+            # we loop over keys: "standard", "scanned_encoder", "scanned_decoder"
+            for k, param in params.items():
+                update_fn = self.tx[k].update
+                if "scanned" in k:
+                    update_fn = jax.vmap(update_fn, in_axes=(0, 0, 0), out_axes=(0, 0))
+                updates, new_opt_state = update_fn(grads[k], self.opt_state[k], param)
+                params[k] = optax.apply_updates(param, updates)
+                opt_state[k] = new_opt_state
+            params = unsplit_params(params)
+            # merge with non-trainable params
+            params, new_params = traverse_util.flatten_dict(
+                unfreeze(self.params)
+            ), traverse_util.flatten_dict(unfreeze(params))
+            params.update(new_params)
+            params = freeze(traverse_util.unflatten_dict(params))
+
+            return self.replace(
+                step=self.step + 1,
+                params=params,
+                opt_state=freeze(opt_state),
+                **kwargs,
+            )
+
+        @classmethod
+        def create(cls, *, apply_fn, params, tx, **kwargs):
+            opt_state = {}
+            for k, p in split_params(
+                trainable_params(params, training_args.embeddings_only)
+            ).items():
+                init_fn = tx[k].init
+                if "scanned" in k:
+                    init_fn = jax.vmap(init_fn)
+                opt_state[k] = init_fn(p)
+            return cls(
+                step=0,
+                apply_fn=apply_fn,
+                params=params,
+                tx=tx,
+                opt_state=freeze(opt_state),
+                **kwargs,
+            )
 
     # define state spec
     state_spec = TrainState(
@@ -1218,8 +1277,11 @@ def main():
                 val,
             )
 
+        # log additional metrics
+        params = trainable_params(state.params, training_args.embeddings_only)
+        grads = trainable_params(grads, training_args.embeddings_only)
         if training_args.log_norm_steps:
-            zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
+            zeros_norm = jax.tree_map(lambda _: jnp.float32(0), params)
 
             def norm(val):
                 return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
@@ -1228,7 +1290,7 @@ def main():
                 norm, grads, zeros_norm, training_args.log_norm_steps
             )
             params_norm = maybe_fn(
-                norm, state.params, zeros_norm, training_args.log_norm_steps
+                norm, params, zeros_norm, training_args.log_norm_steps
             )
 
             metrics.update(
@@ -1240,7 +1302,7 @@ def main():
 
         if training_args.log_histogram_steps:
             zeros_hist = jax.tree_map(
-                lambda _: jnp.histogram(jnp.zeros(1), density=True), state.params
+                lambda _: jnp.histogram(jnp.zeros(1), density=True), params
             )
 
             def histogram(val):
@@ -1250,7 +1312,7 @@ def main():
                 histogram, grads, zeros_hist, training_args.log_histogram_steps
             )
             params_hist = maybe_fn(
-                histogram, state.params, zeros_hist, training_args.log_histogram_steps
+                histogram, params, zeros_hist, training_args.log_histogram_steps
             )
 
             metrics.update(
