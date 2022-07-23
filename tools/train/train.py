@@ -466,8 +466,12 @@ class TrainingArguments:
             "help": "Random seed for the model that will be set at the beginning of training."
         },
     )
+
     embeddings_only: bool = field(
         default=False, metadata={"help": "Train only embedding layers."}
+    )
+    init_embeddings: bool = field(
+        default=False, metadata={"help": "When training embedding layers, initialize them."}
     )
 
     wandb_entity: Optional[str] = field(
@@ -611,6 +615,24 @@ def trainable_params(data, embeddings_only):
     return freeze(trainable)
 
 
+def init_embeddings(model, params):
+    """Reinitialize trainable embeddings"""
+    # Must match params in trainable_params() above
+    trainable_keypaths = [
+        "lm_head.kernel",
+        "model.decoder.embed_positions.embedding",
+        "model.decoder.embed_tokens.embedding",
+        "model.decoder.final_ln.bias",
+        "model.decoder.layernorm_embedding.bias",
+        "model.decoder.layernorm_embedding.scale",
+    ]
+
+    # Note: using private _missing_keys
+    init_keys = {tuple(k.split('.')) for k in trainable_keypaths}
+    model._missing_keys = init_keys
+    return model.init_weights(model.key, model.input_shape, params=params)
+
+
 def main():
     # See all possible arguments by passing the --help flag to this script.
     parser = HfArgumentParser(
@@ -689,6 +711,8 @@ def main():
             dtype=getattr(jnp, model_args.dtype),
             _do_init=False,
         )
+        if training_args.embeddings_only and training_args.init_embeddings:
+            params = init_embeddings(model, params)
     else:
         model = DalleBart(
             config,
