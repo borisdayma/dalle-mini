@@ -44,6 +44,7 @@ from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
 from flax.training.common_utils import onehot
 from jax.experimental import PartitionSpec, maps
+from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from scalable_shampoo.distributed_shampoo import GraftingType, distributed_shampoo
 from tqdm import tqdm
@@ -64,6 +65,8 @@ except:
     storage = None
 
 logger = logging.getLogger(__name__)
+
+cc.initialize_cache("jax_cache")
 
 
 @dataclass
