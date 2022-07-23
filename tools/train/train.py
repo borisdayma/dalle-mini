@@ -894,7 +894,9 @@ def main():
         opt_fn = {}
         for k, p in split_params(trainable_params_shape).items():
             if "scanned" in k:
-                p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
+                p = jax.eval_shape(
+                    lambda x: jax.tree_util.tree_map(lambda y: y[0], x), p
+                )
             optimizer[k] = opt.init(p)
             opt_fn[k] = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
                 optimizer[k].pspec_fn, optimizer[k].shape_and_dtype_fn
@@ -949,9 +951,11 @@ def main():
             opt_state_spec = {}
             for k, p in split_params(trainable_params_shape).items():
                 if "scanned" in k:
-                    p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
+                    p = jax.eval_shape(
+                        lambda x: jax.tree_util.tree_map(lambda y: y[0], x), p
+                    )
                 if training_args.optim == "adam":
-                    opt_state_spec[k] = jax.tree_map(
+                    opt_state_spec[k] = jax.tree_util.tree_map(
                         partial(_opt_state_spec_per_leaf, spec=split_spec[k]),
                         opt_state_shape[k],
                         # return None spec for empty elements
@@ -965,7 +969,7 @@ def main():
                     )
                 # add dimension for scanned params
                 if "scanned" in k:
-                    opt_state_spec[k] = jax.tree_map(
+                    opt_state_spec[k] = jax.tree_util.tree_map(
                         lambda x: PartitionSpec(*(None,) + x)
                         if x is not None
                         else None,
@@ -1143,7 +1147,7 @@ def main():
 
     # make grad_param_spec for vmap
     if use_vmap_trick:
-        grad_param_spec = jax.tree_map(
+        grad_param_spec = jax.tree_util.tree_map(
             lambda x: PartitionSpec(*("dp",) + (x if x is not None else (None,))),
             param_spec,
         )
@@ -1153,7 +1157,7 @@ def main():
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
-            return jax.tree_map(
+            return jax.tree_util.tree_map(
                 lambda x: jax.lax.dynamic_index_in_dim(x, grad_idx, keepdims=False),
                 batch,
             )
@@ -1188,7 +1192,9 @@ def main():
                 grads = with_sharding_constraint(grads, grad_param_spec)
                 # average across all devices
                 # Note: we could average per device only after gradient accumulation, right before params update
-                loss, grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), (loss, grads))
+                loss, grads = jax.tree_util.tree_map(
+                    lambda x: jnp.mean(x, axis=0), (loss, grads)
+                )
             else:
                 # "vmap trick" does not work in multi-hosts and requires too much hbm
                 loss, grads = grad_fn(state.params, minibatch, dropout_rng)
@@ -1204,7 +1210,7 @@ def main():
             init_minibatch_step = (
                 0.0,
                 with_sharding_constraint(
-                    jax.tree_map(jnp.zeros_like, state.params), param_spec
+                    jax.tree_util.tree_map(jnp.zeros_like, state.params), param_spec
                 ),
                 state.dropout_rng,
             )
@@ -1213,7 +1219,7 @@ def main():
             def cumul_minibatch_step(grad_idx, cumul_loss_grad_dropout):
                 cumul_loss, cumul_grads, dropout_rng = cumul_loss_grad_dropout
                 loss, grads, dropout_rng = loss_and_grad(grad_idx, dropout_rng)
-                cumul_loss, cumul_grads = jax.tree_map(
+                cumul_loss, cumul_grads = jax.tree_util.tree_map(
                     jnp.add, (cumul_loss, cumul_grads), (loss, grads)
                 )
                 cumul_grads = with_sharding_constraint(cumul_grads, param_spec)
@@ -1228,7 +1234,7 @@ def main():
             )
             grads = with_sharding_constraint(grads, param_spec)
             # sum -> mean
-            loss, grads = jax.tree_map(
+            loss, grads = jax.tree_util.tree_map(
                 lambda x: x / training_args.gradient_accumulation_steps, (loss, grads)
             )
 
@@ -1260,10 +1266,10 @@ def main():
         params = trainable_params(state.params, training_args.embeddings_only)
         grads = trainable_params(grads, training_args.embeddings_only)
         if training_args.log_norm_steps:
-            zeros_norm = jax.tree_map(lambda _: jnp.float32(0), params)
+            zeros_norm = jax.tree_util.tree_map(lambda _: jnp.float32(0), params)
 
             def norm(val):
-                return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
+                return jax.tree_util.tree_map(lambda x: jnp.linalg.norm(x), val)
 
             gradients_norm = maybe_fn(
                 norm, grads, zeros_norm, training_args.log_norm_steps
@@ -1280,12 +1286,14 @@ def main():
             )
 
         if training_args.log_histogram_steps:
-            zeros_hist = jax.tree_map(
+            zeros_hist = jax.tree_util.tree_map(
                 lambda _: jnp.histogram(jnp.zeros(1), density=True), params
             )
 
             def histogram(val):
-                return jax.tree_map(lambda x: jnp.histogram(x, density=True), val)
+                return jax.tree_util.tree_map(
+                    lambda x: jnp.histogram(x, density=True), val
+                )
 
             gradients_hist = maybe_fn(
                 histogram, grads, zeros_hist, training_args.log_histogram_steps
@@ -1395,8 +1403,10 @@ def main():
                             log_metrics[f"{k}/"] = unfreeze(v)
                     elif "_hist" in k:
                         if self.step % training_args.log_histogram_steps == 0:
-                            v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
-                            v = jax.tree_map(
+                            v = jax.tree_util.tree_map(
+                                lambda x: jax.device_get(x), unfreeze(v)
+                            )
+                            v = jax.tree_util.tree_map(
                                 lambda x: wandb.Histogram(np_histogram=x),
                                 v,
                                 is_leaf=lambda x: isinstance(x, tuple),
@@ -1458,14 +1468,16 @@ def main():
                     disable=jax.process_index() > 0,
                 ):
                     # need to keep only eval_batch_size_per_node items relevant to the node
-                    batch = jax.tree_map(
+                    batch = jax.tree_util.tree_map(
                         lambda x: x.reshape(
                             (jax.process_count(), eval_batch_size_per_node)
                             + x.shape[1:]
                         ),
                         batch,
                     )
-                    batch = jax.tree_map(lambda x: x[jax.process_index()], batch)
+                    batch = jax.tree_util.tree_map(
+                        lambda x: x[jax.process_index()], batch
+                    )
 
                     # add dp dimension when using "vmap trick"
                     if use_vmap_trick:
@@ -1473,7 +1485,7 @@ def main():
                             jax.local_device_count() // training_args.mp_devices,
                             training_args.per_device_eval_batch_size,
                         )
-                        batch = jax.tree_map(
+                        batch = jax.tree_util.tree_map(
                             lambda x: x.reshape(bs_shape + x.shape[1:]), batch
                         )
 
@@ -1654,7 +1666,7 @@ def main():
                         ) + bs_shape
 
                     # reshape batch
-                    batch = jax.tree_map(
+                    batch = jax.tree_util.tree_map(
                         lambda x: x.reshape(bs_shape + x.shape[1:]),
                         batch,
                     )
