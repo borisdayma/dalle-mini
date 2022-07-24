@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
@@ -63,9 +64,9 @@ try:
 except:
     storage = None
 
-cc.initialize_cache("./jax_cache", max_cache_size_bytes=10 * 2**30)
-
 logger = logging.getLogger(__name__)
+
+cc.initialize_cache("jax_cache")
 
 
 @dataclass
@@ -466,6 +467,14 @@ class TrainingArguments:
         },
     )
 
+    embeddings_only: bool = field(
+        default=False, metadata={"help": "Train only embedding layers."}
+    )
+    init_embeddings: bool = field(
+        default=False,
+        metadata={"help": "When training embedding layers, initialize them."},
+    )
+
     wandb_entity: Optional[str] = field(
         default=None,
         metadata={"help": "The wandb entity to use (for teams)."},
@@ -583,54 +592,46 @@ def unsplit_params(data):
     return freeze(traverse_util.unflatten_dict(flat))
 
 
-class TrainState(struct.PyTreeNode):
-    step: int
-    params: core.FrozenDict[str, Any]
-    opt_state: optax.OptState
-    apply_fn: Callable = struct.field(pytree_node=False)
-    tx: optax.GradientTransformation = struct.field(pytree_node=False)
-    dropout_rng: jnp.ndarray = None
-    epoch: int = 0
-    train_time: float = 0.0  # total time the model trained
-    train_samples: int = 0  # number of samples seen
+def trainable_params(data, embeddings_only):
+    """Keep only trainable parameters"""
 
-    def apply_gradients(self, *, grads, **kwargs):
-        grads = split_params(grads)
-        params = split_params(self.params)
-        opt_state = {}
-        # we loop over keys: "standard", "scanned_encoder", "scanned_decoder"
-        for k, param in params.items():
-            update_fn = self.tx[k].update
-            if "scanned" in k:
-                update_fn = jax.vmap(update_fn, in_axes=(0, 0, 0), out_axes=(0, 0))
-            updates, new_opt_state = update_fn(grads[k], self.opt_state[k], param)
-            params[k] = optax.apply_updates(param, updates)
-            opt_state[k] = new_opt_state
-        params = unsplit_params(params)
+    if not embeddings_only:
+        return data
 
-        return self.replace(
-            step=self.step + 1,
-            params=params,
-            opt_state=freeze(opt_state),
-            **kwargs,
-        )
+    data = unfreeze(data)
+    trainable = {
+        "lm_head": data["lm_head"],
+        "model": {
+            "decoder": {
+                layer: data["model"]["decoder"][layer]
+                for layer in [
+                    "embed_positions",
+                    "embed_tokens",
+                    "final_ln",
+                    "layernorm_embedding",
+                ]
+            }
+        },
+    }
+    return freeze(trainable)
 
-    @classmethod
-    def create(cls, *, apply_fn, params, tx, **kwargs):
-        opt_state = {}
-        for k, p in split_params(params).items():
-            init_fn = tx[k].init
-            if "scanned" in k:
-                init_fn = jax.vmap(init_fn)
-            opt_state[k] = init_fn(p)
-        return cls(
-            step=0,
-            apply_fn=apply_fn,
-            params=params,
-            tx=tx,
-            opt_state=freeze(opt_state),
-            **kwargs,
-        )
+
+def init_embeddings(model, params):
+    """Reinitialize trainable embeddings"""
+    # Must match params in trainable_params() above
+    trainable_keypaths = [
+        "lm_head.kernel",
+        "model.decoder.embed_positions.embedding",
+        "model.decoder.embed_tokens.embedding",
+        "model.decoder.final_ln.bias",
+        "model.decoder.layernorm_embedding.bias",
+        "model.decoder.layernorm_embedding.scale",
+    ]
+
+    # Note: using private _missing_keys
+    init_keys = {tuple(k.split(".")) for k in trainable_keypaths}
+    model._missing_keys = init_keys
+    return model.init_weights(model.key, model.input_shape, params=params)
 
 
 def main():
@@ -696,11 +697,9 @@ def main():
         for k in ["dropout", "activation_dropout", "attention_dropout"]
         if getattr(model_args, k) is not None
     }
+    config_args["gradient_checkpointing"] = training_args.gradient_checkpointing
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
-        config.gradient_checkpointing = training_args.gradient_checkpointing
-        for k, v in config_args.items():
-            setattr(config, k, v)
     else:
         config = None
 
@@ -711,10 +710,10 @@ def main():
             config=config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            _do_init=False,  # we overwrite them with loaded checkpoint
-            gradient_checkpointing=training_args.gradient_checkpointing,
-            **config_args,
+            _do_init=False,
         )
+        if training_args.embeddings_only and training_args.init_embeddings:
+            params = init_embeddings(model, params)
     else:
         model = DalleBart(
             config,
@@ -723,6 +722,8 @@ def main():
             _do_init=False,
         )
         params = None
+    for k, v in config_args.items():
+        setattr(model.config, k, v)
     params_shape = model.params_shape_tree
 
     # get model metadata
@@ -856,7 +857,10 @@ def main():
 
     learning_rate_fn = create_learning_rate_fn()
 
-    # create adam optimizer
+    # create optimizer
+    trainable_params_shape = trainable_params(
+        params_shape, training_args.embeddings_only
+    )
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         graft_type = {
@@ -913,9 +917,11 @@ def main():
 
         optimizer = {}
         opt_fn = {}
-        for k, p in split_params(params_shape).items():
+        for k, p in split_params(trainable_params_shape).items():
             if "scanned" in k:
-                p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
+                p = jax.eval_shape(
+                    lambda x: jax.tree_util.tree_map(lambda y: y[0], x), p
+                )
             optimizer[k] = opt.init(p)
             opt_fn[k] = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
                 optimizer[k].pspec_fn, optimizer[k].shape_and_dtype_fn
@@ -930,7 +936,7 @@ def main():
             eps=training_args.adam_epsilon,
             weight_decay=training_args.weight_decay,
         )
-        optimizer = {k: optimizer for k in split_params(params_shape)}
+        optimizer = {k: optimizer for k in split_params(trainable_params_shape)}
 
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
@@ -940,13 +946,13 @@ def main():
             clipping_threshold=training_args.max_grad_norm,
             weight_decay_rate=training_args.weight_decay,
         )
-        optimizer = {k: optimizer for k in split_params(params_shape)}
+        optimizer = {k: optimizer for k in split_params(trainable_params_shape)}
 
     # get PartitionSpec for optimizer state
     def get_opt_state_spec_and_shape():
         # get opt_state shape without actual init
         opt_state_shape = {}
-        for k, p in split_params(params_shape).items():
+        for k, p in split_params(trainable_params_shape).items():
             if "scanned" not in k:
                 opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
             else:
@@ -954,7 +960,7 @@ def main():
 
         if training_args.optim == "adafactor":
             # factorized state must be replicated (rank different than params)
-            opt_state_spec = {k: None for k in split_params(params_shape)}
+            opt_state_spec = {k: None for k in split_params(trainable_params_shape)}
 
         elif training_args.optim in ["adam", "distributed_shampoo"]:
 
@@ -966,16 +972,17 @@ def main():
                     # other variables such as count
                     return None
 
-            split_spec = split_params(set_partitions(params_shape, False))
+            split_spec = split_params(set_partitions(trainable_params_shape, False))
             opt_state_spec = {}
-            for k, p in split_params(params_shape).items():
+            for k, p in split_params(trainable_params_shape).items():
                 if "scanned" in k:
-                    p = jax.eval_shape(lambda x: jax.tree_map(lambda y: y[0], x), p)
+                    p = jax.eval_shape(
+                        lambda x: jax.tree_util.tree_map(lambda y: y[0], x), p
+                    )
                 if training_args.optim == "adam":
-                    opt_state_spec[k] = jax.tree_map(
-                        _opt_state_spec_per_leaf,
+                    opt_state_spec[k] = jax.tree_util.tree_map(
+                        partial(_opt_state_spec_per_leaf, spec=split_spec[k]),
                         opt_state_shape[k],
-                        split_spec[k],
                         # return None spec for empty elements
                         is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
                     )
@@ -987,7 +994,7 @@ def main():
                     )
                 # add dimension for scanned params
                 if "scanned" in k:
-                    opt_state_spec[k] = jax.tree_map(
+                    opt_state_spec[k] = jax.tree_util.tree_map(
                         lambda x: PartitionSpec(*(None,) + x)
                         if x is not None
                         else None,
@@ -1006,6 +1013,66 @@ def main():
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
     mesh = maps.Mesh(devices, ("dp", "mp"))
     logger.info(f"  Mesh shape: {mesh_shape}")
+
+    # define TrainState
+    class TrainState(struct.PyTreeNode):
+        step: int
+        params: core.FrozenDict[str, Any]
+        opt_state: optax.OptState
+        apply_fn: Callable = struct.field(pytree_node=False)
+        tx: optax.GradientTransformation = struct.field(pytree_node=False)
+        dropout_rng: jnp.ndarray = None
+        epoch: int = 0
+        train_time: float = 0.0  # total time the model trained
+        train_samples: int = 0  # number of samples seen
+
+        def apply_gradients(self, *, grads, **kwargs):
+            grads = split_params(trainable_params(grads, training_args.embeddings_only))
+            params = split_params(
+                trainable_params(self.params, training_args.embeddings_only)
+            )
+            opt_state = {}
+            # we loop over keys: "standard", "scanned_encoder", "scanned_decoder"
+            for k, param in params.items():
+                update_fn = self.tx[k].update
+                if "scanned" in k:
+                    update_fn = jax.vmap(update_fn, in_axes=(0, 0, 0), out_axes=(0, 0))
+                updates, new_opt_state = update_fn(grads[k], self.opt_state[k], param)
+                params[k] = optax.apply_updates(param, updates)
+                opt_state[k] = new_opt_state
+            params = unsplit_params(params)
+            # merge with non-trainable params
+            params, new_params = traverse_util.flatten_dict(
+                unfreeze(self.params)
+            ), traverse_util.flatten_dict(unfreeze(params))
+            params.update(new_params)
+            params = freeze(traverse_util.unflatten_dict(params))
+
+            return self.replace(
+                step=self.step + 1,
+                params=params,
+                opt_state=freeze(opt_state),
+                **kwargs,
+            )
+
+        @classmethod
+        def create(cls, *, apply_fn, params, tx, **kwargs):
+            opt_state = {}
+            for k, p in split_params(
+                trainable_params(params, training_args.embeddings_only)
+            ).items():
+                init_fn = tx[k].init
+                if "scanned" in k:
+                    init_fn = jax.vmap(init_fn)
+                opt_state[k] = init_fn(p)
+            return cls(
+                step=0,
+                apply_fn=apply_fn,
+                params=params,
+                tx=tx,
+                opt_state=freeze(opt_state),
+                **kwargs,
+            )
 
     # define state spec
     state_spec = TrainState(
@@ -1105,7 +1172,7 @@ def main():
 
     # make grad_param_spec for vmap
     if use_vmap_trick:
-        grad_param_spec = jax.tree_map(
+        grad_param_spec = jax.tree_util.tree_map(
             lambda x: PartitionSpec(*("dp",) + (x if x is not None else (None,))),
             param_spec,
         )
@@ -1115,7 +1182,7 @@ def main():
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
-            return jax.tree_map(
+            return jax.tree_util.tree_map(
                 lambda x: jax.lax.dynamic_index_in_dim(x, grad_idx, keepdims=False),
                 batch,
             )
@@ -1150,7 +1217,9 @@ def main():
                 grads = with_sharding_constraint(grads, grad_param_spec)
                 # average across all devices
                 # Note: we could average per device only after gradient accumulation, right before params update
-                loss, grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), (loss, grads))
+                loss, grads = jax.tree_util.tree_map(
+                    lambda x: jnp.mean(x, axis=0), (loss, grads)
+                )
             else:
                 # "vmap trick" does not work in multi-hosts and requires too much hbm
                 loss, grads = grad_fn(state.params, minibatch, dropout_rng)
@@ -1166,7 +1235,7 @@ def main():
             init_minibatch_step = (
                 0.0,
                 with_sharding_constraint(
-                    jax.tree_map(jnp.zeros_like, state.params), param_spec
+                    jax.tree_util.tree_map(jnp.zeros_like, state.params), param_spec
                 ),
                 state.dropout_rng,
             )
@@ -1175,7 +1244,7 @@ def main():
             def cumul_minibatch_step(grad_idx, cumul_loss_grad_dropout):
                 cumul_loss, cumul_grads, dropout_rng = cumul_loss_grad_dropout
                 loss, grads, dropout_rng = loss_and_grad(grad_idx, dropout_rng)
-                cumul_loss, cumul_grads = jax.tree_map(
+                cumul_loss, cumul_grads = jax.tree_util.tree_map(
                     jnp.add, (cumul_loss, cumul_grads), (loss, grads)
                 )
                 cumul_grads = with_sharding_constraint(cumul_grads, param_spec)
@@ -1190,7 +1259,7 @@ def main():
             )
             grads = with_sharding_constraint(grads, param_spec)
             # sum -> mean
-            loss, grads = jax.tree_map(
+            loss, grads = jax.tree_util.tree_map(
                 lambda x: x / training_args.gradient_accumulation_steps, (loss, grads)
             )
 
@@ -1218,17 +1287,20 @@ def main():
                 val,
             )
 
+        # log additional metrics
+        params = trainable_params(state.params, training_args.embeddings_only)
+        grads = trainable_params(grads, training_args.embeddings_only)
         if training_args.log_norm_steps:
-            zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
+            zeros_norm = jax.tree_util.tree_map(lambda _: jnp.float32(0), params)
 
             def norm(val):
-                return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
+                return jax.tree_util.tree_map(lambda x: jnp.linalg.norm(x), val)
 
             gradients_norm = maybe_fn(
                 norm, grads, zeros_norm, training_args.log_norm_steps
             )
             params_norm = maybe_fn(
-                norm, state.params, zeros_norm, training_args.log_norm_steps
+                norm, params, zeros_norm, training_args.log_norm_steps
             )
 
             metrics.update(
@@ -1239,18 +1311,20 @@ def main():
             )
 
         if training_args.log_histogram_steps:
-            zeros_hist = jax.tree_map(
-                lambda _: jnp.histogram(jnp.zeros(1), density=True), state.params
+            zeros_hist = jax.tree_util.tree_map(
+                lambda _: jnp.histogram(jnp.zeros(1), density=True), params
             )
 
             def histogram(val):
-                return jax.tree_map(lambda x: jnp.histogram(x, density=True), val)
+                return jax.tree_util.tree_map(
+                    lambda x: jnp.histogram(x, density=True), val
+                )
 
             gradients_hist = maybe_fn(
                 histogram, grads, zeros_hist, training_args.log_histogram_steps
             )
             params_hist = maybe_fn(
-                histogram, state.params, zeros_hist, training_args.log_histogram_steps
+                histogram, params, zeros_hist, training_args.log_histogram_steps
             )
 
             metrics.update(
@@ -1354,8 +1428,10 @@ def main():
                             log_metrics[f"{k}/"] = unfreeze(v)
                     elif "_hist" in k:
                         if self.step % training_args.log_histogram_steps == 0:
-                            v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
-                            v = jax.tree_map(
+                            v = jax.tree_util.tree_map(
+                                lambda x: jax.device_get(x), unfreeze(v)
+                            )
+                            v = jax.tree_util.tree_map(
                                 lambda x: wandb.Histogram(np_histogram=x),
                                 v,
                                 is_leaf=lambda x: isinstance(x, tuple),
@@ -1417,14 +1493,16 @@ def main():
                     disable=jax.process_index() > 0,
                 ):
                     # need to keep only eval_batch_size_per_node items relevant to the node
-                    batch = jax.tree_map(
+                    batch = jax.tree_util.tree_map(
                         lambda x: x.reshape(
                             (jax.process_count(), eval_batch_size_per_node)
                             + x.shape[1:]
                         ),
                         batch,
                     )
-                    batch = jax.tree_map(lambda x: x[jax.process_index()], batch)
+                    batch = jax.tree_util.tree_map(
+                        lambda x: x[jax.process_index()], batch
+                    )
 
                     # add dp dimension when using "vmap trick"
                     if use_vmap_trick:
@@ -1432,7 +1510,7 @@ def main():
                             jax.local_device_count() // training_args.mp_devices,
                             training_args.per_device_eval_batch_size,
                         )
-                        batch = jax.tree_map(
+                        batch = jax.tree_util.tree_map(
                             lambda x: x.reshape(bs_shape + x.shape[1:]), batch
                         )
 
@@ -1613,7 +1691,7 @@ def main():
                         ) + bs_shape
 
                     # reshape batch
-                    batch = jax.tree_map(
+                    batch = jax.tree_util.tree_map(
                         lambda x: x.reshape(bs_shape + x.shape[1:]),
                         batch,
                     )
