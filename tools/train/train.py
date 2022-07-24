@@ -471,7 +471,8 @@ class TrainingArguments:
         default=False, metadata={"help": "Train only embedding layers."}
     )
     init_embeddings: bool = field(
-        default=False, metadata={"help": "When training embedding layers, initialize them."}
+        default=False,
+        metadata={"help": "When training embedding layers, initialize them."},
     )
 
     wandb_entity: Optional[str] = field(
@@ -628,7 +629,7 @@ def init_embeddings(model, params):
     ]
 
     # Note: using private _missing_keys
-    init_keys = {tuple(k.split('.')) for k in trainable_keypaths}
+    init_keys = {tuple(k.split(".")) for k in trainable_keypaths}
     model._missing_keys = init_keys
     return model.init_weights(model.key, model.input_shape, params=params)
 
