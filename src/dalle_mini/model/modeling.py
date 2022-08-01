@@ -197,7 +197,6 @@ def dot_product_attention_weights(
     dtype: Any = jnp.float32,
     precision: PrecisionLike = None,
     sinkhorn_iters: int = 1,
-    causal: bool = False,
     is_encoder: bool = False,
     tau = 1.
 ):
@@ -453,7 +452,6 @@ class FlaxBartAttention(FlaxBartAttention):
             dtype=self.dtype,
             precision=None,
             sinkhorn_iters=self.config.sinkhorn_iters,
-            causal=self.causal,
             is_encoder=self.is_encoder,
             tau = tau
         )
