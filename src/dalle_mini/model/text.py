@@ -8,11 +8,12 @@ import random
 import re
 from pathlib import Path
 
+import emoji
 import ftfy
 from huggingface_hub import hf_hub_download
 from unidecode import unidecode
 
-# based on wiki word occurence
+# based on wiki word occurrence
 person_token = [("a person", 282265), ("someone", 121194), ("somebody", 12219)]
 temp_token = "xtokx"  # avoid repeating chars
 
@@ -187,7 +188,7 @@ def remove_urls(t):
 
 
 def remove_html_tags(t):
-    return re.sub("<[^<]+?>", "", t)
+    return re.sub("<[^<]+?>", " ", t)
 
 
 def remove_first_last_commas(t):
@@ -213,6 +214,8 @@ class TextNormalizer:
         t = ftfy.fix_text(t)
         # fix html
         t = fix_html(t)
+        # decode emojis (would be removed by unidecode)
+        t = emoji.demojize(t)
         # decode and simplify text: see unidecode library
         t = unidecode(t)
         # lower case

@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
@@ -38,9 +39,9 @@ import optax
 import transformers
 import wandb
 from datasets import Dataset
+from flax import core, struct, traverse_util
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.serialization import from_bytes, to_bytes
-from flax.training import train_state
 from flax.training.common_utils import onehot
 from jax.experimental import PartitionSpec, maps
 from jax.experimental.compilation_cache import compilation_cache as cc
@@ -63,9 +64,9 @@ try:
 except:
     storage = None
 
-cc.initialize_cache("./jax_cache", max_cache_size_bytes=10 * 2**30)
-
 logger = logging.getLogger(__name__)
+
+cc.initialize_cache("jax_cache")
 
 
 @dataclass
@@ -106,6 +107,18 @@ class ModelArguments:
             "help": "Restore optimizer and training state. Can be True (will retrieve associated wandb artifact), a local directory or a Google bucket path."
         },
     )
+    dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Dropout rate. Overwrites config."},
+    )
+    activation_dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Activation dropout rate. Overwrites config."},
+    )
+    attention_dropout: Optional[float] = field(
+        default=None,
+        metadata={"help": "Attention dropout rate. Overwrites config."},
+    )
 
     def __post_init__(self):
         if self.tokenizer_name is None:
@@ -119,7 +132,7 @@ class ModelArguments:
             ), "Restoring state only available with W&B artifact reference"
 
     def get_metadata(self):
-        if self.restore_state:
+        if self.model_name_or_path is not None and ":" in self.model_name_or_path:
             if jax.process_index() == 0:
                 artifact = wandb.run.use_artifact(self.model_name_or_path)
             else:
@@ -238,6 +251,12 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "Class value to be kept during filtering."},
     )
+    multi_eval_ds: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "Whether to look for multiple validation datasets (local support only)."
+        },
+    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
@@ -331,6 +350,9 @@ class TrainingArguments:
             "help": 'The optimizer to use. Can be "distributed_shampoo" (default), "adam" or "adafactor"'
         },
     )
+    weight_decay: float = field(
+        default=0.0, metadata={"help": "Weight decay applied to parameters."}
+    )
     beta1: float = field(
         default=0.9,
         metadata={"help": "Beta1 for Adam & Distributed Shampoo."},
@@ -362,10 +384,20 @@ class TrainingArguments:
             "help": "The type of grafting to use. Can be 'rmsprop_normalized' (default), 'rmsprop', 'adagrad', 'adagrad_normalized', 'sgd' or 'sqrt_n'"
         },
     )
+    nesterov: bool = field(
+        default=False,
+        metadata={"help": "Use Nesterov momentum for Distributed Shampoo."},
+    )
     optim_quantized: bool = field(
         default=False,
         metadata={
             "help": "Whether to quantize optimizer (only supported with Distributed Shampoo)."
+        },
+    )
+    shard_shampoo_across: str = field(
+        default="dp",
+        metadata={
+            "help": "Whether to shard the optimizer across data devices (dp), model devices (mp) or both (2d)."
         },
     )
 
@@ -400,7 +432,10 @@ class TrainingArguments:
             "help": "Whether to use staircase or continuous learning rate when using exponential decay."
         },
     )
-
+    lr_offset: int = field(
+        default=0,
+        metadata={"help": "Number of steps to offset learning rate and keep it at 0."},
+    )
     logging_steps: int = field(
         default=40, metadata={"help": "Log every X updates steps."}
     )
@@ -432,6 +467,14 @@ class TrainingArguments:
         },
     )
 
+    embeddings_only: bool = field(
+        default=False, metadata={"help": "Train only embedding layers."}
+    )
+    init_embeddings: bool = field(
+        default=False,
+        metadata={"help": "When training embedding layers, initialize them."},
+    )
+
     wandb_entity: Optional[str] = field(
         default=None,
         metadata={"help": "The wandb entity to use (for teams)."},
@@ -447,6 +490,11 @@ class TrainingArguments:
 
     assert_TPU_available: bool = field(
         default=False,
+        metadata={"help": "Verify that TPU is not in use."},
+    )
+
+    use_vmap_trick: bool = field(
+        default=True,
         metadata={"help": "Verify that TPU is not in use."},
     )
 
@@ -473,6 +521,8 @@ class TrainingArguments:
             "adam",
             "adafactor",
         ], f"Selected optimizer not supported: {self.optim}"
+        if self.optim == "adafactor" and self.weight_decay == 0:
+            self.weight_decay = None
         assert self.graft_type in [
             "rmsprop_normalized",
             "rmsprop",
@@ -490,6 +540,8 @@ class TrainingArguments:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
         if self.log_norm_steps is True:
             self.log_norm_steps = self.logging_steps
+        if not self.do_train:
+            self.num_train_epochs = 1
         if (
             os.path.exists(self.output_dir)
             and os.listdir(self.output_dir)
@@ -500,6 +552,11 @@ class TrainingArguments:
                 f"Output directory ({self.output_dir}) already exists and is not empty."
                 "Use --overwrite_output_dir to overcome."
             )
+        assert self.shard_shampoo_across in [
+            "dp",
+            "mp",
+            "2d",
+        ], f"Shard shampoo across {self.shard_shampoo_across} not supported."
         assert (
             self.mp_devices > 0
         ), f"Number of devices for model parallelism must be > 0"
@@ -509,11 +566,72 @@ class TrainingArguments:
         self.dp_devices = jax.device_count() // self.mp_devices
 
 
-class TrainState(train_state.TrainState):
-    dropout_rng: jnp.ndarray = None
-    epoch: int = 0
-    train_time: float = 0.0  # total time the model trained
-    train_samples: int = 0  # number of samples seen
+def split_params(data):
+    """Split params between scanned and non-scanned"""
+    flat = traverse_util.flatten_dict(unfreeze(data))
+    split = {"standard": {}, "scanned_encoder": {}, "scanned_decoder": {}}
+    for k, v in flat.items():
+        if "FlaxBartEncoderLayers" in k:
+            split["scanned_encoder"][k] = v
+        elif "FlaxBartDecoderLayers" in k:
+            split["scanned_decoder"][k] = v
+        else:
+            split["standard"][k] = v
+    # remove empty keys
+    split = {k: v for k, v in split.items() if v}
+    for k, v in split.items():
+        split[k] = freeze(traverse_util.unflatten_dict(v))
+    return split
+
+
+def unsplit_params(data):
+    flat = {}
+    for k in ["standard", "scanned_encoder", "scanned_decoder"]:
+        if k in data:
+            flat.update(traverse_util.flatten_dict(unfreeze(data[k])))
+    return freeze(traverse_util.unflatten_dict(flat))
+
+
+def trainable_params(data, embeddings_only):
+    """Keep only trainable parameters"""
+
+    if not embeddings_only:
+        return data
+
+    data = unfreeze(data)
+    trainable = {
+        "lm_head": data["lm_head"],
+        "model": {
+            "decoder": {
+                layer: data["model"]["decoder"][layer]
+                for layer in [
+                    "embed_positions",
+                    "embed_tokens",
+                    "final_ln",
+                    "layernorm_embedding",
+                ]
+            }
+        },
+    }
+    return freeze(trainable)
+
+
+def init_embeddings(model, params):
+    """Reinitialize trainable embeddings"""
+    # Must match params in trainable_params() above
+    trainable_keypaths = [
+        "lm_head.kernel",
+        "model.decoder.embed_positions.embedding",
+        "model.decoder.embed_tokens.embedding",
+        "model.decoder.final_ln.bias",
+        "model.decoder.layernorm_embedding.bias",
+        "model.decoder.layernorm_embedding.scale",
+    ]
+
+    # Note: using private _missing_keys
+    init_keys = {tuple(k.split(".")) for k in trainable_keypaths}
+    model._missing_keys = init_keys
+    return model.init_weights(model.key, model.input_shape, params=params)
 
 
 def main():
@@ -529,6 +647,12 @@ def main():
         )
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # check arguments
+    if training_args.mp_devices > jax.local_device_count():
+        assert (
+            data_args.seed_dataset is not None
+        ), "Seed dataset must be provided when model is split over multiple hosts"
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -568,38 +692,48 @@ def main():
         )
 
     # Set up our new model config
+    config_args = {
+        k: getattr(model_args, k)
+        for k in ["dropout", "activation_dropout", "attention_dropout"]
+        if getattr(model_args, k) is not None
+    }
+    config_args["gradient_checkpointing"] = training_args.gradient_checkpointing
     if model_args.config_name:
         config = DalleBartConfig.from_pretrained(model_args.config_name)
-        config.gradient_checkpointing = training_args.gradient_checkpointing
     else:
         config = None
 
     # Load or create new model
     if model_args.model_name_or_path:
-        model = DalleBart.from_pretrained(
+        model, params = DalleBart.from_pretrained(
             model_args.model_name_or_path,
             config=config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            abstract_init=True,  # we overwrite them with loaded checkpoint
-            gradient_checkpointing=training_args.gradient_checkpointing,
+            _do_init=False,
         )
+        if training_args.embeddings_only and training_args.init_embeddings:
+            params = init_embeddings(model, params)
     else:
         model = DalleBart(
             config,
             seed=training_args.seed_model,
             dtype=getattr(jnp, model_args.dtype),
-            abstract_init=True,
+            _do_init=False,
         )
+        params = None
+    for k, v in config_args.items():
+        setattr(model.config, k, v)
+    params_shape = model.params_shape_tree
 
     # get model metadata
     model_metadata = model_args.get_metadata()
 
     # get PartitionSpec for model params (required to be a dict)
-    param_spec = set_partitions(model.params)
-
-    # convert params to frozen dict
-    model._params = freeze(model.params)
+    param_spec = set_partitions(params_shape, model.config.use_scan)
+    params_shape = freeze(params_shape)
+    if params is not None:
+        params = freeze(params)
 
     # Load tokenizer
     tokenizer = DalleBartTokenizer.from_pretrained(
@@ -640,7 +774,7 @@ def main():
     num_train_steps = (
         steps_per_epoch * num_epochs if steps_per_epoch is not None else None
     )
-    num_params = model.num_params
+    num_params = model.num_params(params_shape)
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len_train_dataset}")
@@ -689,12 +823,14 @@ def main():
             end_value=training_args.learning_rate,
             transition_steps=training_args.warmup_steps + 1,  # ensure not 0
         )
+        last_boundary = training_args.warmup_steps
         # offset step when resuming
-        if model_metadata.get("step", 0):
+        if training_args.lr_offset:
             warmup_fn = optax.join_schedules(
                 schedules=[optax.constant_schedule(0.0), warmup_fn],
-                boundaries=[model_metadata["step"]],
+                boundaries=[training_args.lr_offset],
             )
+            last_boundary += training_args.lr_offset
         if training_args.lr_decay is None:
             return warmup_fn
         elif training_args.lr_decay == "linear":
@@ -715,13 +851,16 @@ def main():
             )
         schedule_fn = optax.join_schedules(
             schedules=[warmup_fn, decay_fn],
-            boundaries=[model_metadata.get("step", 0) + training_args.warmup_steps],
+            boundaries=[last_boundary],
         )
         return schedule_fn
 
     learning_rate_fn = create_learning_rate_fn()
 
-    # create adam optimizer
+    # create optimizer
+    trainable_params_shape = trainable_params(
+        params_shape, training_args.embeddings_only
+    )
     if training_args.optim == "distributed_shampoo":
         # parameters from https://github.com/tensorflow/lingvo/blob/03ee9d7cd50764b0424c7c863733c91fc0b053ec/lingvo/jax/optimizers.py#L729
         graft_type = {
@@ -732,13 +871,19 @@ def main():
             "sqrt_n": GraftingType.SQRT_N,
             "adagrad_normalized": GraftingType.ADAGRAD_NORMALIZED,
         }[training_args.graft_type]
-        optimizer = distributed_shampoo(
+        statistics_partition_spec = (
+            PartitionSpec(None, training_args.shard_shampoo_across, None)
+            if training_args.shard_shampoo_across != "2d"
+            else PartitionSpec(None, "dp", "mp")
+        )
+        opt = distributed_shampoo(
             learning_rate_fn,
             block_size=training_args.block_size,
             beta1=training_args.beta1,
             beta2=training_args.beta2,
             diagonal_epsilon=1e-10,
             matrix_epsilon=1e-6,
+            weight_decay=training_args.weight_decay,
             start_preconditioning_step=max(
                 training_args.preconditioning_compute_steps + 1, 101
             ),
@@ -746,10 +891,18 @@ def main():
             statistics_compute_steps=1,
             best_effort_shape_interpretation=True,
             graft_type=graft_type,
-            nesterov=False,
+            nesterov=training_args.nesterov,
             exponent_override=0,
-            statistics_partition_spec=PartitionSpec(None, "dp", None),
-            preconditioner_partition_spec=PartitionSpec("dp", None, None),
+            statistics_partition_spec=statistics_partition_spec,
+            preconditioner_partition_spec=PartitionSpec(
+                training_args.shard_shampoo_across, None, None
+            )
+            if training_args.shard_shampoo_across != "2d"
+            else PartitionSpec(
+                "mp" if training_args.mp_devices > training_args.dp_devices else "dp",
+                None,
+                None,
+            ),
             num_devices_for_pjit=training_args.dp_devices,
             shard_optimizer_states=True,
             inverse_failure_threshold=0.1,
@@ -760,12 +913,20 @@ def main():
             best_effort_memory_usage_reduction=training_args.optim_quantized,
         )
         # get the real optimizer and helper functions
-        update_fn = optimizer.update
-        optimizer = optimizer.init(model.params)
-        opt_fn = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
-            optimizer.pspec_fn, optimizer.shape_and_dtype_fn
-        )
-        optimizer = optax.GradientTransformation(optimizer.init_fn, update_fn)
+        update_fn = opt.update
+
+        optimizer = {}
+        opt_fn = {}
+        for k, p in split_params(trainable_params_shape).items():
+            if "scanned" in k:
+                p = jax.eval_shape(
+                    lambda x: jax.tree_util.tree_map(lambda y: y[0], x), p
+                )
+            optimizer[k] = opt.init(p)
+            opt_fn[k] = NamedTuple("opt_fn", pspec_fn=Any, shape_and_dtype_fn=Any)(
+                optimizer[k].pspec_fn, optimizer[k].shape_and_dtype_fn
+            )
+            optimizer[k] = optax.GradientTransformation(optimizer[k].init_fn, update_fn)
 
     elif training_args.optim == "adam":
         optimizer = optax.adamw(
@@ -773,58 +934,145 @@ def main():
             b1=training_args.beta1,
             b2=training_args.beta2,
             eps=training_args.adam_epsilon,
+            weight_decay=training_args.weight_decay,
         )
+        optimizer = {k: optimizer for k in split_params(trainable_params_shape)}
+
     elif training_args.optim == "adafactor":
         # We use the default parameters here to initialize adafactor,
         # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
         optimizer = optax.adafactor(
             learning_rate=learning_rate_fn,
             clipping_threshold=training_args.max_grad_norm,
+            weight_decay_rate=training_args.weight_decay,
         )
+        optimizer = {k: optimizer for k in split_params(trainable_params_shape)}
 
     # get PartitionSpec for optimizer state
-    def get_opt_state_spec_and_shape(param_spec):
+    def get_opt_state_spec_and_shape():
         # get opt_state shape without actual init
-        opt_state_shape = jax.eval_shape(optimizer.init, model.params)
+        opt_state_shape = {}
+        for k, p in split_params(trainable_params_shape).items():
+            if "scanned" not in k:
+                opt_state_shape[k] = jax.eval_shape(optimizer[k].init, p)
+            else:
+                opt_state_shape[k] = jax.eval_shape(jax.vmap(optimizer[k].init), p)
 
-        if training_args.optim == "adam":
+        if training_args.optim == "adafactor":
+            # factorized state must be replicated (rank different than params)
+            opt_state_spec = {k: None for k in split_params(trainable_params_shape)}
 
-            def _opt_state_spec_per_leaf(x):
+        elif training_args.optim in ["adam", "distributed_shampoo"]:
+
+            def _opt_state_spec_per_leaf(x, spec):
                 if isinstance(x, FrozenDict):
                     # variables with same structure as params
-                    return param_spec
+                    return spec
                 else:
                     # other variables such as count
                     return None
 
-            opt_state_spec = jax.tree_map(
-                _opt_state_spec_per_leaf,
-                opt_state_shape,
-                # return None spec for empty elements
-                is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
-            )
+            split_spec = split_params(set_partitions(trainable_params_shape, False))
+            opt_state_spec = {}
+            for k, p in split_params(trainable_params_shape).items():
+                if "scanned" in k:
+                    p = jax.eval_shape(
+                        lambda x: jax.tree_util.tree_map(lambda y: y[0], x), p
+                    )
+                if training_args.optim == "adam":
+                    opt_state_spec[k] = jax.tree_util.tree_map(
+                        partial(_opt_state_spec_per_leaf, spec=split_spec[k]),
+                        opt_state_shape[k],
+                        # return None spec for empty elements
+                        is_leaf=lambda x: isinstance(x, (FrozenDict, optax.EmptyState)),
+                    )
+                elif training_args.optim == "distributed_shampoo":
+                    opt_state_spec[k] = opt_fn[k].pspec_fn(
+                        p,
+                        split_spec[k],
+                        statistics_partition_spec,
+                    )
+                # add dimension for scanned params
+                if "scanned" in k:
+                    opt_state_spec[k] = jax.tree_util.tree_map(
+                        lambda x: PartitionSpec(*(None,) + x)
+                        if x is not None
+                        else None,
+                        opt_state_spec[k],
+                        is_leaf=lambda x: isinstance(x, PartitionSpec),
+                    )
 
-        elif training_args.optim == "adafactor":
-            # factorized state must be replicated (rank different than params)
-            opt_state_spec = None
-
-        elif training_args.optim == "distributed_shampoo":
-            opt_state_spec = opt_fn.pspec_fn(
-                params=model.params,
-                params_partition_spec=param_spec,
-                partition_spec_for_statistics=PartitionSpec(None, "dp", None),
-            )
         else:
             raise NotImplementedError
-        return opt_state_spec, opt_state_shape
+        return freeze(opt_state_spec), freeze(opt_state_shape)
 
-    opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape(param_spec)
+    opt_state_spec, opt_state_shape = get_opt_state_spec_and_shape()
 
     # create a mesh
     mesh_shape = (training_args.dp_devices, training_args.mp_devices)
     devices = np.asarray(jax.devices()).reshape(*mesh_shape)
     mesh = maps.Mesh(devices, ("dp", "mp"))
     logger.info(f"  Mesh shape: {mesh_shape}")
+
+    # define TrainState
+    class TrainState(struct.PyTreeNode):
+        step: int
+        params: core.FrozenDict[str, Any]
+        opt_state: optax.OptState
+        apply_fn: Callable = struct.field(pytree_node=False)
+        tx: optax.GradientTransformation = struct.field(pytree_node=False)
+        dropout_rng: jnp.ndarray = None
+        epoch: int = 0
+        train_time: float = 0.0  # total time the model trained
+        train_samples: int = 0  # number of samples seen
+
+        def apply_gradients(self, *, grads, **kwargs):
+            grads = split_params(trainable_params(grads, training_args.embeddings_only))
+            params = split_params(
+                trainable_params(self.params, training_args.embeddings_only)
+            )
+            opt_state = {}
+            # we loop over keys: "standard", "scanned_encoder", "scanned_decoder"
+            for k, param in params.items():
+                update_fn = self.tx[k].update
+                if "scanned" in k:
+                    update_fn = jax.vmap(update_fn, in_axes=(0, 0, 0), out_axes=(0, 0))
+                updates, new_opt_state = update_fn(grads[k], self.opt_state[k], param)
+                params[k] = optax.apply_updates(param, updates)
+                opt_state[k] = new_opt_state
+            params = unsplit_params(params)
+            # merge with non-trainable params
+            params, new_params = traverse_util.flatten_dict(
+                unfreeze(self.params)
+            ), traverse_util.flatten_dict(unfreeze(params))
+            params.update(new_params)
+            params = freeze(traverse_util.unflatten_dict(params))
+
+            return self.replace(
+                step=self.step + 1,
+                params=params,
+                opt_state=freeze(opt_state),
+                **kwargs,
+            )
+
+        @classmethod
+        def create(cls, *, apply_fn, params, tx, **kwargs):
+            opt_state = {}
+            for k, p in split_params(
+                trainable_params(params, training_args.embeddings_only)
+            ).items():
+                init_fn = tx[k].init
+                if "scanned" in k:
+                    init_fn = jax.vmap(init_fn)
+                opt_state[k] = init_fn(p)
+            return cls(
+                step=0,
+                apply_fn=apply_fn,
+                params=params,
+                tx=tx,
+                opt_state=freeze(opt_state),
+                **kwargs,
+            )
 
     # define state spec
     state_spec = TrainState(
@@ -841,15 +1089,23 @@ def main():
 
     # init params if not available yet
     def maybe_init_params(params):
-        if model_args.model_name_or_path:
+        if params is not None:
             # model params are correctly loaded
             return params
         else:
             # params have not been initialized yet
-            return model.init_weights()
+            return model.init_weights(model.key, model.input_shape)
 
     with mesh:
         logger.info("  Creating state")
+
+        # restore metadata
+        attr_state = {}
+        keys = ["train_time", "train_samples"]
+        if model_args.restore_state:
+            keys += ["step", "epoch"]
+        attr_state = {k: v for k, v in model_metadata.items() if k in keys}
+
         if not model_args.restore_state:
 
             def init_state(params):
@@ -858,6 +1114,7 @@ def main():
                     tx=optimizer,
                     params=maybe_init_params(params),
                     dropout_rng=dropout_rng,
+                    **attr_state,
                 )
 
             state = pjit(
@@ -867,17 +1124,11 @@ def main():
                 else None,
                 out_axis_resources=state_spec,
                 donate_argnums=(0,),
-            )(model.params if model_args.model_name_or_path else None)
+            )(params)
 
         else:
             # load opt_state
             opt_state = from_bytes(opt_state_shape, model_args.get_opt_state())
-
-            # restore other attributes
-            attr_state = {
-                k: model_metadata[k]
-                for k in ["step", "epoch", "train_time", "train_samples"]
-            }
 
             def restore_state(params, opt_state):
                 return TrainState(
@@ -897,13 +1148,13 @@ def main():
                 ),
                 out_axis_resources=state_spec,
                 donate_argnums=(0, 1),
-            )(model.params, opt_state)
+            )(params, opt_state)
 
             # remove opt_state from CPU
             del opt_state
 
     # free CPU memory
-    del model._params, opt_state_spec, opt_state_shape
+    del params, opt_state_spec, opt_state_shape
 
     # define batch specs
     batch_spec = PartitionSpec("dp")
@@ -917,11 +1168,11 @@ def main():
 
     # "vmap trick" avoids a crash when mp_devices > 1 (not sure why it happens)
     # lead to better perf: see https://wandb.ai/dalle-mini/dalle-mini/reports/JAX-pmap-vs-pjit--VmlldzoxNDg1ODA2
-    use_vmap_trick = True
+    use_vmap_trick = training_args.use_vmap_trick
 
     # make grad_param_spec for vmap
     if use_vmap_trick:
-        grad_param_spec = jax.tree_map(
+        grad_param_spec = jax.tree_util.tree_map(
             lambda x: PartitionSpec(*("dp",) + (x if x is not None else (None,))),
             param_spec,
         )
@@ -931,7 +1182,7 @@ def main():
 
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
-            return jax.tree_map(
+            return jax.tree_util.tree_map(
                 lambda x: jax.lax.dynamic_index_in_dim(x, grad_idx, keepdims=False),
                 batch,
             )
@@ -966,7 +1217,9 @@ def main():
                 grads = with_sharding_constraint(grads, grad_param_spec)
                 # average across all devices
                 # Note: we could average per device only after gradient accumulation, right before params update
-                loss, grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), (loss, grads))
+                loss, grads = jax.tree_util.tree_map(
+                    lambda x: jnp.mean(x, axis=0), (loss, grads)
+                )
             else:
                 # "vmap trick" does not work in multi-hosts and requires too much hbm
                 loss, grads = grad_fn(state.params, minibatch, dropout_rng)
@@ -982,7 +1235,7 @@ def main():
             init_minibatch_step = (
                 0.0,
                 with_sharding_constraint(
-                    jax.tree_map(jnp.zeros_like, state.params), param_spec
+                    jax.tree_util.tree_map(jnp.zeros_like, state.params), param_spec
                 ),
                 state.dropout_rng,
             )
@@ -991,7 +1244,7 @@ def main():
             def cumul_minibatch_step(grad_idx, cumul_loss_grad_dropout):
                 cumul_loss, cumul_grads, dropout_rng = cumul_loss_grad_dropout
                 loss, grads, dropout_rng = loss_and_grad(grad_idx, dropout_rng)
-                cumul_loss, cumul_grads = jax.tree_map(
+                cumul_loss, cumul_grads = jax.tree_util.tree_map(
                     jnp.add, (cumul_loss, cumul_grads), (loss, grads)
                 )
                 cumul_grads = with_sharding_constraint(cumul_grads, param_spec)
@@ -1006,7 +1259,7 @@ def main():
             )
             grads = with_sharding_constraint(grads, param_spec)
             # sum -> mean
-            loss, grads = jax.tree_map(
+            loss, grads = jax.tree_util.tree_map(
                 lambda x: x / training_args.gradient_accumulation_steps, (loss, grads)
             )
 
@@ -1034,17 +1287,20 @@ def main():
                 val,
             )
 
+        # log additional metrics
+        params = trainable_params(state.params, training_args.embeddings_only)
+        grads = trainable_params(grads, training_args.embeddings_only)
         if training_args.log_norm_steps:
-            zeros_norm = jax.tree_map(lambda _: jnp.float32(0), state.params)
+            zeros_norm = jax.tree_util.tree_map(lambda _: jnp.float32(0), params)
 
             def norm(val):
-                return jax.tree_map(lambda x: jnp.linalg.norm(x), val)
+                return jax.tree_util.tree_map(lambda x: jnp.linalg.norm(x), val)
 
             gradients_norm = maybe_fn(
                 norm, grads, zeros_norm, training_args.log_norm_steps
             )
             params_norm = maybe_fn(
-                norm, state.params, zeros_norm, training_args.log_norm_steps
+                norm, params, zeros_norm, training_args.log_norm_steps
             )
 
             metrics.update(
@@ -1055,18 +1311,20 @@ def main():
             )
 
         if training_args.log_histogram_steps:
-            zeros_hist = jax.tree_map(
-                lambda _: jnp.histogram(jnp.zeros(1), density=True), state.params
+            zeros_hist = jax.tree_util.tree_map(
+                lambda _: jnp.histogram(jnp.zeros(1), density=True), params
             )
 
             def histogram(val):
-                return jax.tree_map(lambda x: jnp.histogram(x, density=True), val)
+                return jax.tree_util.tree_map(
+                    lambda x: jnp.histogram(x, density=True), val
+                )
 
             gradients_hist = maybe_fn(
                 histogram, grads, zeros_hist, training_args.log_histogram_steps
             )
             params_hist = maybe_fn(
-                histogram, state.params, zeros_hist, training_args.log_histogram_steps
+                histogram, params, zeros_hist, training_args.log_histogram_steps
             )
 
             metrics.update(
@@ -1079,10 +1337,21 @@ def main():
         return state, metrics
 
     # Define eval fn
+    eval_model = (
+        model
+        if model_args.dtype == "float32"
+        else DalleBart(
+            model.config,
+            seed=training_args.seed_model,
+            dtype=jnp.float32,
+            _do_init=False,
+        )
+    )
+
     def eval_step(state, batch):
         def compute_eval_loss(batch):
             batch, labels = batch.pop("labels")
-            logits = model(**batch, params=state.params, train=False)[0]
+            logits = eval_model(**batch, params=state.params, train=False)[0]
             return loss_fn(logits, labels)
 
         if use_vmap_trick:
@@ -1145,7 +1414,8 @@ def main():
                 self.log_time("train_per_log", delta_time, offset=False)
 
         def log_time(self, key, duration, offset=True):
-            wandb.log({f"time/{key}": duration, **self.state_dict})
+            if jax.process_index() == 0:
+                wandb.log({f"time/{key}": duration, **self.state_dict})
             if offset:
                 self.offset_time += duration
 
@@ -1158,8 +1428,10 @@ def main():
                             log_metrics[f"{k}/"] = unfreeze(v)
                     elif "_hist" in k:
                         if self.step % training_args.log_histogram_steps == 0:
-                            v = jax.tree_map(lambda x: jax.device_get(x), unfreeze(v))
-                            v = jax.tree_map(
+                            v = jax.tree_util.tree_map(
+                                lambda x: jax.device_get(x), unfreeze(v)
+                            )
+                            v = jax.tree_util.tree_map(
                                 lambda x: wandb.Histogram(np_histogram=x),
                                 v,
                                 is_leaf=lambda x: isinstance(x, tuple),
@@ -1179,6 +1451,8 @@ def main():
     # init variables
     start_time = time.perf_counter() - local_state["train_time"]
     train_metrics = None
+    evaluation_ran = False
+    save_model_ran = False
     metrics_logger = MetricsLogger(local_state["step"])
     epochs = tqdm(
         range(local_state["epoch"], num_epochs),
@@ -1191,58 +1465,75 @@ def main():
         # ======================== Evaluating ==============================
         if training_args.do_eval:
             start_eval_time = time.perf_counter()
-            eval_loader = dataset.dataloader("eval", eval_batch_size_per_step)
-            eval_steps = (
-                len_eval_dataset // eval_batch_size_per_step
-                if len_eval_dataset is not None
-                else None
+            # get validation datasets
+            val_datasets = list(
+                dataset.other_eval_datasets.keys()
+                if hasattr(dataset, "other_eval_datasets")
+                else []
             )
-            eval_loss = []
-            for batch in tqdm(
-                eval_loader,
-                desc="Evaluating...",
-                position=2,
-                leave=False,
-                total=eval_steps,
-                disable=jax.process_index() > 0,
-            ):
-                # need to keep only eval_batch_size_per_node items relevant to the node
-                batch = jax.tree_map(
-                    lambda x: x.reshape(
-                        (jax.process_count(), eval_batch_size_per_node) + x.shape[1:]
-                    ),
-                    batch,
+            val_datasets += ["eval"]
+            for val_dataset in val_datasets:
+                eval_loader = dataset.dataloader(
+                    val_dataset,
+                    eval_batch_size_per_step
+                    * max(1, training_args.mp_devices // jax.local_device_count()),
                 )
-                batch = jax.tree_map(lambda x: x[jax.process_index()], batch)
-
-                # add dp dimension when using "vmap trick"
-                if use_vmap_trick:
-                    bs_shape = (
-                        jax.local_device_count() // training_args.mp_devices,
-                        training_args.per_device_eval_batch_size,
+                eval_steps = (
+                    len_eval_dataset // eval_batch_size_per_step
+                    if len_eval_dataset is not None
+                    else None
+                )
+                eval_loss = []
+                for batch in tqdm(
+                    eval_loader,
+                    desc="Evaluating...",
+                    position=2,
+                    leave=False,
+                    total=eval_steps,
+                    disable=jax.process_index() > 0,
+                ):
+                    # need to keep only eval_batch_size_per_node items relevant to the node
+                    batch = jax.tree_util.tree_map(
+                        lambda x: x.reshape(
+                            (jax.process_count(), eval_batch_size_per_node)
+                            + x.shape[1:]
+                        ),
+                        batch,
                     )
-                    batch = jax.tree_map(
-                        lambda x: x.reshape(bs_shape + x.shape[1:]), batch
+                    batch = jax.tree_util.tree_map(
+                        lambda x: x[jax.process_index()], batch
                     )
 
-                # freeze batch to pass safely to jax transforms
-                batch = freeze(batch)
-                # accumulate losses async
-                eval_loss.append(p_eval_step(state, batch))
+                    # add dp dimension when using "vmap trick"
+                    if use_vmap_trick:
+                        bs_shape = (
+                            jax.local_device_count() // training_args.mp_devices,
+                            training_args.per_device_eval_batch_size,
+                        )
+                        batch = jax.tree_util.tree_map(
+                            lambda x: x.reshape(bs_shape + x.shape[1:]), batch
+                        )
 
-            # get the mean of the loss
-            eval_loss = jnp.stack(eval_loss)
-            eval_loss = jnp.mean(eval_loss)
-            eval_metrics = {"loss": eval_loss}
+                    # freeze batch to pass safely to jax transforms
+                    batch = freeze(batch)
+                    # accumulate losses async
+                    eval_loss.append(p_eval_step(state, batch))
 
-            # log metrics
-            metrics_logger.log(eval_metrics, prefix="eval")
+                # get the mean of the loss
+                eval_loss = jnp.stack(eval_loss)
+                eval_loss = jnp.mean(eval_loss)
+                eval_metrics = {"loss": eval_loss}
+
+                # log metrics
+                metrics_logger.log(eval_metrics, prefix=val_dataset)
+
+                # Print metrics and update progress bar
+                desc = f"Epoch... ({epoch + 1}/{num_epochs} | {val_dataset} Loss: {eval_metrics['loss']})"
+                epochs.write(desc)
+                epochs.desc = desc
+
+            # log time
             metrics_logger.log_time("eval", time.perf_counter() - start_eval_time)
-
-            # Print metrics and update progress bar
-            desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']})"
-            epochs.write(desc)
-            epochs.desc = desc
 
             return eval_metrics
 
@@ -1347,89 +1638,104 @@ def main():
     logger.info("  Ready to start training")
     with mesh:
         for epoch in epochs:
-            state.replace(epoch=epoch)
+            state = state.replace(epoch=epoch)
             local_state["epoch"] = epoch
             # ======================== Training ================================
             metrics_logger.update_state_metrics(local_state)
             metrics_logger.log({})
 
-            # Generate an epoch by shuffling sampling indices from the train dataset
-            train_loader = dataset.dataloader(
-                "train",
-                batch_size_per_node,
-                epoch,
-            )
-            # train
-            for batch in tqdm(
-                train_loader,
-                desc="Training...",
-                position=1,
-                leave=False,
-                total=steps_per_epoch,
-                disable=jax.process_index() > 0,
-            ):
-                # calculate delta time (we have a lag of one step but it's ok)
-                train_time = time.perf_counter() - start_time
-
-                # set correct shape to batch
-                # - add grad_step dim if gradient_accumulation_steps > 1
-                # - split per dp device if not multi-host for vmap trick (does not work in multi-host)
-                bs_shape = (
-                    (batch_size_per_node_per_grad_step,)
-                    if not use_vmap_trick
-                    else (
-                        jax.local_device_count()
-                        // training_args.mp_devices,  # local dp devices
-                        training_args.per_device_train_batch_size,
-                    )
+            if training_args.do_train:
+                # load data - may be replicated on multiple nodes
+                node_groups = max(
+                    1, training_args.mp_devices // jax.local_device_count()
                 )
-                if training_args.gradient_accumulation_steps > 1:
-                    # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
-                    # to avoid any data redistribution when sharding
-                    bs_shape = (training_args.gradient_accumulation_steps,) + bs_shape
-
-                # reshape batch
-                batch = jax.tree_map(
-                    lambda x: x.reshape(bs_shape + x.shape[1:]),
-                    batch,
+                loader_bs = batch_size_per_node * node_groups
+                train_loader = dataset.dataloader(
+                    "train",
+                    loader_bs,
+                    epoch,
                 )
-                # freeze batch to pass safely to jax transforms
-                batch = freeze(batch)
-
-                # train step
-                state, train_metrics = p_train_step(state, batch, train_time)
-                local_state["step"] += 1
-                local_state["train_time"] = train_time
-                local_state["train_samples"] += batch_size_per_step
-
-                if (
-                    local_state["step"] % training_args.logging_steps == 0
-                    and jax.process_index() == 0
+                # train
+                for batch in tqdm(
+                    train_loader,
+                    desc="Training...",
+                    position=1,
+                    leave=False,
+                    total=steps_per_epoch,
+                    disable=jax.process_index() > 0,
                 ):
+                    # calculate delta time (we have a lag of one step but it's ok)
+                    train_time = time.perf_counter() - start_time
+
+                    # reset control variables
+                    evaluation_ran = False
+                    save_model_ran = False
+
+                    # set correct shape to batch
+                    # - add grad_step dim if gradient_accumulation_steps > 1
+                    bs_shape = (
+                        (batch_size_per_node_per_grad_step * node_groups,)
+                        if not use_vmap_trick
+                        else (
+                            jax.local_device_count()
+                            * node_groups
+                            // training_args.mp_devices,  # local dp devices
+                            training_args.per_device_train_batch_size,
+                        )
+                    )
+                    if training_args.gradient_accumulation_steps > 1:
+                        # reshape data into (gradient_accumulation_steps, batch_per_node, ...)
+                        # to avoid any data redistribution when sharding
+                        bs_shape = (
+                            training_args.gradient_accumulation_steps,
+                        ) + bs_shape
+
+                    # reshape batch
+                    batch = jax.tree_util.tree_map(
+                        lambda x: x.reshape(bs_shape + x.shape[1:]),
+                        batch,
+                    )
+                    # freeze batch to pass safely to jax transforms
+                    batch = freeze(batch)
+
+                    # train step
+                    state, train_metrics = p_train_step(state, batch, train_time)
+                    local_state["step"] += 1
+                    local_state["train_time"] = train_time
+                    local_state["train_samples"] += batch_size_per_step
+
+                    if (
+                        local_state["step"] % training_args.logging_steps == 0
+                        and jax.process_index() == 0
+                    ):
+                        metrics_logger.update_state_metrics(local_state)
+                        metrics_logger.log(train_metrics, prefix="train")
+
+                    eval_metrics = None
+                    if local_state["step"] % training_args.eval_steps == 0:
+                        eval_metrics = run_evaluation()
+                        evaluation_ran = True
+
+                    if local_state["step"] % training_args.save_steps == 0:
+                        run_save_model(state, eval_metrics)
+                        save_model_ran = True
+
+                # log final train metrics
+                if train_metrics is not None:
                     metrics_logger.update_state_metrics(local_state)
                     metrics_logger.log(train_metrics, prefix="train")
 
-                eval_metrics = None
-                if local_state["step"] % training_args.eval_steps == 0:
-                    eval_metrics = run_evaluation()
+                    epochs.write(
+                        f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
+                    )
 
-                if local_state["step"] % training_args.save_steps == 0:
-                    run_save_model(state, eval_metrics)
-
-            # log final train metrics
-            if train_metrics is not None:
-                metrics_logger.update_state_metrics(state)
-                metrics_logger.log(train_metrics, prefix="train")
-
-                epochs.write(
-                    f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metrics['loss']}, Learning Rate: {train_metrics['learning_rate']})"
-                )
-
-            # Final evaluation
-            eval_metrics = run_evaluation()
+            # Final evaluation at the end of each epoch
+            if not evaluation_ran:
+                eval_metrics = run_evaluation()
 
             # save checkpoint after each epoch
-            run_save_model(state, eval_metrics)
+            if not save_model_ran:
+                run_save_model(state, eval_metrics)
 
 
 if __name__ == "__main__":

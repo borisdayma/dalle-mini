@@ -1,28 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import base64
-from io import BytesIO
-
-import requests
 import streamlit as st
-from PIL import Image
-
-
-class ServiceError(Exception):
-    def __init__(self, status_code):
-        self.status_code = status_code
-
-
-def get_images_from_backend(prompt, backend_url):
-    r = requests.post(backend_url, json={"prompt": prompt})
-    if r.status_code == 200:
-        images = r.json()["images"]
-        images = [Image.open(BytesIO(base64.b64decode(img))) for img in images]
-        return images
-    else:
-        raise ServiceError(r.status_code)
-
+from backend import ServiceError, get_images_from_backend
 
 st.sidebar.markdown(
     """
@@ -45,7 +25,7 @@ DALL·E mini is an AI model that generates images from any prompt you give!
 </p>
 
 <p style='text-align: center'>
-Created by Boris Dayma et al. 2021
+Created by Boris Dayma et al. 2021-2022
 <br/>
 <a href="https://github.com/borisdayma/dalle-mini" target="_blank">GitHub</a> | <a href="https://wandb.ai/dalle-mini/dalle-mini/reports/DALL-E-mini--Vmlldzo4NjIxODA" target="_blank">Project Report</a>
 </p>
@@ -78,15 +58,16 @@ if prompt != "":
         </div>
         </div>
         </div>
-        <small><i>Predictions may take up to 40s under high load. Please stand by.</i></small>
+        <small><i>Predictions may take up to 5mn under high load. Please stand by.</i></small>
     """,
         unsafe_allow_html=True,
     )
 
     try:
-        backend_url = st.secrets["BACKEND_SERVER"]
-        print(f"Getting selections: {prompt}")
-        selected = get_images_from_backend(prompt, backend_url)
+        backend_url = st.secrets["BACKEND_SERVER"] + "/generate"
+        response = get_images_from_backend(prompt, backend_url)
+        selected = response["images"]
+        version = response["version"]
 
         margin = 0.1  # for better position of zoom in arrow
         n_columns = 3
@@ -94,6 +75,16 @@ if prompt != "":
         for i, img in enumerate(selected):
             cols[(i % n_columns) * 2].image(img)
         container.markdown(f"**{prompt}**")
+
+        # st.sidebar.markdown(
+        #    f"<small><center>{version}</center></small>", unsafe_allow_html=True
+        # )
+
+        # st.markdown(
+        #    f"""
+        # These results have been obtained using model `{version}` from [an ongoing training run](https://wandb.ai/dalle-mini/dalle-mini/runs/mheh9e55).
+        # """
+        # )
 
         st.button("Again!", key="again_button")
 

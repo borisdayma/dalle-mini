@@ -1,4 +1,4 @@
-name: Sync to Hugging Face hub
+name: Sync to Hugging Face hub - Obsolete to avoid app disruptions
 
 on:
   push:
@@ -17,4 +17,4 @@ jobs:
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push https://boris:$HF_TOKEN@huggingface.co/spaces/flax-community/dalle-mini main
+        run: git push https://boris:$HF_TOKEN@huggingface.co/spaces/dalle-mini/dalle-mini main

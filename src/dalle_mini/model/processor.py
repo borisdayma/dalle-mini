@@ -1,5 +1,7 @@
 """ DalleBart processor """
 
+from typing import List
+
 import jax.numpy as jnp
 
 from .configuration import DalleBartConfig
@@ -28,7 +30,7 @@ class DalleBartProcessorBase:
         self.input_ids_uncond = uncond["input_ids"]
         self.attention_mask_uncond = uncond["attention_mask"]
 
-    def __call__(self, text: str = None):
+    def __call__(self, text: List[str] = None):
         # check that text is not a string
         assert not isinstance(text, str), "text must be a list of strings"
 

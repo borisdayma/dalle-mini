@@ -15,34 +15,21 @@
 """ DalleBart model. """
 
 import math
-import os
 from functools import partial
-from pickle import UnpicklingError
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import msgpack.exceptions
 from einops import rearrange
 from flax.core.frozen_dict import unfreeze
 from flax.linen import combine_masks, make_causal_mask
 from flax.linen import partitioning as nn_partitioning
 from flax.linen.linear import PrecisionLike
-from flax.serialization import from_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
-from jax import lax
+from jax import custom_jvp, lax
 from jax.random import PRNGKey
-from transformers.configuration_utils import PretrainedConfig
-from transformers.file_utils import (
-    FLAX_WEIGHTS_NAME,
-    WEIGHTS_NAME,
-    cached_path,
-    hf_bucket_url,
-    is_offline_mode,
-    is_remote_url,
-)
 from transformers.generation_flax_utils import FlaxSampleOutput
 from transformers.modeling_flax_outputs import (
     FlaxBaseModelOutput,
@@ -56,7 +43,6 @@ from transformers.models.bart.modeling_flax_bart import (
     FlaxBartForConditionalGeneration,
     FlaxBartForConditionalGenerationModule,
     FlaxBartModule,
-    FlaxBartPreTrainedModel,
 )
 from transformers.utils import logging
 
@@ -67,6 +53,30 @@ logger = logging.get_logger(__name__)
 
 remat = nn_partitioning.remat
 
+
+def smelu(beta: Any = 1.0):
+    """
+    Implementation of "Real World Large Scale Recommendation Systems Reproducibility and Smooth Activations"
+    https://arxiv.org/abs/2202.06499
+    """
+
+    @custom_jvp
+    @jax.jit
+    def _smelu(x: Any) -> Any:
+        x = jnp.where(x <= -beta, 0.0, x)
+        return jnp.where(x >= beta, x, jnp.square(x + beta) / (4 * beta))
+
+    _smelu.defjvps(
+        lambda g, ans, x: lax.select(
+            x == -beta,
+            lax.full_like(g, 0),
+            lax.select(x == beta, lax.full_like(g, 1), g),
+        )
+    )
+    return _smelu
+
+
+ACT2FN.update({"smelu": smelu()})
 
 # deepnet initialization
 def deepnet_init(gain=1):
@@ -188,6 +198,7 @@ def dot_product_attention_weights(
     precision: PrecisionLike = None,
     sinkhorn_iters: int = 1,
     causal: bool = False,
+    is_encoder: bool = False,
     tau = 1.
 ):
     """
@@ -219,7 +230,7 @@ def dot_product_attention_weights(
     attn_weights = attn_weights / jnp.maximum(tau, 0.01)
     
     # normalize the attention weights
-    if causal or sinkhorn_iters == 1:
+    if not is_encoder or sinkhorn_iters == 1:
         # sinkhorn does not work for causal (leaks info of future tokens into past)
         attn_weights = jax.nn.softmax(attn_weights).astype(dtype)
     else:
@@ -443,6 +454,7 @@ class FlaxBartAttention(FlaxBartAttention):
             precision=None,
             sinkhorn_iters=self.config.sinkhorn_iters,
             causal=self.causal,
+            is_encoder=self.is_encoder,
             tau = tau
         )
 
@@ -598,6 +610,9 @@ class FlaxBartEncoderLayer(nn.Module):
         deterministic: bool = True,
     ) -> Tuple[jnp.ndarray]:
 
+        if self.config.use_scan:
+            hidden_states = hidden_states[0]
+
         res_gain = (
             deepnet_gain["encoder"]["alpha"](self.config)
             if self.config.use_deepnet_scaling
@@ -658,12 +673,8 @@ class FlaxBartEncoderLayer(nn.Module):
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual * res_gain + hidden_states
-        if self.add_norm or self.config.ln_positions in ["postln"]:
-            use_scale = (
-                self.use_scale
-                or self.config.ln_positions == "postln"
-                or self.config.force_ln_scale
-            )
+        if self.add_norm:
+            use_scale = self.use_scale or self.config.force_ln_scale
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -675,6 +686,9 @@ class FlaxBartEncoderLayer(nn.Module):
 
         if output_attentions:
             outputs += (attn_weights,)
+
+        if self.config.use_scan:
+            outputs = (outputs, None)
 
         return outputs
 
@@ -689,7 +703,7 @@ class FlaxBartDecoderLayer(nn.Module):
     config: DalleBartConfig
     dtype: jnp.dtype = jnp.float32
     add_norm: bool = False
-    use_scale: bool = False
+    use_scale: bool = True
 
     @nn.compact
     def __call__(
@@ -702,6 +716,9 @@ class FlaxBartDecoderLayer(nn.Module):
         output_attentions: bool = True,
         deterministic: bool = True,
     ) -> Tuple[jnp.ndarray]:
+
+        if self.config.use_scan:
+            hidden_states = hidden_states[0]
 
         res_gain = (
             deepnet_gain["decoder"]["alpha"](self.config)
@@ -810,12 +827,8 @@ class FlaxBartDecoderLayer(nn.Module):
         )
         hidden_states = ff_block(hidden_states, deterministic=deterministic)
         hidden_states = residual * res_gain + hidden_states
-        if self.add_norm or self.config.ln_positions in ["postln"]:
-            use_scale = (
-                self.use_scale
-                or self.config.ln_positions == "postln"
-                or self.config.force_ln_scale
-            )
+        if self.add_norm:
+            use_scale = self.use_scale or self.config.force_ln_scale
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -827,6 +840,9 @@ class FlaxBartDecoderLayer(nn.Module):
 
         if output_attentions:
             outputs += (attn_weights, cross_attn_weights)
+
+        if self.config.use_scan:
+            outputs = (outputs, None)
 
         return outputs
 
@@ -855,35 +871,71 @@ class FlaxBartEncoderLayerCollection(nn.Module):
 
         n_layers = self.config.encoder_layers
         layer = (
-            remat(FlaxBartEncoderLayer, static_argnums=(2, 3))
+            remat(
+                FlaxBartEncoderLayer,
+                static_argnums=(2, 3),
+                prevent_cse=not self.config.use_scan,
+            )
             if self.config.gradient_checkpointing
             else FlaxBartEncoderLayer
         )
-        for i in range(n_layers):
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            # final layernorm on the output of the last layer
-            # or every 6 layers for Swin v2
-            add_norm = (
-                self.config.ln_positions == "swinv2" and ((i + 1) % 6 == 0)
-            ) or (self.config.use_final_ln_encoder and (i == n_layers - 1))
-            # we don't need to scale the norm for the last layer
-            use_scale = i != n_layers - 1
-            layer_outputs = layer(
-                self.config, dtype=self.dtype, add_norm=add_norm, use_scale=use_scale
+
+        if self.config.use_scan:
+            # all blocks are the same so we use nn.scan
+            assert not output_attentions, "cannot scan with output_attentions"
+            assert not output_hidden_states, "cannot scan with output_hidden_states"
+            hidden_states = (hidden_states,)
+            # we use a scale on all norms (even last layer) to allow scanning
+            hidden_states, _ = nn.scan(
+                layer,
+                variable_axes={"params": 0, "cache": 0},
+                split_rngs={"params": True, "dropout": True},
+                in_axes=(nn.broadcast, nn.broadcast, nn.broadcast),
+                length=n_layers,
+            )(
+                self.config,
+                dtype=self.dtype,
+                add_norm=self.config.ln_positions == "postln",
+                name="FlaxBartEncoderLayers",
             )(
                 hidden_states,
                 attention_mask,
                 output_attentions,
                 deterministic,
             )
-            hidden_states = layer_outputs[0]
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+            hidden_states = hidden_states[0]
+        else:
+            for i in range(n_layers):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+                # final layernorm on the output of the last layer
+                # or every 6 layers for Swin v2
+                add_norm = self.config.ln_positions == "postln" or (
+                    self.config.ln_positions == "swinv2"
+                    and ((i + 1) % 6 == 0)
+                    and (i != n_layers - 1)
+                )
+                # we don't need to scale the norm for the last layer
+                use_scale = i != n_layers - 1
+                layer_outputs = layer(
+                    self.config,
+                    dtype=self.dtype,
+                    add_norm=add_norm,
+                    use_scale=use_scale,
+                    name=f"FlaxBartEncoderLayer_{i}",
+                )(
+                    hidden_states,
+                    attention_mask,
+                    output_attentions,
+                    deterministic,
+                )
+                hidden_states = layer_outputs[0]
+                if output_attentions:
+                    all_self_attns += (layer_outputs[1],)
 
-        # add hidden states from the last layer
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
+            # add hidden states from the last layer
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
 
         outputs = [
             hidden_states,
@@ -932,22 +984,39 @@ class FlaxBartDecoderLayerCollection(nn.Module):
 
         n_layers = self.config.decoder_layers
         layer = (
-            remat(FlaxBartDecoderLayer, static_argnums=(4, 5, 6))
+            remat(
+                FlaxBartDecoderLayer,
+                static_argnums=(4, 5, 6),
+                prevent_cse=not self.config.use_scan,
+            )
             if self.config.gradient_checkpointing
             else FlaxBartDecoderLayer
         )
-        for i in range(n_layers):
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            # final layernorm on the output of the last layer
-            # or every 6 layers for Swin v2
-            add_norm = (
-                self.config.ln_positions == "swinv2" and ((i + 1) % 6 == 0)
-            ) or (self.config.use_final_ln_decoder and (i == n_layers - 1))
-            # we don't need to scale the norm for the last layer
-            use_scale = i != n_layers - 1
-            layer_outputs = layer(
-                self.config, dtype=self.dtype, add_norm=add_norm, use_scale=use_scale
+
+        if self.config.use_scan:
+            # all blocks are the same so we use nn.scan
+            assert not output_attentions, "cannot scan with output_attentions"
+            assert not output_hidden_states, "cannot scan with output_hidden_states"
+            hidden_states = (hidden_states,)
+            # we use a scale on all norms (even last layer) to allow scanning
+            hidden_states, _ = nn.scan(
+                layer,
+                variable_axes={"params": 0, "cache": 0},
+                split_rngs={"params": True, "dropout": True},
+                in_axes=(
+                    nn.broadcast,
+                    nn.broadcast,
+                    nn.broadcast,
+                    nn.broadcast,
+                    nn.broadcast,
+                    nn.broadcast,
+                ),
+                length=n_layers,
+            )(
+                self.config,
+                dtype=self.dtype,
+                add_norm=self.config.ln_positions == "postln",
+                name="FlaxBartDecoderLayers",
             )(
                 hidden_states,
                 attention_mask,
@@ -957,17 +1026,47 @@ class FlaxBartDecoderLayerCollection(nn.Module):
                 output_attentions,
                 deterministic,
             )
+            hidden_states = hidden_states[0]
 
-            hidden_states = layer_outputs[0]
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+        else:
+            for i in range(n_layers):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+                # final layernorm on the output of the last layer
+                # or every 6 layers for Swin v2
+                add_norm = self.config.ln_positions == "postln" or (
+                    self.config.ln_positions == "swinv2"
+                    and ((i + 1) % 6 == 0)
+                    and (i != n_layers - 1)
+                )
+                # we don't need to scale the norm for the last layer
+                use_scale = i != n_layers - 1
+                layer_outputs = layer(
+                    self.config,
+                    dtype=self.dtype,
+                    add_norm=add_norm,
+                    use_scale=use_scale,
+                    name=f"FlaxBartDecoderLayer_{i}",
+                )(
+                    hidden_states,
+                    attention_mask,
+                    encoder_hidden_states,
+                    encoder_attention_mask,
+                    init_cache,
+                    output_attentions,
+                    deterministic,
+                )
 
-                if encoder_hidden_states is not None:
-                    all_cross_attentions += (layer_outputs[2],)
+                hidden_states = layer_outputs[0]
+                if output_attentions:
+                    all_self_attns += (layer_outputs[1],)
 
-        # add hidden states from the last decoder layer
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
+                    if encoder_hidden_states is not None:
+                        all_cross_attentions += (layer_outputs[2],)
+
+            # add hidden states from the last decoder layer
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
 
         outputs = [
             hidden_states,
@@ -1020,6 +1119,17 @@ class FlaxBartEncoder(nn.Module):
             self.config.ln_type, dtype=self.dtype, epsilon=1e-05
         )
 
+        # postln is already applied in every layer
+        if self.config.use_final_ln_encoder and self.config.ln_positions != "postln":
+            self.final_ln = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.force_ln_scale,
+            )
+        else:
+            self.final_ln = None
+
     def __call__(
         self,
         input_ids,
@@ -1051,11 +1161,16 @@ class FlaxBartEncoder(nn.Module):
             return_dict=return_dict,
         )
 
+        if self.final_ln is None:
+            final_output = outputs[0]
+        else:
+            final_output = self.final_ln(outputs[0])
+
         if not return_dict:
-            return outputs
+            return (final_output,) + outputs[1:]
 
         return FlaxBaseModelOutput(
-            last_hidden_state=outputs.last_hidden_state,
+            last_hidden_state=final_output,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
@@ -1097,6 +1212,15 @@ class FlaxBartDecoder(nn.Module):
             self.config.ln_type, dtype=self.dtype, epsilon=1e-05
         )
 
+        # postln is already applied in every layer
+        if self.config.use_final_ln_decoder and self.config.ln_positions != "postln":
+            self.final_ln = norm(
+                self.config.ln_type,
+                dtype=self.dtype,
+                epsilon=1e-05,
+                use_scale=self.config.force_ln_scale,
+            )
+
     def __call__(
         self,
         input_ids,
@@ -1134,11 +1258,16 @@ class FlaxBartDecoder(nn.Module):
             return_dict=return_dict,
         )
 
+        if self.final_ln is None:
+            final_output = outputs[0]
+        else:
+            final_output = self.final_ln(outputs[0])
+
         if not return_dict:
-            return outputs
+            return (final_output,) + outputs[1:]
 
         return FlaxBaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=outputs.last_hidden_state,
+            last_hidden_state=final_output,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
             cross_attentions=outputs.cross_attentions,
@@ -1170,320 +1299,6 @@ class FlaxBartModule(FlaxBartModule):
         self.decoder = FlaxBartDecoder(
             self.config, dtype=self.dtype, embed_tokens=decoder_embed_tokens
         )
-
-
-class FlaxBartPreTrainedModel(FlaxBartPreTrainedModel):
-    """
-    Edits:
-    - added num_params property
-    - config_class replaced to DalleBartConfig
-    - __init__ accepts abstract_init which does uses parameter shape to initialize the model
-    - init weights on CPU with `load_on_cpu`
-    - restore weights on CPU with custom `from_pretrained`
-    """
-
-    config_class = DalleBartConfig
-
-    def __init__(
-        self,
-        config: DalleBartConfig,
-        input_shape: Tuple[int] = (1, 1),
-        seed: int = 0,
-        dtype: jnp.dtype = jnp.float32,
-        abstract_init: bool = False,
-        load_on_cpu: bool = False,
-        init_weights: bool = True,
-        **kwargs,
-    ):
-        module = self.module_class(config=config, dtype=dtype, **kwargs)
-
-        # adapted from HuggingFace FlaxPreTrainedModel
-        if config is None:
-            raise ValueError("config cannot be None")
-
-        if module is None:
-            raise ValueError("module cannot be None")
-
-        # Those are private to be exposed as typed property on derived classes.
-        self._config = config
-        self._module = module
-
-        # Those are public as their type is generic to every derived classes.
-        self.key = PRNGKey(seed)
-        self.dtype = dtype
-
-        if init_weights:
-            # get shape of params only
-            random_params = self.init_weights(
-                self.key,
-                input_shape,
-                abstract_init=abstract_init,
-                load_on_cpu=load_on_cpu,
-            )
-
-            # save required_params as set
-            self._required_params = set(flatten_dict(unfreeze(random_params)).keys())
-            self.params = random_params
-
-    def init_weights(
-        self, rng=None, input_shape=(1, 1), abstract_init=False, load_on_cpu=False
-    ):
-        if rng is None:
-            rng = self.key
-        init_fn = super().init_weights
-        if load_on_cpu:
-            init_fn = jax.jit(init_fn, static_argnums=(1,), backend="cpu")
-        if abstract_init:
-            # only set shape and dtype, load parameters separately
-            init_fn = partial(init_fn, input_shape=input_shape)
-            params = jax.eval_shape(init_fn, rng)
-        else:
-            params = init_fn(rng, input_shape)
-        return params
-
-    @property
-    def num_params(self):
-        num_params = jax.tree_map(
-            lambda param: param.size, flatten_dict(unfreeze(self.params))
-        ).values()
-        return sum(list(num_params))
-
-    @classmethod
-    def from_pretrained(
-        cls,
-        pretrained_model_name_or_path: Union[str, os.PathLike],
-        dtype: jnp.dtype = jnp.float32,
-        *model_args,
-        **kwargs,
-    ):
-        config = kwargs.pop("config", None)
-        cache_dir = kwargs.pop("cache_dir", None)
-        from_pt = kwargs.pop("from_pt", False)
-        ignore_mismatched_sizes = kwargs.pop("ignore_mismatched_sizes", False)
-        force_download = kwargs.pop("force_download", False)
-        resume_download = kwargs.pop("resume_download", False)
-        proxies = kwargs.pop("proxies", None)
-        local_files_only = kwargs.pop("local_files_only", False)
-        use_auth_token = kwargs.pop("use_auth_token", None)
-        revision = kwargs.pop("revision", None)
-        from_pipeline = kwargs.pop("_from_pipeline", None)
-        from_auto_class = kwargs.pop("_from_auto", False)
-
-        user_agent = {
-            "file_type": "model",
-            "framework": "flax",
-            "from_auto_class": from_auto_class,
-        }
-        if from_pipeline is not None:
-            user_agent["using_pipeline"] = from_pipeline
-
-        if is_offline_mode() and not local_files_only:
-            logger.info("Offline mode: forcing local_files_only=True")
-            local_files_only = True
-
-        # Load config if we don't provide a configuration
-        if not isinstance(config, PretrainedConfig):
-            config_path = (
-                config if config is not None else pretrained_model_name_or_path
-            )
-            config, model_kwargs = cls.config_class.from_pretrained(
-                config_path,
-                cache_dir=cache_dir,
-                return_unused_kwargs=True,
-                force_download=force_download,
-                resume_download=resume_download,
-                proxies=proxies,
-                local_files_only=local_files_only,
-                use_auth_token=use_auth_token,
-                revision=revision,
-                _from_auto=from_auto_class,
-                _from_pipeline=from_pipeline,
-                **kwargs,
-            )
-        else:
-            model_kwargs = kwargs
-
-        # Add the dtype to model_kwargs
-        model_kwargs["dtype"] = dtype
-
-        # Load model
-        if pretrained_model_name_or_path is not None:
-            if os.path.isdir(pretrained_model_name_or_path):
-                if from_pt and os.path.isfile(
-                    os.path.join(pretrained_model_name_or_path, WEIGHTS_NAME)
-                ):
-                    # Load from a PyTorch checkpoint
-                    archive_file = os.path.join(
-                        pretrained_model_name_or_path, WEIGHTS_NAME
-                    )
-                elif os.path.isfile(
-                    os.path.join(pretrained_model_name_or_path, FLAX_WEIGHTS_NAME)
-                ):
-                    # Load from a Flax checkpoint
-                    archive_file = os.path.join(
-                        pretrained_model_name_or_path, FLAX_WEIGHTS_NAME
-                    )
-                else:
-                    raise EnvironmentError(
-                        f"Error no file named {[FLAX_WEIGHTS_NAME, WEIGHTS_NAME]} found in directory "
-                        f"{pretrained_model_name_or_path} or `from_pt` set to False"
-                    )
-            elif os.path.isfile(pretrained_model_name_or_path) or is_remote_url(
-                pretrained_model_name_or_path
-            ):
-                archive_file = pretrained_model_name_or_path
-            else:
-                archive_file = hf_bucket_url(
-                    pretrained_model_name_or_path,
-                    filename=WEIGHTS_NAME if from_pt else FLAX_WEIGHTS_NAME,
-                    revision=revision,
-                )
-
-            # redirect to the cache, if necessary
-            try:
-                resolved_archive_file = cached_path(
-                    archive_file,
-                    cache_dir=cache_dir,
-                    force_download=force_download,
-                    proxies=proxies,
-                    resume_download=resume_download,
-                    local_files_only=local_files_only,
-                    use_auth_token=use_auth_token,
-                    user_agent=user_agent,
-                )
-            except EnvironmentError as err:
-                logger.error(err)
-                msg = (
-                    f"Can't load weights for '{pretrained_model_name_or_path}'. Make sure that:\n\n"
-                    f"- '{pretrained_model_name_or_path}' is a correct model identifier listed on 'https://huggingface.co/models'\n"
-                    f"  (make sure '{pretrained_model_name_or_path}' is not a path to a local directory with something else, in that case)\n\n"
-                    f"- or '{pretrained_model_name_or_path}' is the correct path to a directory containing a file named {WEIGHTS_NAME}.\n\n"
-                )
-                raise EnvironmentError(msg)
-
-            if resolved_archive_file == archive_file:
-                logger.info(f"loading weights file {archive_file}")
-            else:
-                logger.info(
-                    f"loading weights file {archive_file} from cache at {resolved_archive_file}"
-                )
-        else:
-            resolved_archive_file = None
-
-        # init random models
-        model = cls(config, *model_args, **model_kwargs)
-
-        with open(resolved_archive_file, "rb") as state_f:
-            try:
-                state = from_bytes(cls, state_f.read())
-            except (UnpicklingError, msgpack.exceptions.ExtraData) as e:
-                try:
-                    with open(resolved_archive_file) as f:
-                        if f.read().startswith("version"):
-                            raise OSError(
-                                "You seem to have cloned a repository without having git-lfs installed. Please install "
-                                "git-lfs and run `git lfs install` followed by `git lfs pull` in the folder "
-                                "you cloned."
-                            )
-                        else:
-                            raise ValueError from e
-                except (UnicodeDecodeError, ValueError):
-                    raise EnvironmentError(
-                        f"Unable to convert {archive_file} to Flax deserializable object. "
-                    )
-
-        # if model is base model only use model_prefix key
-        if (
-            cls.base_model_prefix not in dict(model.params)
-            and cls.base_model_prefix in state
-        ):
-            state = state[cls.base_model_prefix]
-
-        # if model is head model and we are loading weights from base model
-        # we initialize new params dict with base_model_prefix
-        if (
-            cls.base_model_prefix in dict(model.params)
-            and cls.base_model_prefix not in state
-        ):
-            state = {cls.base_model_prefix: state}
-
-        # flatten dicts
-        state = flatten_dict(state)
-
-        random_state = flatten_dict(unfreeze(model.params))
-
-        missing_keys = model.required_params - set(state.keys())
-        unexpected_keys = set(state.keys()) - model.required_params
-
-        # Mistmatched keys contains tuples key/shape1/shape2 of weights in the checkpoint that have a shape not
-        # matching the weights in the model.
-        mismatched_keys = []
-        for key in state.keys():
-            if key in random_state and state[key].shape != random_state[key].shape:
-                if ignore_mismatched_sizes:
-                    mismatched_keys.append(
-                        (key, state[key].shape, random_state[key].shape)
-                    )
-                    state[key] = random_state[key]
-                else:
-                    raise ValueError(
-                        f"Trying to load the pretrained weight for {key} failed: checkpoint has shape "
-                        f"{state[key].shape} which is incompatible with the model shape {random_state[key].shape}. "
-                        "Using `ignore_mismatched_sizes=True` if you really want to load this checkpoint inside this "
-                        "model."
-                    )
-
-        # add missing keys as random parameters
-        for missing_key in missing_keys:
-            state[missing_key] = random_state[missing_key]
-
-        # remove unexpected keys to not be saved again
-        for unexpected_key in unexpected_keys:
-            del state[unexpected_key]
-
-        if len(unexpected_keys) > 0:
-            logger.warning(
-                f"Some weights of the model checkpoint at {pretrained_model_name_or_path} were not used when "
-                f"initializing {model.__class__.__name__}: {unexpected_keys}\n"
-                f"- This IS expected if you are initializing {model.__class__.__name__} from the checkpoint of a model trained on another task "
-                f"or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).\n"
-                f"- This IS NOT expected if you are initializing {model.__class__.__name__} from the checkpoint of a model that you expect "
-                f"to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model)."
-            )
-        else:
-            logger.info(
-                f"All model checkpoint weights were used when initializing {model.__class__.__name__}.\n"
-            )
-
-        if len(missing_keys) > 0:
-            logger.warning(
-                f"Some weights of {model.__class__.__name__} were not initialized from the model checkpoint at {pretrained_model_name_or_path} "
-                f"and are newly initialized: {missing_keys}\n"
-                f"You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference."
-            )
-        elif len(mismatched_keys) == 0:
-            logger.info(
-                f"All the weights of {model.__class__.__name__} were initialized from the model checkpoint at {pretrained_model_name_or_path}.\n"
-                f"If your task is similar to the task the model of the checkpoint was trained on, "
-                f"you can already use {model.__class__.__name__} for predictions without further training."
-            )
-        if len(mismatched_keys) > 0:
-            mismatched_warning = "\n".join(
-                [
-                    f"- {key}: found shape {shape1} in the checkpoint and {shape2} in the model instantiated"
-                    for key, shape1, shape2 in mismatched_keys
-                ]
-            )
-            logger.warning(
-                f"Some weights of {model.__class__.__name__} were not initialized from the model checkpoint at {pretrained_model_name_or_path} "
-                f"and are newly initialized because the shapes did not match:\n{mismatched_warning}\n"
-                f"You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference."
-            )
-
-        # set correct parameters
-        model.params = unflatten_dict(state)
-
-        return model
 
 
 class FlaxBartForConditionalGenerationModule(FlaxBartForConditionalGenerationModule):
@@ -1566,21 +1381,48 @@ class SampleState:
     model_kwargs_uncond: Dict[str, jnp.ndarray]
 
 
-class DalleBart(
-    PretrainedFromWandbMixin, FlaxBartPreTrainedModel, FlaxBartForConditionalGeneration
-):
+class DalleBart(PretrainedFromWandbMixin, FlaxBartForConditionalGeneration):
     """
     Edits:
     - renamed from FlaxBartForConditionalGeneration
-    - uses custom FlaxBartPreTrainedModel
     - uses custom FlaxBartForConditionalGenerationModule
     - no bias in decode method
     - custom prepare_inputs_for_generation using "max_length - 1" to avoid issues
       related to position embedding during model.generate()
     - custom generate method to allow super conditions
+    - num_params property
+    - unscan function
     """
 
     module_class = FlaxBartForConditionalGenerationModule
+    config_class = DalleBartConfig
+
+    def num_params(self, params=None):
+        if params is None:
+            params = self.params
+        num_params = jax.tree_util.tree_map(
+            lambda param: param.size, flatten_dict(unfreeze(params))
+        ).values()
+        return sum(list(num_params))
+
+    def unscan(self, params):
+        if self.config.use_scan:
+            self.config.use_scan = False
+            params = flatten_dict(params)
+            scanned_keys = [k for k in params.keys() if "layers" in k]
+            for k in scanned_keys:
+                v = params[k]
+                name_idx = k.index("layers") + 1
+                for i in range(len(v)):
+                    new_k = (
+                        *k[:name_idx],
+                        f"{k[name_idx][:-1]}_{i}",
+                        *k[name_idx + 1 :],
+                    )
+                    params[new_k] = v[i]
+                del params[k]
+            params = unflatten_dict(params)
+        return params
 
     def decode(
         self,
