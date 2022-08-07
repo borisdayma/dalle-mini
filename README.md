@@ -1,6 +1,6 @@
 # DALL·E Mini
 
-<a href="https://www.craiyon.com/"><img src="https://www.craiyon.com/craiyon_preview.png" width="480"></a>
+<a href="https://www.craiyon.com/"><img src="https://www.craiyon.com/thumbnail.png" width="300"></a>
 
 ## How to use it?
 
