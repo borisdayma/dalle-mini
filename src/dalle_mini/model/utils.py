@@ -12,6 +12,11 @@ class PretrainedFromWandbMixin:
         Initializes from a wandb artifact or delegates loading to the superclass.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:  # avoid multiple artifact copies
+            # retrieve api_key if passed as a kwarg
+            api_key = None
+            if "api_key" in kwargs:
+                api_key = kwargs["api_key"]
+
             if ":" in pretrained_model_name_or_path and not os.path.isdir(
                 pretrained_model_name_or_path
             ):
@@ -19,7 +24,8 @@ class PretrainedFromWandbMixin:
                 if wandb.run is not None:
                     artifact = wandb.run.use_artifact(pretrained_model_name_or_path)
                 else:
-                    artifact = wandb.Api().artifact(pretrained_model_name_or_path)
+                    # pass api_key if set, otherwise a prompt will display to enter the key
+                    artifact = wandb.Api(api_key=api_key).artifact(pretrained_model_name_or_path)
                 pretrained_model_name_or_path = artifact.download(tmp_dir)
 
             return super(PretrainedFromWandbMixin, cls).from_pretrained(
