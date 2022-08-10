@@ -7,16 +7,11 @@ import wandb
 
 class PretrainedFromWandbMixin:
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+    def from_pretrained(cls, pretrained_model_name_or_path, api_key=None, *model_args, **kwargs):
         """
         Initializes from a wandb artifact or delegates loading to the superclass.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:  # avoid multiple artifact copies
-            # retrieve api_key if passed as a kwarg
-            api_key = None
-            if "api_key" in kwargs:
-                api_key = kwargs["api_key"]
-
             if ":" in pretrained_model_name_or_path and not os.path.isdir(
                 pretrained_model_name_or_path
             ):
