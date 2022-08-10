@@ -1,13 +1,13 @@
 import os
 import tempfile
 from pathlib import Path
-
+from typing import Optional
 import wandb
 
 
 class PretrainedFromWandbMixin:
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, api_key=None, *model_args, **kwargs):
+    def from_pretrained(cls, pretrained_model_name_or_path, api_key: Optional[str] = None, *model_args, **kwargs):
         """
         Initializes from a wandb artifact or delegates loading to the superclass.
         """
