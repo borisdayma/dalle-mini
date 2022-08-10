@@ -7,7 +7,13 @@ import wandb
 
 class PretrainedFromWandbMixin:
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, api_key: Optional[str] = None, *model_args, **kwargs):
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path,
+        api_key: Optional[str] = None,
+        *model_args,
+        **kwargs
+    ):
         """
         Initializes from a wandb artifact or delegates loading to the superclass.
         """
@@ -20,7 +26,9 @@ class PretrainedFromWandbMixin:
                     artifact = wandb.run.use_artifact(pretrained_model_name_or_path)
                 else:
                     # pass api_key if set, otherwise a prompt will display to enter the key
-                    artifact = wandb.Api(api_key=api_key).artifact(pretrained_model_name_or_path)
+                    artifact = wandb.Api(api_key=api_key).artifact(
+                        pretrained_model_name_or_path
+                    )
                 pretrained_model_name_or_path = artifact.download(tmp_dir)
 
             return super(PretrainedFromWandbMixin, cls).from_pretrained(
