@@ -198,6 +198,7 @@ def dot_product_attention_weights(
     precision: PrecisionLike = None,
     sinkhorn_iters: int = 1,
     is_encoder: bool = False,
+    tau=None,
 ):
     """
     Computes dot-product attention weights given query and key.
@@ -210,11 +211,15 @@ def dot_product_attention_weights(
     assert query.shape[-2] == key.shape[-2], "q, k num_heads must match."
     assert query.shape[-1] == key.shape[-1], "q, k depths must match."
 
-    # calculate attention matrix
-    depth = query.shape[-1]
-    query = query / jnp.sqrt(depth).astype(dtype)
     # attn weight shape is (batch..., num_heads, q_length, kv_length)
     attn_weights = jnp.einsum("...qhd,...khd->...hqk", query, key, precision=precision)
+
+    # divide by tau (used in Swin v2)
+    if tau is not None:
+        attn_weights = attn_weights / tau
+    else:
+        depth = query.shape[-1]
+        attn_weights = attn_weights / jnp.sqrt(depth).astype(dtype)
 
     # apply attention bias: masking, dropout, proximity bias, etc.
     if bias is not None:
@@ -315,11 +320,8 @@ class FlaxBartAttention(FlaxBartAttention):
             )
 
         if self.config.use_cosine_attention:
-            self.tau = self.param(
-                "tau",
-                jax.nn.initializers.constant(self.config.tau_init),
-                (1, self.num_heads, 1, 1),
-            )
+            # TODO: try using a learnt scale, somehow it immediately diverges in my experiments
+            self.tau = self.config.tau_init
 
         if self.config.use_swin_position_embeddings:
             self.rel_bias = nn.Embed(
@@ -434,6 +436,7 @@ class FlaxBartAttention(FlaxBartAttention):
         else:
             embed_pos = None
 
+        tau = self.tau if self.config.use_cosine_attention else None
         attn_weights = dot_product_attention_weights(
             query_states,
             key_states,
@@ -448,10 +451,8 @@ class FlaxBartAttention(FlaxBartAttention):
             precision=None,
             sinkhorn_iters=self.config.sinkhorn_iters,
             is_encoder=self.is_encoder,
+            tau=tau,
         )
-        if self.config.use_cosine_attention:
-            # divide by tau
-            attn_weights = attn_weights / jnp.maximum(self.tau, 0.01)
 
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value_states)
         if self.config.use_head_scale:
