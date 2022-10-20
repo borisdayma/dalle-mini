@@ -89,8 +89,7 @@ class QuantizedValue:
         # We first decide the scale.
         if fvalue.ndim < 1:
             raise ValueError(
-                f"Input array {fvalue} must have a strictly positive number of "
-                "dimensions."
+                f"Input array {fvalue} must have a strictly positive number of dimensions."
             )
 
         max_abs = jnp.max(jnp.abs(fvalue), axis=0)

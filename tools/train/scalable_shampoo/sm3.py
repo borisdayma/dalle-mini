@@ -119,7 +119,7 @@ def sm3(
             updates = jax.tree_map(lambda g: g / (jnp.linalg.norm(g) + 1e-16), updates)
         # Reshape all vectors into N-d tensors to compute min over them.
         # [n], [m] -> [n, 1], [1, m]
-        expanded_diagonal_statistics = jax.tree_multimap(
+        expanded_diagonal_statistics = jax.tree_map(
             lambda grad, state: [  # pylint:disable=g-long-lambda
                 jnp.reshape(
                     state.diagonal_statistics[i], _get_expanded_shape(grad.shape, i)
@@ -131,7 +131,7 @@ def sm3(
         )
 
         # Compute new diagonal statistics
-        new_diagonal_statistics = jax.tree_multimap(
+        new_diagonal_statistics = jax.tree_map(
             _moving_averages, updates, expanded_diagonal_statistics
         )
 
@@ -139,12 +139,12 @@ def sm3(
         new_preconditioners = jax.tree_map(
             lambda t: 1.0 / jnp.sqrt(t + diagonal_epsilon), new_diagonal_statistics
         )
-        preconditioned_grads = jax.tree_multimap(
+        preconditioned_grads = jax.tree_map(
             lambda g, p: g * p, updates, new_preconditioners
         )
 
         # Compute updated momentum (also handle quantization)
-        updated_momentum = jax.tree_multimap(
+        updated_momentum = jax.tree_map(
             lambda preconditioned_grad, state: _moving_averages_momentum(  # pylint:disable=g-long-lambda
                 preconditioned_grad, state.diagonal_momentum
             ),
@@ -153,12 +153,12 @@ def sm3(
         )
 
         # Update diagonal statistics.
-        updated_diagonal_statistics = jax.tree_multimap(
+        updated_diagonal_statistics = jax.tree_map(
             _sketch_diagonal_statistics, updates, new_diagonal_statistics
         )
 
         # Update momentum.
-        new_sm3_stats = jax.tree_multimap(
+        new_sm3_stats = jax.tree_map(
             lambda momentum, diagonal_stats: ParameterStats(  # pylint:disable=g-long-lambda
                 diagonal_stats, _quantize_momentum(momentum)
             ),

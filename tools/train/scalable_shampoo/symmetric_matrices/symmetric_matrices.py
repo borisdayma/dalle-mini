@@ -189,7 +189,7 @@ def materialize_matrix(symmetric_matrix):
     )
 
 
-@functools.partial(jax.jit, static_argnames=("num_blocks"))
+@functools.partial(jax.jit, static_argnames="num_blocks")
 def materialize_matrix_from_concat(
     block_rows_concat,
     num_blocks=None,
@@ -299,7 +299,7 @@ def find_num_blocks(block_rows_concat):
     return num_blocks_from_total_blocks(total_blocks)
 
 
-@functools.partial(jax.jit, static_argnames=("block_size"))
+@functools.partial(jax.jit, static_argnames="block_size")
 def slice_symmetric_matrix(
     mat,
     block_size,
@@ -316,8 +316,7 @@ def slice_symmetric_matrix(
         raise ValueError("mat is not square.")
     if num_rows % block_size != 0:
         raise ValueError(
-            "block size does not evenly divide rows. "
-            f"num_rows={num_rows}, block_size={block_size}"
+            f"block size does not evenly divide rows. num_rows={num_rows}, block_size={block_size}"
         )
     return SlicedSymmetricMatrix(
         block_rows=[
@@ -331,7 +330,7 @@ def slice_symmetric_matrix(
     )
 
 
-@functools.partial(jax.jit, static_argnames=("block_size"))
+@functools.partial(jax.jit, static_argnames="block_size")
 def slice_symmetric_matrix_concat(
     mat,
     block_size,
@@ -385,7 +384,7 @@ def row_abs_maxes(mat):
 
     For example the symmetric matrix M = [[1, 6], [6, 2]] is represented using
     mat = [1, 6, 2] with block_size = 1. In this case the function returns the
-    absolute row maxes of the original symmetric matrix, [6, 6].
+    aboslute row maxes of the original symmetric matrix, [6, 6].
 
     Args:
       mat: The symmetric matrix represented as the concatenated blocks.
