@@ -61,13 +61,14 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         # transformer variants
         use_bias=False,  # use bias in attention and dense layers (except for lm_head)
         ln_type="layernorm",  # layer normalization type, "rmsnorm", "layernorm"
-        ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "preln", "deepnet" (same as postln)
+        ln_positions="normformer",  # layer normalization positions, "normformer", "swinv2", "cogview", "postln", "preln", "deepnet" (same as postln), "subln"
         use_head_scale=False,  # used in NormFormer
         use_cosine_attention=False,  # used in Swin v2
         tau_init=0.05,  # used only in cosine attention (Swin v2)
         use_absolute_position_embeddings=True,  # default
         use_swin_position_embeddings=False,  # used in Swin v1/v2
         use_deepnet_scaling=False,  # used in Deepnet
+        use_subln_init=False,
         use_glu=True,  # "GLU Variants Improve Transformer"
         use_alibi=False,  # Not implemented yet - from "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
         sinkhorn_iters=1,  # used in SinkFormers
@@ -95,7 +96,8 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
             "cogview",
             "postln",
             "preln",
-        ], "ln_positions must be 'normformer', 'swinv2', 'cogview', 'postln', 'preln'"
+            "subln",
+        ], "ln_positions must be 'normformer', 'swinv2', 'cogview', 'postln', 'preln', 'subln'"
         self.use_head_scale = use_head_scale
         assert use_alibi is False, "use_alibi is not supported yet"
         self.ln_positions = ln_positions
@@ -104,6 +106,7 @@ class DalleBartConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.use_absolute_position_embeddings = use_absolute_position_embeddings
         self.use_swin_position_embeddings = use_swin_position_embeddings
         self.use_deepnet_scaling = use_deepnet_scaling
+        self.use_subln_init = use_subln_init
         self.use_glu = use_glu
         self.use_alibi = use_alibi
         self.sinkhorn_iters = sinkhorn_iters

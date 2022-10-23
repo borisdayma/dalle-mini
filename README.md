@@ -118,6 +118,7 @@ Sequence to sequence model based on "[BART: Denoising Sequence-to-Sequence Pre-t
 * "[CogView: Mastering Text-to-Image Generation via Transformers](https://arxiv.org/abs/2105.13290v2)"
 * "[Root Mean Square Layer Normalization](https://arxiv.org/abs/1910.07467)"
 * "[Sinkformers: Transformers with Doubly Stochastic Attention](https://arxiv.org/abs/2110.11773)"
+* "[Foundation Transformers](https://arxiv.org/abs/2210.06423)
 
 Main optimizer (Distributed Shampoo) from "[Scalable Second Order Optimization for Deep Learning](https://arxiv.org/abs/2002.09018)".
 
@@ -257,5 +258,15 @@ Main optimizer (Distributed Shampoo) from "[Scalable Second Order Optimization f
   author = {Shamir, Gil I. and Lin, Dong and Coviello, Lorenzo},
   publisher = {arXiv},
   year = {2020},
+}
+```
+
+```text
+@misc{
+  title = {Foundation Transformers},
+  url = {https://arxiv.org/abs/2210.06423},
+  author = {Wang, Hongyu and Ma, Shuming and Huang, Shaohan and Dong, Li and Wang, Wenhui and Peng, Zhiliang and Wu, Yu and Bajaj, Payal and Singhal, Saksham and Benhaim, Alon and Patra, Barun and Liu, Zhun and Chaudhary, Vishrav and Song, Xia and Wei, Furu},
+  publisher = {arXiv},
+  year = {2022},
 }
 ```

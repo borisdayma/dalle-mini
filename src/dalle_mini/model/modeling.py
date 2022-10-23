@@ -79,8 +79,8 @@ def smelu(beta: Any = 1.0):
 ACT2FN.update({"smelu": smelu()})
 
 # deepnet initialization
-def deepnet_init(gain=1):
-    init = jax.nn.initializers.glorot_normal()
+def deepnet_init(init_std, gain=1):
+    init = jax.nn.initializers.normal(init_std)
 
     def _init(*args, **kwargs):
         return gain * init(*args, **kwargs)
@@ -100,6 +100,17 @@ deepnet_gain = {
         "alpha": lambda config: (3 * config.decoder_layers) ** 0.25,
         "beta": lambda config: (12 * config.decoder_layers) ** -0.25,
     },
+}
+
+# subln gain
+subln_gain = {
+    "encoder": lambda config: math.sqrt(
+        1.0
+        / 3.0
+        * math.log(3 * config.decoder_layers)
+        * math.log(2 * config.encoder_layers)
+    ),
+    "decoder": lambda config: math.sqrt(math.log(3 * config.decoder_layers)),
 }
 
 
@@ -288,28 +299,27 @@ class FlaxBartAttention(FlaxBartAttention):
             dtype=self.dtype,
         )
 
-        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
-            self.config
-        )
+        if self.config.use_deepnet_scaling:
+            gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+                self.config
+            )
+        elif self.config.use_subln_init:
+            gain = subln_gain["encoder" if self.is_encoder else "decoder"](self.config)
 
         self.q_proj = dense(
-            kernel_init=deepnet_init()
-            if self.config.use_deepnet_scaling
-            else jax.nn.initializers.normal(self.config.init_std)
+            kernel_init=jax.nn.initializers.normal(self.config.init_std)
         )
         self.k_proj = dense(
-            kernel_init=deepnet_init()
-            if self.config.use_deepnet_scaling
-            else jax.nn.initializers.normal(self.config.init_std)
+            kernel_init=jax.nn.initializers.normal(self.config.init_std)
         )
         self.v_proj = dense(
-            kernel_init=deepnet_init(gain)
-            if self.config.use_deepnet_scaling
+            kernel_init=deepnet_init(self.config.init_std, gain)
+            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
             else jax.nn.initializers.normal(self.config.init_std)
         )
         self.out_proj = dense(
-            kernel_init=deepnet_init(gain)
-            if self.config.use_deepnet_scaling
+            kernel_init=deepnet_init(self.config.init_std, gain)
+            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
             else jax.nn.initializers.normal(self.config.init_std)
         )
         self.dropout_layer = nn.Dropout(rate=self.dropout)
@@ -327,15 +337,18 @@ class FlaxBartAttention(FlaxBartAttention):
             self.rel_bias = nn.Embed(
                 self.q_length,
                 self.k_length * self.num_heads,
-                embedding_init=deepnet_init()
-                if self.config.use_deepnet_scaling
-                else jax.nn.initializers.normal(self.config.init_std),
+                embedding_init=jax.nn.initializers.normal(self.config.init_std),
             )
 
         if self.causal:
             # used only in decoder
             self.causal_mask = make_causal_mask(
                 jnp.ones((1, self.config.image_length), dtype="bool"), dtype="bool"
+            )
+
+        if self.config.ln_positions in ["subln"]:
+            self.mid_layernorm = norm(
+                self.config.ln_type, dtype=self.dtype, epsilon=1e-05
             )
 
     def __call__(
@@ -459,6 +472,10 @@ class FlaxBartAttention(FlaxBartAttention):
             # per Normformer
             attn_output = attn_output * self.head_scale
         attn_output = self._merge_heads(attn_output)
+
+        if self.config.ln_positions in ["subln"]:
+            attn_output = self.mid_layernorm(attn_output)
+
         attn_output = self.out_proj(attn_output)
 
         return attn_output, attn_weights
@@ -476,11 +493,14 @@ class GLU(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
 
-        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
-            self.config
-        )
+        if self.config.use_deepnet_scaling:
+            gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+                self.config
+            )
+        elif self.config.use_subln_init:
+            gain = subln_gain["encoder" if self.is_encoder else "decoder"](self.config)
 
-        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln", "subln"]:
             x = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -491,8 +511,8 @@ class GLU(nn.Module):
             self.ffn_dim,
             dtype=self.dtype,
             use_bias=self.config.use_bias,
-            kernel_init=deepnet_init(gain)
-            if self.config.use_deepnet_scaling
+            kernel_init=deepnet_init(self.config.init_std, gain)
+            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
             else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         w = ACT2FN[self.config.activation_function](w)
@@ -500,12 +520,12 @@ class GLU(nn.Module):
             self.ffn_dim,
             dtype=self.dtype,
             use_bias=self.config.use_bias,
-            kernel_init=deepnet_init(gain)
-            if self.config.use_deepnet_scaling
+            kernel_init=deepnet_init(self.config.init_std, gain)
+            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
             else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         x = w * v
-        if self.config.ln_positions in ["normformer"]:
+        if self.config.ln_positions in ["normformer", "subln"]:
             x = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -520,8 +540,8 @@ class GLU(nn.Module):
             self.embed_dim,
             dtype=self.dtype,
             use_bias=self.config.use_bias,
-            kernel_init=deepnet_init(gain)
-            if self.config.use_deepnet_scaling
+            kernel_init=deepnet_init(self.config.init_std, gain)
+            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
             else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         if self.config.ln_positions in ["swinv2", "cogview"]:
@@ -542,10 +562,13 @@ class FFN(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
 
-        gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
-            self.config
-        )
-        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
+        if self.config.use_deepnet_scaling:
+            gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
+                self.config
+            )
+        elif self.config.use_subln_init:
+            gain = subln_gain["encoder" if self.is_encoder else "decoder"](self.config)
+        if self.config.ln_positions in ["normformer", "cogview", "preln", "subln"]:
             x = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -556,12 +579,12 @@ class FFN(nn.Module):
             self.ffn_dim,
             dtype=self.dtype,
             use_bias=self.config.use_bias,
-            kernel_init=deepnet_init(gain)
-            if self.config.use_deepnet_scaling
+            kernel_init=deepnet_init(self.config.init_std, gain)
+            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
             else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         x = ACT2FN[self.config.activation_function](x)
-        if self.config.ln_positions in ["normformer"]:
+        if self.config.ln_positions in ["normformer", "subln"]:
             x = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
@@ -575,8 +598,8 @@ class FFN(nn.Module):
             self.embed_dim,
             dtype=self.dtype,
             use_bias=self.config.use_bias,
-            kernel_init=deepnet_init(gain)
-            if self.config.use_deepnet_scaling
+            kernel_init=deepnet_init(self.config.init_std, gain)
+            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
             else jax.nn.initializers.normal(self.config.init_std),
         )(x)
         if self.config.ln_positions in ["swinv2", "cogview"]:
@@ -617,7 +640,7 @@ class FlaxBartEncoderLayer(nn.Module):
 
         embed_dim = self.config.d_model
         residual = hidden_states
-        if self.config.ln_positions in ["normformer", "cogview", "preln"]:
+        if self.config.ln_positions in ["normformer", "cogview", "preln", "subln"]:
             hidden_states = norm(
                 self.config.ln_type,
                 dtype=self.dtype,
