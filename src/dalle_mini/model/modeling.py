@@ -315,12 +315,18 @@ class FlaxBartAttention(FlaxBartAttention):
         )
         self.v_proj = dense(
             kernel_init=deepnet_init(self.config.init_std, gain)
-            if (self.config.use_deepnet_scaling or (self.config.use_subln_init and not self.is_cross_attention))
+            if (
+                self.config.use_deepnet_scaling
+                or (self.config.use_subln_init and not self.is_cross_attention)
+            )
             else jax.nn.initializers.normal(self.config.init_std)
         )
         self.out_proj = dense(
             kernel_init=deepnet_init(self.config.init_std, gain)
-            if (self.config.use_deepnet_scaling or (self.config.use_subln_init and not self.is_cross_attention))
+            if (
+                self.config.use_deepnet_scaling
+                or (self.config.use_subln_init and not self.is_cross_attention)
+            )
             else jax.nn.initializers.normal(self.config.init_std)
         )
         self.dropout_layer = nn.Dropout(rate=self.dropout)
