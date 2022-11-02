@@ -281,6 +281,7 @@ class FlaxBartAttention(FlaxBartAttention):
     """
 
     is_encoder: bool = False
+    is_cross_attention: bool = False
     q_length: int = None
     k_length: int = None
 
@@ -303,7 +304,7 @@ class FlaxBartAttention(FlaxBartAttention):
             gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
                 self.config
             )
-        elif self.config.use_subln_init:
+        elif self.config.use_subln_init and not self.is_cross_attention:
             gain = subln_gain["encoder" if self.is_encoder else "decoder"](self.config)
 
         self.q_proj = dense(
@@ -314,12 +315,18 @@ class FlaxBartAttention(FlaxBartAttention):
         )
         self.v_proj = dense(
             kernel_init=deepnet_init(self.config.init_std, gain)
-            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
+            if (
+                self.config.use_deepnet_scaling
+                or (self.config.use_subln_init and not self.is_cross_attention)
+            )
             else jax.nn.initializers.normal(self.config.init_std)
         )
         self.out_proj = dense(
             kernel_init=deepnet_init(self.config.init_std, gain)
-            if (self.config.use_deepnet_scaling or self.config.use_subln_init)
+            if (
+                self.config.use_deepnet_scaling
+                or (self.config.use_subln_init and not self.is_cross_attention)
+            )
             else jax.nn.initializers.normal(self.config.init_std)
         )
         self.dropout_layer = nn.Dropout(rate=self.dropout)
@@ -346,7 +353,7 @@ class FlaxBartAttention(FlaxBartAttention):
                 jnp.ones((1, self.config.image_length), dtype="bool"), dtype="bool"
             )
 
-        if self.config.ln_positions in ["subln"]:
+        if self.config.ln_positions in ["subln"] and not self.is_cross_attention:
             self.mid_layernorm = norm(
                 self.config.ln_type, dtype=self.dtype, epsilon=1e-05
             )
@@ -473,7 +480,7 @@ class FlaxBartAttention(FlaxBartAttention):
             attn_output = attn_output * self.head_scale
         attn_output = self._merge_heads(attn_output)
 
-        if self.config.ln_positions in ["subln"]:
+        if self.config.ln_positions in ["subln"] and not self.is_cross_attention:
             attn_output = self.mid_layernorm(attn_output)
 
         attn_output = self.out_proj(attn_output)
@@ -655,6 +662,7 @@ class FlaxBartEncoderLayer(nn.Module):
             bias=self.config.use_bias,
             dtype=self.dtype,
             is_encoder=True,
+            is_cross_attention=False,
             q_length=self.config.max_text_length,
             k_length=self.config.max_text_length,
         )(hidden_states=hidden_states, attention_mask=attention_mask)
@@ -765,6 +773,7 @@ class FlaxBartDecoderLayer(nn.Module):
             bias=self.config.use_bias,
             dtype=self.dtype,
             is_encoder=False,
+            is_cross_attention=False,
             q_length=self.config.image_length,
             k_length=self.config.image_length,
         )(
@@ -805,6 +814,7 @@ class FlaxBartDecoderLayer(nn.Module):
                 bias=self.config.use_bias,
                 dtype=self.dtype,
                 is_encoder=False,
+                is_cross_attention=True,
                 q_length=self.config.image_length,
                 k_length=self.config.max_text_length,
             )(
