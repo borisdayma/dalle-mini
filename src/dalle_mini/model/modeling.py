@@ -30,7 +30,6 @@ from flax.linen.linear import PrecisionLike
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jax import custom_jvp, lax
 from jax.random import PRNGKey
-from transformers.generation_flax_utils import FlaxSampleOutput
 from transformers.modeling_flax_outputs import (
     FlaxBaseModelOutput,
     FlaxBaseModelOutputWithPastAndCrossAttentions,
@@ -44,7 +43,7 @@ from transformers.models.bart.modeling_flax_bart import (
     FlaxBartForConditionalGenerationModule,
     FlaxBartModule,
 )
-from transformers.utils import logging
+from transformers.utils import ModelOutput, logging
 
 from .configuration import DalleBartConfig
 from .utils import PretrainedFromWandbMixin
@@ -1408,6 +1407,20 @@ class SampleState:
     prng_key: jnp.ndarray
     model_kwargs: Dict[str, jnp.ndarray]
     model_kwargs_uncond: Dict[str, jnp.ndarray]
+
+
+@flax.struct.dataclass
+class FlaxSampleOutput(ModelOutput):
+    """
+    Flax Base class for outputs of decoder-only generation models using sampling.
+
+
+    Args:
+        sequences (`jnp.ndarray` of shape `(batch_size, max_length)`):
+            The generated sequences.
+    """
+
+    sequences: jnp.ndarray = None
 
 
 class DalleBart(PretrainedFromWandbMixin, FlaxBartForConditionalGeneration):
