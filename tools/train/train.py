@@ -1179,7 +1179,6 @@ def main():
 
     # Define gradient update step fn
     def train_step(state, batch, train_time):
-
         # get a minibatch (one gradient accumulation slice)
         def get_minibatch(batch, grad_idx):
             return jax.tree_util.tree_map(
@@ -1539,7 +1538,6 @@ def main():
 
     def run_save_model(state, eval_metrics=None):
         if jax.process_index() == 0:
-
             start_save_time = time.perf_counter()
             output_dir = training_args.output_dir
             use_bucket = output_dir.startswith("gs://")
