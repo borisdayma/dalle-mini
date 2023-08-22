@@ -22,7 +22,6 @@ with block:
     with gr.Group():
         with gr.Box():
             with gr.Row().style(mobile_collapse=False, equal_height=True):
-
                 text = gr.Textbox(
                     label="Enter your prompt", show_label=False, max_lines=1
                 ).style(

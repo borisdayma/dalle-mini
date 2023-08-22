@@ -77,6 +77,7 @@ def smelu(beta: Any = 1.0):
 
 ACT2FN.update({"smelu": smelu()})
 
+
 # deepnet initialization
 def deepnet_init(init_std, gain=1):
     init = jax.nn.initializers.normal(init_std)
@@ -498,7 +499,6 @@ class GLU(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
-
         if self.config.use_deepnet_scaling:
             gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
                 self.config
@@ -567,7 +567,6 @@ class FFN(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
-
         if self.config.use_deepnet_scaling:
             gain = deepnet_gain["encoder" if self.is_encoder else "decoder"]["beta"](
                 self.config
@@ -634,7 +633,6 @@ class FlaxBartEncoderLayer(nn.Module):
         output_attentions: bool = True,
         deterministic: bool = True,
     ) -> Tuple[jnp.ndarray]:
-
         if self.config.use_scan:
             hidden_states = hidden_states[0]
 
@@ -742,7 +740,6 @@ class FlaxBartDecoderLayer(nn.Module):
         output_attentions: bool = True,
         deterministic: bool = True,
     ) -> Tuple[jnp.ndarray]:
-
         if self.config.use_scan:
             hidden_states = hidden_states[0]
 
